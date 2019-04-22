@@ -50,7 +50,7 @@ const (
 	defaultRESTPort                 = 8080
 	defaultPeerPort                 = 9735
 	defaultRPCHost                  = "localhost"
-	defaultMaxPendingChannels       = 1
+	defaultMaxPendingChannels       = 2
 	defaultNoSeedBackup             = false
 	defaultTrickleDelay             = 90 * 1000
 	defaultChanStatusSampleInterval = time.Minute
