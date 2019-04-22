@@ -1,25 +1,90 @@
-# Neutrino: Privacy-Preserving Bitcoin Light Client
+## Lightning Network Daemon
 
-[![Build Status](https://travis-ci.org/lightninglabs/neutrino.svg?branch=master)](https://travis-ci.org/lightninglabs/neutrino)
-[![Godoc](https://godoc.org/github.com/lightninglabs/neutrino?status.svg)](https://godoc.org/github.com/lightninglabs/neutrino)
-[![Coverage Status](https://coveralls.io/repos/github/lightninglabs/neutrino/badge.svg?branch=master)](https://coveralls.io/github/lightninglabs/neutrino?branch=master)
+[![Build Status](https://img.shields.io/travis/lightningnetwork/lnd.svg)](https://travis-ci.org/lightningnetwork/lnd)
+[![MIT licensed](https://img.shields.io/badge/license-MIT-blue.svg)](https://github.com/lightningnetwork/lnd/blob/master/LICENSE)
+[![Irc](https://img.shields.io/badge/chat-on%20freenode-brightgreen.svg)](https://webchat.freenode.net/?channels=lnd)
+[![Godoc](https://godoc.org/github.com/lightningnetwork/lnd?status.svg)](https://godoc.org/github.com/lightningnetwork/lnd)
 
-Neutrino is an **experimental** Bitcoin light client written in Go and designed with mobile Lightning Network clients in mind. It uses a [new proposal](https://lists.linuxfoundation.org/pipermail/bitcoin-dev/2017-June/014474.html) for compact block filters to minimize bandwidth and storage use on the client side, while attempting to preserve privacy and minimize processor load on full nodes serving light clients.
+<img src="logo.png">
 
-## Mechanism of operation
-The light client synchronizes only block headers and a chain of compact block filter headers specifying the correct filters for each block. Filters are loaded lazily and stored in the database upon request; blocks are loaded lazily and not saved. There are multiple [known major issues](https://github.com/lightninglabs/neutrino/issues) with the client, so it is **not recommended** to use it with real money at this point.
+The Lightning Network Daemon (`lnd`) - is a complete implementation of a
+[Lightning Network](https://lightning.network) node.  `lnd` has several pluggable back-end
+chain services including [`btcd`](https://github.com/btcsuite/btcd) (a
+full-node), [`bitcoind`](https://github.com/bitcoin/bitcoin), and
+[`neutrino`](https://github.com/lightninglabs/neutrino) (a new experimental light client). The project's codebase uses the
+[btcsuite](https://github.com/btcsuite/) set of Bitcoin libraries, and also
+exports a large set of isolated re-usable Lightning Network related libraries
+within it.  In the current state `lnd` is capable of:
+* Creating channels.
+* Closing channels.
+* Completely managing all channel states (including the exceptional ones!).
+* Maintaining a fully authenticated+validated channel graph.
+* Performing path finding within the network, passively forwarding incoming payments.
+* Sending outgoing [onion-encrypted payments](https://github.com/lightningnetwork/lightning-onion)
+through the network.
+* Updating advertised fee schedules.
+* Automatic channel management ([`autopilot`](https://github.com/lightningnetwork/lnd/tree/master/autopilot)).
 
-## Usage
-The client is instantiated as an object using `NewChainService` and then started. Upon start, the client sets up its database and other relevant files and connects to the p2p network. At this point, it becomes possible to query the client.
+## Lightning Network Specification Compliance
+`lnd` _fully_ conforms to the [Lightning Network specification
+(BOLTs)](https://github.com/lightningnetwork/lightning-rfc). BOLT stands for:
+Basis of Lightning Technology. The specifications are currently being drafted
+by several groups of implementers based around the world including the
+developers of `lnd`. The set of specification documents as well as our
+implementation of the specification are still a work-in-progress. With that
+said, the current status of `lnd`'s BOLT compliance is:
 
-### Queries
-There are various types of queries supported by the client. There are many ways to access the database, for example, to get block headers by height and hash; in addition, it's possible to get a full block from the network using `GetBlockFromNetwork` by hash. However, the most useful methods are specifically tailored to scan the blockchain for data relevant to a wallet or a smart contract platform such as a [Lightning Network node like `lnd`](https://github.com/lightningnetwork/lnd). These are described below.
+  - [X] BOLT 1: Base Protocol
+  - [X] BOLT 2: Peer Protocol for Channel Management
+  - [X] BOLT 3: Bitcoin Transaction and Script Formats
+  - [X] BOLT 4: Onion Routing Protocol
+  - [X] BOLT 5: Recommendations for On-chain Transaction Handling
+  - [X] BOLT 7: P2P Node and Channel Discovery
+  - [X] BOLT 8: Encrypted and Authenticated Transport
+  - [X] BOLT 9: Assigned Feature Flags
+  - [X] BOLT 10: DNS Bootstrap and Assisted Node Location
+  - [X] BOLT 11: Invoice Protocol for Lightning Payments
 
-#### Rescan
-`Rescan` allows a wallet to scan a chain for specific TXIDs, outputs, and addresses. A start and end block may be specified along with other options. If no end block is specified, the rescan continues until stopped. If no start block is specified, the rescan begins with the latest known block. While a rescan runs, it notifies the client of each connected and disconnected block; the notifications follow the [btcjson](https://github.com/btcsuite/btcd/blob/master/btcjson/chainsvrwsntfns.go) format with the option to use any of the relevant notifications. It's important to note that "recvtx" and "redeemingtx" notifications are only sent when a transaction is confirmed, not when it enters the mempool; the client does not currently support accepting 0-confirmation transactions.
+## Developer Resources
 
-#### GetUtxo
-`GetUtxo` allows a wallet or smart contract platform to check that a UTXO exists on the blockchain and has not been spent. It is **highly recommended** to specify a start block; otherwise, in the event that the UTXO doesn't exist on the blockchain, the client will download all the filters back to block 1 searching for it. The client scans from the tip of the chain backwards, stopping when it finds the UTXO having been either spent or created; if it finds neither, it keeps scanning backwards until it hits the specified start block or, if a start block isn't specified, the first block in the blockchain. It returns a `SpendReport` containing either a `TxOut` including the `PkScript` required to spend the output, or containing information about the spending transaction, spending input, and block height in which the spending transaction was seen.
+The daemon has been designed to be as developer friendly as possible in order
+to facilitate application development on top of `lnd`. Two primary RPC
+interfaces are exported: an HTTP REST API, and a [gRPC](https://grpc.io/)
+service. The exported API's are not yet stable, so be warned: they may change
+drastically in the near future.
 
-### Stopping the client
-Calling `Stop` on the `ChainService` client allows the user to stop the client; the method doesn't return until the `ChainService` is cleanly shut down.
+An automatically generated set of documentation for the RPC APIs can be found
+at [api.lightning.community](https://api.lightning.community). A set of developer
+resources including talks, articles, and example applications can be found at:
+[dev.lightning.community](https://dev.lightning.community).
+
+Finally, we also have an active
+[Slack](https://join.slack.com/t/lightningcommunity/shared_invite/enQtMzQ0OTQyNjE5NjU1LWRiMGNmOTZiNzU0MTVmYzc1ZGFkZTUyNzUwOGJjMjYwNWRkNWQzZWE3MTkwZjdjZGE5ZGNiNGVkMzI2MDU4ZTE) where protocol developers, application developers, testers and users gather to
+discuss various aspects of `lnd` and also Lightning in general.
+
+## Installation
+  In order to build from source, please see [the installation
+  instructions](docs/INSTALL.md).
+
+## Docker
+  To run lnd from Docker, please see the main [Docker instructions](docs/DOCKER.md)
+  
+## IRC
+  * irc.freenode.net
+  * channel #lnd
+  * [webchat](https://webchat.freenode.net/?channels=lnd)
+
+## Security
+
+The developers of `lnd` take security _very_ seriously. The disclosure of
+security vulnerabilities helps us secure the health of `lnd`, privacy of our
+users, and also the health of the Lightning Network as a whole.  If you find
+any issues regarding security or privacy, please disclose the information
+responsibly by sending an email to security at lightning dot engineering,
+preferably [encrypted using our designated PGP key
+(`91FE464CD75101DA6B6BAB60555C6465E5BCB3AF`) which can be found
+here](https://pgp.mit.edu/pks/lookup?op=vindex&search=0x555C6465E5BCB3AF).
+
+## Further reading
+* [Step-by-step send payment guide with docker](https://github.com/lightningnetwork/lnd/tree/master/docker)
+* [Contribution guide](https://github.com/lightningnetwork/lnd/blob/master/docs/code_contribution_guidelines.md)
