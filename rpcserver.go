@@ -3383,6 +3383,9 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 	if registeredChains.PrimaryChain() == litecoinChain {
 		defaultDelta = cfg.Litecoin.TimeLockDelta
 	}
+	if registeredChains.PrimaryChain() == xsncoinChain {
+		defaultDelta = cfg.Xsncoin.TimeLockDelta
+	}
 
 	addInvoiceCfg := &invoicesrpc.AddInvoiceConfig{
 		AddInvoice:        r.server.invoices.AddInvoice,

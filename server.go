@@ -857,6 +857,11 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB, cc *chainControl,
 		minRemoteDelay = minLtcRemoteDelay
 		maxRemoteDelay = maxLtcRemoteDelay
 	}
+	if primaryChain == xsncoinChain {
+		chainCfg = cfg.Xsncoin
+		minRemoteDelay = minBtcRemoteDelay
+		maxRemoteDelay = maxBtcRemoteDelay
+		}
 
 	var chanIDSeed [32]byte
 	if _, err := rand.Read(chanIDSeed[:]); err != nil {
@@ -1216,7 +1221,7 @@ func (s *server) Start() error {
 		// dedicated goroutine to maintain a set of persistent
 		// connections.
 		if !cfg.NoNetBootstrap && !(cfg.Bitcoin.SimNet || cfg.Litecoin.SimNet) &&
-			!(cfg.Bitcoin.RegTest || cfg.Litecoin.RegTest) {
+			!(cfg.Bitcoin.RegTest || cfg.Litecoin.RegTest || cfg.Xsncoin.RegTest) {
 
 			bootstrappers, err := initNetworkBootstrappers(s)
 			if err != nil {
