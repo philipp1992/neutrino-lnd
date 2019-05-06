@@ -23,6 +23,7 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs/bitcoindnotify"
 	"github.com/lightningnetwork/lnd/chainntnfs/btcdnotify"
 	"github.com/lightningnetwork/lnd/chainntnfs/neutrinonotify"
+	"github.com/lightningnetwork/lnd/chainntnfs/lightwalletnotify"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
@@ -137,7 +138,7 @@ type chainControl struct {
 func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	privateWalletPw, publicWalletPw []byte, birthday time.Time,
 	recoveryWindow uint32, wallet *wallet.Wallet,
-	neutrinoCS *neutrino.ChainService) (*chainControl, error) {
+	neutrinoCS *neutrino.ChainService, lightWalletCS *neutrino.ChainService) (*chainControl, error) {
 
 	// Set the RPC config from the "home" chain. Multi-chain isn't yet
 	// active, so we'll restrict usage to a particular chain for now.
@@ -248,6 +249,49 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		walletConfig.ChainSource = chain.NewNeutrinoClient(
 			activeNetParams.Params, neutrinoCS,
 		)
+	case "lightwallet":
+		var LightWalletMode *lightWalletConfig
+		LightWalletMode = cfg.LightWalletMode
+
+		// TODO: RostyslavAntonyshyn add default rpc mode for LightWallet
+		rpcPort := 12345
+		host := "127.0.0.1"
+		lightWalletHost := fmt.Sprintf("%v:%d",
+			host, rpcPort)
+			//LightWalletMode.RPCHost, rpcPort)
+
+		// Establish the connection to lightWallet and create the clients
+		// required for our relevant subsystems.
+		lightWalletConn, err := chain.NewLightWalletConn(
+			activeNetParams.Params, lightWalletHost,
+			LightWalletMode.RPCUser, LightWalletMode.RPCPass,
+			LightWalletMode.ZMQPubRawBlock, 100*time.Millisecond,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		if err := lightWalletConn.Start(); err != nil {
+			return nil, fmt.Errorf("unable to connect to lightWallet: "+
+				"%v", err)
+		}
+
+		// We'll create ChainNotifier and FilteredChainView instances,
+		// along with the wallet's ChainSource, which are all backed by
+		// the neutrino light client.
+
+		cc.chainNotifier = lightwalletnotify.New(
+			lightWalletCS, hintCache, hintCache,
+		)
+		cc.chainView, err = chainview.NewLWfFilteredChainView(lightWalletCS)
+		if err != nil {
+			return nil, err
+		}
+
+		// TODO: RostyslavAntonyshyn Connect new client init
+		/*walletConfig.ChainSource = chain.NewNeutrinoClient(
+			activeNetParams.Params, neutrinoCS,
+		)*/
 
 	case "bitcoind", "litecoind", "xsnd":
 		var bitcoindMode *bitcoindConfig
@@ -485,6 +529,10 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	default:
 		return nil, fmt.Errorf("unknown node type: %s",
 			homeChainConfig.Node)
+	}
+
+	for {
+		time.Sleep(time.Millisecond)
 	}
 
 	wc, err := btcwallet.New(*walletConfig)
@@ -779,7 +827,6 @@ func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error
 		return nil, nil, fmt.Errorf("unable to create neutrino light "+
 			"client: %v", err)
 	}
-
 	if err := neutrinoCS.Start(); err != nil {
 		db.Close()
 		return nil, nil, err
@@ -791,4 +838,10 @@ func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error
 	}
 
 	return neutrinoCS, cleanUp, nil
+}
+
+// initNeutrinoBackend inits a new instance of the neutrino light client
+// backend given a target chain directory to store the chain state.
+func initLightWalletBackend(chainDir string) (*neutrino.ChainService, func(), error) {
+	return nil, nil, nil
 }

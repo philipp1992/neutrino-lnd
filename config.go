@@ -109,7 +109,7 @@ type chainConfig struct {
 	Active   bool   `long:"active" description:"If the chain should be active or not."`
 	ChainDir string `long:"chaindir" description:"The directory to store the chain's data within."`
 
-	Node string `long:"node" description:"The blockchain interface to use." choice:"xsnd" choice:"btcd" choice:"bitcoind" choice:"neutrino" choice:"ltcd" choice:"litecoind"`
+	Node string `long:"node" description:"The blockchain interface to use." choice:"xsnd" choice:"btcd" choice:"bitcoind" choice:"neutrino" choice:"ltcd" choice:"litecoind" choice:"lightwallet"`
 
 	MainNet  bool `long:"mainnet" description:"Use the main network"`
 	TestNet3 bool `long:"testnet" description:"Use the test network"`
@@ -149,6 +149,15 @@ type bitcoindConfig struct {
 	RPCPass        string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
 	ZMQPubRawBlock string `long:"zmqpubrawblock" description:"The address listening for ZMQ connections to deliver raw block notifications"`
 	ZMQPubRawTx    string `long:"zmqpubrawtx" description:"The address listening for ZMQ connections to deliver raw transaction notifications"`
+}
+
+type lightWalletConfig struct {
+	Dir             string `long:"dir" description:"The base directory that contains the node's data, logs, configuration file, etc."`
+	RPCHost         string `long:"rpchost" description:"The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used."`
+	RPCUser         string `long:"rpcuser" description:"Username for RPC connections"`
+	RPCPass         string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
+	ZMQPubRawBlock 	string `long:"zmqpubrawblock" description:"The address listening for ZMQ connections to deliver raw block notifications"`
+	//ZMQPubRawHeader string `long:"zmqpubrawheader" description:"The address listening for ZMQ connections to deliver raw header notifications"`
 }
 
 type autoPilotConfig struct {
@@ -224,10 +233,11 @@ type config struct {
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
 	BackupFilePath     string `long:"backupfilepath" description:"The target location of the channel backup file"`
 
-	Bitcoin      *chainConfig    `group:"Bitcoin" namespace:"bitcoin"`
-	BtcdMode     *btcdConfig     `group:"btcd" namespace:"btcd"`
-	BitcoindMode *bitcoindConfig `group:"bitcoind" namespace:"bitcoind"`
-	NeutrinoMode *neutrinoConfig `group:"neutrino" namespace:"neutrino"`
+	Bitcoin      	*chainConfig    	`group:"Bitcoin" namespace:"bitcoin"`
+	BtcdMode     	*btcdConfig     	`group:"btcd" namespace:"btcd"`
+	BitcoindMode 	*bitcoindConfig 	`group:"bitcoind" namespace:"bitcoind"`
+	NeutrinoMode 	*neutrinoConfig 	`group:"neutrino" namespace:"neutrino"`
+	LightWalletMode *lightWalletConfig	`group:"lightwallet" namespace:"lightwallet"`
 
 	Litecoin      *chainConfig    `group:"Litecoin" namespace:"litecoin"`
 	LtcdMode      *btcdConfig     `group:"ltcd" namespace:"ltcd"`
@@ -333,6 +343,10 @@ func loadConfig() (*config, error) {
 			},
 		XsndMode: &bitcoindConfig {
 			Dir:     defaultBitcoindDir,
+			RPCHost: defaultRPCHost,
+		},
+		LightWalletMode: &lightWalletConfig {
+			Dir: defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
 		},
 		MaxPendingChannels: defaultMaxPendingChannels,
@@ -471,6 +485,7 @@ func loadConfig() (*config, error) {
 	cfg.BitcoindMode.Dir = cleanAndExpandPath(cfg.BitcoindMode.Dir)
 	cfg.LitecoindMode.Dir = cleanAndExpandPath(cfg.LitecoindMode.Dir)
 	cfg.XsndMode.Dir = cleanAndExpandPath(cfg.XsndMode.Dir)
+	cfg.LightWalletMode.Dir = cleanAndExpandPath(cfg.LightWalletMode.Dir)
 	cfg.Tor.PrivateKeyPath = cleanAndExpandPath(cfg.Tor.PrivateKeyPath)
 
 	// Ensure that the user didn't attempt to specify negative values for
@@ -784,7 +799,20 @@ func loadConfig() (*config, error) {
 			}
 		case "neutrino":
 			// No need to get RPC parameters.
+		case "lightwallet":
+			if !cfg.Bitcoin.MainNet {
+				return nil, fmt.Errorf("%s: only bitcoin mainnet "+
+					"currently supports lightWallet mode", funcName)
+			}
 
+			err := parseRPCParams(
+				cfg.Bitcoin, cfg.LightWalletMode, bitcoinChain, funcName,
+			)
+			if err != nil {
+				err := fmt.Errorf("unable to load RPC "+
+					"credentials for bitcoin testnet: %v", err)
+				return nil, err
+			}
 		default:
 			str := "%s: only btcd, bitcoind, and neutrino mode " +
 				"supported for bitcoin at this time"
@@ -842,31 +870,15 @@ func loadConfig() (*config, error) {
 		// bitcoin with the litecoin specific information.
 		applyStakenetParams(&activeNetParams, &xsnParams)
 
-		if cfg.Xsncoin.Node == "neutrino" && cfg.Xsncoin.MainNet {
-			str := "%s: neutrino isn't yet supported for " +
-				"bitcoin's mainnet"
-			err := fmt.Errorf(str, funcName)
-			return nil, err
-		}
-
 		if cfg.Xsncoin.TimeLockDelta < minTimeLockDelta {
 			return nil, fmt.Errorf("timelockdelta must be at least %v",
 				minTimeLockDelta)
 		}
 
 		switch cfg.Xsncoin.Node {
-		case "btcd":
-			err := parseRPCParams(
-				cfg.Xsncoin, cfg.BtcdMode, xsncoinChain, funcName,
-			)
-			if err != nil {
-				err := fmt.Errorf("unable to load RPC "+
-					"credentials for btcd: %v", err)
-				return nil, err
-			}
 		case "xsnd":
 			if cfg.Xsncoin.SimNet {
-				return nil, fmt.Errorf("%s: bitcoind does not "+
+				return nil, fmt.Errorf("%s: xsncoin does not "+
 					"support simnet", funcName)
 			}
 
@@ -878,11 +890,10 @@ func loadConfig() (*config, error) {
 					"credentials for xsnd: %v", err)
 				return nil, err
 			}
-		case "neutrino":
-			// No need to get RPC parameters.
+
 		default:
-			str := "%s: only btcd, bitcoind, and neutrino mode " +
-				"supported for bitcoin at this time"
+			str := "%s: only xsnd mode " +
+				"supported for xsncoin at this time"
 			return nil, fmt.Errorf(str, funcName)
 		}
 
