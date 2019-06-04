@@ -282,6 +282,12 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			lightWalletMode.RPCUser, lightWalletMode.RPCPass,
 			lightWalletMode.ZMQPubRawHeader, 100*time.Millisecond,
 		)
+
+		// Create a special websockets rpc client for btcd which will be used
+		// by the wallet for notifications, calls, etc.
+
+		walletConfig.ChainSource = lightWalletConn.NewLightWalletClient();
+
 		if err != nil {
 			return nil, err
 		}
@@ -298,10 +304,11 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			lightWalletConn, activeNetParams.Params,
 			hintCache, hintCache,
 		)
-		//cc.chainView, err = chainview.NewLWfFilteredChainView(lightWalletConn)
-		//if err != nil {
-		//	return nil, err
-		//}
+
+		cc.chainView, err = chainview.NewLWfFilteredChainView(lightWalletConn)
+		if err != nil {
+			return nil, err
+		}
 
 	case "bitcoind", "litecoind", "xsnd":
 		var bitcoindMode *bitcoindConfig
@@ -539,10 +546,6 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	default:
 		return nil, fmt.Errorf("unknown node type: %s",
 			homeChainConfig.Node)
-	}
-
-	for {
-		time.Sleep(time.Millisecond)
 	}
 
 	wc, err := btcwallet.New(*walletConfig)

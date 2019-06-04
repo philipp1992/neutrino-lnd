@@ -2,6 +2,7 @@ package chainview
 
 import (
 	"fmt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"sync"
 	"sync/atomic"
 
@@ -23,6 +24,7 @@ type LWFilteredChainView struct {
 	// chainView is the active rescan which only watches our specified
 	// sub-set of the UTXO set.
 	chainClient *chain.LightWalletClient
+	chainConn 	*chain.LightWalletConn
 
 	// rescanErrChan is the channel that any errors encountered during the
 	// rescan will be sent over.
@@ -58,7 +60,7 @@ var _ FilteredChainView = (*CfFilteredChainView)(nil)
 //
 // NOTE: The node should already be running and syncing before being passed into
 // this function.
-func NewLWfFilteredChainView(chainConn *chain.BitcoindConn) (*LWFilteredChainView, error) {
+func NewLWfFilteredChainView(chainConn *chain.LightWalletConn) (*LWFilteredChainView, error) {
 
 	chainview := &LWFilteredChainView{
 		blockQueue:    	 newBlockEventQueue(),
@@ -67,6 +69,7 @@ func NewLWfFilteredChainView(chainConn *chain.BitcoindConn) (*LWFilteredChainVie
 		chainFilter:   	 make(map[wire.OutPoint][]byte),
 		filterUpdates:   make(chan filterUpdate),
 		filterBlockReqs: make(chan *filterBlockReq),
+		chainConn: chainConn,
 	}
 
 	return chainview, nil
@@ -292,100 +295,40 @@ func (c *LWFilteredChainView) chainFilterer() {
 // selected lock, then the internal chainFilter will also be updated.
 //
 // NOTE: This is part of the FilteredChainView interface.
-//func (c *LWFilteredChainView) FilterBlock(blockHash *chainhash.Hash) (*FilteredBlock, error) {
-//	// First, we'll fetch the block header itself so we can obtain the
-//	// height which is part of our return value.
-//	blockHeight, err := c.chainClient.GetBlockHeight(blockHash)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	filteredBlock := &FilteredBlock{
-//		Hash:   *blockHash,
-//		Height: uint32(blockHeight),
-//	}
-//
-//	// If we don't have any items within our current chain filter, then we
-//	// can exit early as we don't need to fetch the filter.
-//	c.filterMtx.RLock()
-//	if len(c.chainFilter) == 0 {
-//		c.filterMtx.RUnlock()
-//		return filteredBlock, nil
-//	}
-//	c.filterMtx.RUnlock()
-//
-//	// Next, using the block, hash, we'll fetch the compact filter for this
-//	// block. We only require the regular filter as we're just looking for
-//	// outpoint that have been spent.
-//	filter, err := c.p2pNode.GetCFilter(*blockHash, wire.GCSFilterRegular)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	if filter == nil {
-//		return nil, fmt.Errorf("Unable to fetch filter")
-//	}
-//
-//	// Before we can match the filter, we'll need to map each item in our
-//	// chain filter to the representation that included in the compact
-//	// filters.
-//	c.filterMtx.RLock()
-//	relevantPoints := make([][]byte, 0, len(c.chainFilter))
-//	for _, filterEntry := range c.chainFilter {
-//		relevantPoints = append(relevantPoints, filterEntry)
-//	}
-//	c.filterMtx.RUnlock()
-//
-//	// With our relevant points constructed, we can finally match against
-//	// the retrieved filter.
-//	matched, err := filter.MatchAny(builder.DeriveKey(blockHash),
-//		relevantPoints)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	// If there wasn't a match, then we'll return the filtered block as is
-//	// (void of any transactions).
-//	if !matched {
-//		return filteredBlock, nil
-//	}
-//
-//	// If we reach this point, then there was a match, so we'll need to
-//	// fetch the block itself so we can scan it for any actual matches (as
-//	// there's a fp rate).
-//	block, err := c.chainClient.GetBlock(blockHash)
-//	if err != nil {
-//		return nil, err
-//	}
-//
-//	// Finally, we'll step through the block, input by input, to see if any
-//	// transactions spend any outputs from our watched sub-set of the UTXO
-//	// set.
-//	for _, tx := range block.Transactions {
-//		for _, txIn := range tx.TxIn {
-//			prevOp := txIn.PreviousOutPoint
-//
-//			c.filterMtx.RLock()
-//			_, ok := c.chainFilter[prevOp]
-//			c.filterMtx.RUnlock()
-//
-//			if ok {
-//				filteredBlock.Transactions = append(
-//					filteredBlock.Transactions,
-//					tx,,
-//				)
-//
-//				c.filterMtx.Lock()
-//				delete(c.chainFilter, prevOp)
-//				c.filterMtx.Unlock()
-//
-//				break
-//			}
-//		}
-//	}
-//
-//	return filteredBlock, nil
-//}
+func (c *LWFilteredChainView) FilterBlock(blockHash *chainhash.Hash) (*FilteredBlock, error) {
+	// First, we'll fetch the block header itself so we can obtain the
+	// height which is part of our return value.
+	blockHeight, err := c.chainClient.GetBlockHeight(blockHash)
+	if err != nil {
+		return nil, err
+	}
+
+	filteredBlock := &FilteredBlock{
+		Hash:   *blockHash,
+		Height: uint32(blockHeight),
+	}
+
+	// If we don't have any items within our current chain filter, then we
+	// can exit early as we don't need to fetch the filter.
+	c.filterMtx.RLock()
+	if len(c.chainFilter) == 0 {
+		c.filterMtx.RUnlock()
+		return filteredBlock, nil
+	}
+	c.filterMtx.RUnlock()
+
+	// Before we can match the filter, we'll need to map each item in our
+	// chain filter to the representation that included in the compact
+	// filters.
+	c.filterMtx.RLock()
+	relevantPoints := make([][]byte, 0, len(c.chainFilter))
+	for _, filterEntry := range c.chainFilter {
+		relevantPoints = append(relevantPoints, filterEntry)
+	}
+	c.filterMtx.RUnlock()
+
+	return filteredBlock, nil
+}
 
 // UpdateFilter updates the UTXO filter which is to be consulted when creating
 // FilteredBlocks to be sent to subscribed clients. This method is cumulative
