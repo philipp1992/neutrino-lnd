@@ -138,7 +138,7 @@ type chainControl struct {
 func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	privateWalletPw, publicWalletPw []byte, birthday time.Time,
 	recoveryWindow uint32, wallet *wallet.Wallet,
-	neutrinoCS *neutrino.ChainService, lightWalletCS *neutrino.ChainService) (*chainControl, error) {
+	neutrinoCS *neutrino.ChainService) (*chainControl, error) {
 
 	// Set the RPC config from the "home" chain. Multi-chain isn't yet
 	// active, so we'll restrict usage to a particular chain for now.
@@ -179,15 +179,15 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			defaultLitecoinStaticFeePerKW, 0,
 		)
 	case xsncoinChain:
-                cc.routingPolicy = htlcswitch.ForwardingPolicy{
-                        MinHTLC:       cfg.Xsncoin.MinHTLC,
-                        BaseFee:       cfg.Xsncoin.BaseFee,
-                        FeeRate:       cfg.Xsncoin.FeeRate,
-                        TimeLockDelta: cfg.Xsncoin.TimeLockDelta,
-                        }
-                cc.feeEstimator = lnwallet.NewStaticFeeEstimator(
-                        defaultBitcoinStaticFeePerKW, 0,
-                )
+               cc.routingPolicy = htlcswitch.ForwardingPolicy{
+                       MinHTLC:       cfg.Xsncoin.MinHTLC,
+                       BaseFee:       cfg.Xsncoin.BaseFee,
+                       FeeRate:       cfg.Xsncoin.FeeRate,
+                       TimeLockDelta: cfg.Xsncoin.TimeLockDelta,
+                       }
+               cc.feeEstimator = lnwallet.NewStaticFeeEstimator(
+                       defaultBitcoinStaticFeePerKW, 0,
+               )
 	default:
 		return nil, fmt.Errorf("Default routing policy for chain %v is "+
 			"unknown", registeredChains.PrimaryChain())
@@ -250,22 +250,37 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			activeNetParams.Params, neutrinoCS,
 		)
 	case "lightwallet":
-		var LightWalletMode *lightWalletConfig
-		LightWalletMode = cfg.LightWalletMode
+		var lightWalletMode *lightWalletConfig
+		lightWalletMode = cfg.LightWalletMode
 
-		// TODO: RostyslavAntonyshyn add default rpc mode for LightWallet
-		rpcPort := 12345
-		host := "127.0.0.1"
-		lightWalletHost := fmt.Sprintf("%v:%d",
-			host, rpcPort)
-			//LightWalletMode.RPCHost, rpcPort)
+		// Otherwise, we'll be speaking directly via RPC and ZMQ to a
+		// bitcoind node. If the specified host for the btcd/ltcd RPC
+		// server already has a port specified, then we use that
+		// directly. Otherwise, we assume the default port according to
+		// the selected chain parameters.
+		var lightWalletHost string
+		if strings.Contains(lightWalletMode.RPCHost, ":") {
+			lightWalletHost = lightWalletMode.RPCHost
+		} else {
+			// The RPC ports specified in chainparams.go assume
+			// btcd, which picks a different port so that btcwallet
+			// can use the same RPC port as bitcoind. We convert
+			// this back to the btcwallet/bitcoind port.
+			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
+			if err != nil {
+				return nil, err
+			}
+			rpcPort -= 2
+			lightWalletHost = fmt.Sprintf("%v:%d",
+				lightWalletMode.RPCHost, rpcPort)
+		}
 
-		// Establish the connection to lightWallet and create the clients
+		// Establish the c	onnection to lightWallet and create the clients
 		// required for our relevant subsystems.
 		lightWalletConn, err := chain.NewLightWalletConn(
 			activeNetParams.Params, lightWalletHost,
-			LightWalletMode.RPCUser, LightWalletMode.RPCPass,
-			LightWalletMode.ZMQPubRawBlock, 100*time.Millisecond,
+			lightWalletMode.RPCUser, lightWalletMode.RPCPass,
+			lightWalletMode.ZMQPubRawHeader, 100*time.Millisecond,
 		)
 		if err != nil {
 			return nil, err
@@ -279,19 +294,14 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		// We'll create ChainNotifier and FilteredChainView instances,
 		// along with the wallet's ChainSource, which are all backed by
 		// the neutrino light client.
-
 		cc.chainNotifier = lightwalletnotify.New(
-			lightWalletCS, hintCache, hintCache,
+			lightWalletConn, activeNetParams.Params,
+			hintCache, hintCache,
 		)
-		cc.chainView, err = chainview.NewLWfFilteredChainView(lightWalletCS)
-		if err != nil {
-			return nil, err
-		}
-
-		// TODO: RostyslavAntonyshyn Connect new client init
-		/*walletConfig.ChainSource = chain.NewNeutrinoClient(
-			activeNetParams.Params, neutrinoCS,
-		)*/
+		//cc.chainView, err = chainview.NewLWfFilteredChainView(lightWalletConn)
+		//if err != nil {
+		//	return nil, err
+		//}
 
 	case "bitcoind", "litecoind", "xsnd":
 		var bitcoindMode *bitcoindConfig
@@ -623,10 +633,10 @@ var (
 	})
 
 	xsncoinTestnetGenesis = chainhash.Hash([chainhash.HashSize]byte{
-        	0x63, 0x07, 0xe9, 0x9e, 0x74, 0xbb, 0x85, 0x9a,
+       	0x63, 0x07, 0xe9, 0x9e, 0x74, 0xbb, 0x85, 0x9a,
 	        0x33, 0xdc, 0xf0, 0x5a, 0xd6, 0xc6, 0x6e, 0x4b,
-        	0xfe, 0x71, 0xa5, 0xc5, 0x02, 0xce, 0xfd, 0x41,
-        	0x4e, 0xcd, 0x31, 0x4b, 0x25, 0x05, 0x00, 0x00,
+       	0xfe, 0x71, 0xa5, 0xc5, 0x02, 0xce, 0xfd, 0x41,
+       	0x4e, 0xcd, 0x31, 0x4b, 0x25, 0x05, 0x00, 0x00,
 	})
 
 	// chainMap is a simple index that maps a chain's genesis hash to the
@@ -838,10 +848,4 @@ func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error
 	}
 
 	return neutrinoCS, cleanUp, nil
-}
-
-// initNeutrinoBackend inits a new instance of the neutrino light client
-// backend given a target chain directory to store the chain state.
-func initLightWalletBackend(chainDir string) (*neutrino.ChainService, func(), error) {
-	return nil, nil, nil
 }

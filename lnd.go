@@ -205,17 +205,6 @@ func lndMain() error {
 		}
 		neutrinoCS = neutrinoBackend
 	}
-	var lightWalletCS *neutrino.ChainService
-	if mainChain.Node == "lightWallet" {
-		lightWalletBackend, lightWalletCleanUp, err := initLightWalletBackend(
-			mainChain.ChainDir,
-		)
-		defer lightWalletCleanUp()
-		if err != nil {
-			return err
-		}
-		lightWalletCS = lightWalletBackend
-	}
 
 	var (
 		walletInitParams WalletUnlockParams
@@ -292,7 +281,7 @@ func lndMain() error {
 	activeChainControl, err := newChainControlFromConfig(
 		cfg, chanDB, privateWalletPw, publicWalletPw,
 		walletInitParams.Birthday, walletInitParams.RecoveryWindow,
-		walletInitParams.Wallet, neutrinoCS, lightWalletCS,
+		walletInitParams.Wallet, neutrinoCS,
 	)
 	if err != nil {
 		fmt.Printf("unable to create chain control: %v\n", err)

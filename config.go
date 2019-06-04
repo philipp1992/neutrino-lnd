@@ -156,8 +156,7 @@ type lightWalletConfig struct {
 	RPCHost         string `long:"rpchost" description:"The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used."`
 	RPCUser         string `long:"rpcuser" description:"Username for RPC connections"`
 	RPCPass         string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
-	ZMQPubRawBlock 	string `long:"zmqpubrawblock" description:"The address listening for ZMQ connections to deliver raw block notifications"`
-	//ZMQPubRawHeader string `long:"zmqpubrawheader" description:"The address listening for ZMQ connections to deliver raw header notifications"`
+	ZMQPubRawHeader string `long:"zmqpubrawheader" description:"The address listening for ZMQ connections to deliver raw header notifications"`
 }
 
 type autoPilotConfig struct {
@@ -720,7 +719,11 @@ func loadConfig() (*config, error) {
 		// number of network flags passed; assign active network params
 		// while we're at it.
 		numNets := 0
-		if cfg.Bitcoin.MainNet {
+		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node == "lightwallet" {
+			numNets++
+			activeNetParams = btcLightWalletParams
+		}
+		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node != "lightwallet"{
 			numNets++
 			activeNetParams = bitcoinMainNetParams
 		}
