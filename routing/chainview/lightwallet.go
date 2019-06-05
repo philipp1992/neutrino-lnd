@@ -70,6 +70,7 @@ func NewLWfFilteredChainView(chainConn *chain.LightWalletConn) (*LWFilteredChain
 		filterUpdates:   make(chan filterUpdate),
 		filterBlockReqs: make(chan *filterBlockReq),
 		chainConn: chainConn,
+		chainClient: chainConn.NewLightWalletClient(),
 	}
 
 	return chainview, nil
