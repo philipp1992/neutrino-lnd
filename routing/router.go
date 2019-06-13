@@ -616,8 +616,8 @@ func (r *ChannelRouter) syncGraphWithChain() error {
 		}
 
 		numClosed := uint32(len(closedChans))
-		log.Infof("Block %v (height=%v) closed %v channels",
-			nextHash, nextHeight, numClosed)
+		//log.Infof("Block %v (height=%v) closed %v channels",
+		//	nextHash, nextHeight, numClosed)
 
 		numChansClosed += numClosed
 	}

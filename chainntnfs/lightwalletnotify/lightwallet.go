@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"github.com/btcsuite/btcutil/gcs/builder"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -206,7 +207,7 @@ out:
 				go func() {
 					defer b.wg.Done()
 
-					confDetails, _, err := b.historicalConfDetails(
+					confDetails, err := b.historicalConfDetails(
 						msg.ConfRequest,
 						msg.StartHeight, msg.EndHeight,
 					)
@@ -309,52 +310,83 @@ out:
 // script) has already been included in a block in the active chain and, if so,
 // returns details about said block.
 func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequest,
-	startHeight, endHeight uint32) (*chainntnfs.TxConfirmation,
-	chainntnfs.TxConfStatus, error) {
+	startHeight, endHeight uint32) (*chainntnfs.TxConfirmation, error) {
 
-	// If a txid was not provided, then we should dispatch upon seeing the
-	// script on-chain, so we'll short-circuit straight to scanning manually
-	// as there doesn't exist a script index to query.
-	if confRequest.TxID == chainntnfs.ZeroHash {
-		return b.confDetailsManually(
-			confRequest, startHeight, endHeight,
-		)
+	// Starting from the height hint, we'll walk forwards in the chain to
+	// see if this transaction/output script has already been confirmed.
+	for scanHeight := endHeight; scanHeight >= startHeight && scanHeight >0; scanHeight-- {
+		// Ensure we haven't been requested to shut down before
+		// processing the next height.
+		select {
+		case <-b.quit:
+			return nil, chainntnfs.ErrChainNotifierShuttingDown
+		default:
+		}
+
+		// First, we'll fetch the block header for this height so we
+		// can compute the current block hash.
+		blockHash, err := b.chainConn.GetBlockHash(int64(scanHeight))
+		if err != nil {
+			return nil, fmt.Errorf("unable to get header for height=%v: %v",
+				scanHeight, err)
+		}
+
+		filter, err := b.chainConn.GetCFilter(blockHash)
+
+		if err != nil {
+			return nil, fmt.Errorf("unable to retrieve regular filter for "+
+				"height=%v: %v", scanHeight, err)
+		}
+
+		// If the block has no transactions other than the Coinbase
+		// transaction, then the filter may be nil, so we'll continue
+		// forward int that case.
+		if filter == nil {
+			continue
+		}
+
+
+
+		// In the case that the filter exists, we'll attempt to see if
+		// any element in it matches our target public key script.
+		key := builder.DeriveKey(blockHash)
+		match, err := filter.Match(key, confRequest.PkScript.Script())
+		if err != nil {
+			return nil, fmt.Errorf("unable to query filter: %v", err)
+		}
+
+		// If there's no match, then we can continue forward to the
+		// next block.
+		if !match {
+			continue
+		}
+
+		// In the case that we do have a match, we'll fetch the block
+		// from the network so we can find the positional data required
+		// to send the proper response.
+		transactions, err := b.chainConn.GetFilterBlock(blockHash)
+		if err != nil {
+			return nil, fmt.Errorf("unable to get block from network: %v", err)
+		}
+
+		// For every transaction in the block, check which one matches
+		// our request. If we find one that does, we can dispatch its
+		// confirmation details.
+		for i, tx := range transactions {
+			if !confRequest.MatchesTx(tx) {
+				continue
+			}
+
+			return &chainntnfs.TxConfirmation{
+				Tx:          tx,
+				BlockHash:   blockHash,
+				BlockHeight: scanHeight,
+				TxIndex:     uint32(i),
+			}, nil
+		}
 	}
 
-	// Otherwise, we'll dispatch upon seeing a transaction on-chain with the
-	// given hash.
-	//
-	// We'll first attempt to retrieve the transaction using the node's
-	// txindex.
-	txConf, txStatus, err := b.confDetailsFromTxIndex(&confRequest.TxID)
-
-	// We'll then check the status of the transaction lookup returned to
-	// determine whether we should proceed with any fallback methods.
-	switch {
-
-	// We failed querying the index for the transaction, fall back to
-	// scanning manually.
-	case err != nil:
-		chainntnfs.Log.Debugf("Failed getting conf details from "+
-			"index (%v), scanning manually", err)
-		return b.confDetailsManually(confRequest, startHeight, endHeight)
-
-		// The transaction was found within the node's mempool.
-	case txStatus == chainntnfs.TxFoundMempool:
-
-		// The transaction was found within the node's txindex.
-	case txStatus == chainntnfs.TxFoundIndex:
-
-		// The transaction was not found within the node's mempool or txindex.
-	case txStatus == chainntnfs.TxNotFoundIndex:
-
-		// Unexpected txStatus returned.
-	default:
-		return nil, txStatus,
-			fmt.Errorf("Got unexpected txConfStatus: %v", txStatus)
-	}
-
-	return txConf, txStatus, nil
+	return nil, nil
 }
 
 // confDetailsFromTxIndex looks up whether a transaction is already included in
