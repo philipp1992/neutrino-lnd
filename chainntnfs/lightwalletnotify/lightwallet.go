@@ -198,6 +198,46 @@ out:
 			switch msg := registerMsg.(type) {
 			case *chainntnfs.HistoricalConfDispatch:
 				fmt.Printf("HistoricalConfDispatch received")
+				// Look up whether the transaction is already
+				// included in the active chain. We'll do this
+				// in a goroutine to prevent blocking
+				// potentially long rescans.
+				b.wg.Add(1)
+				go func() {
+					defer b.wg.Done()
+
+					confDetails, _, err := b.historicalConfDetails(
+						msg.ConfRequest,
+						msg.StartHeight, msg.EndHeight,
+					)
+					if err != nil {
+						chainntnfs.Log.Errorf("Rescan to "+
+							"determine the conf "+
+							"details of %v within "+
+							"range %d-%d failed: %v",
+							msg.ConfRequest,
+							msg.StartHeight,
+							msg.EndHeight, err)
+						return
+					}
+
+					// If the historical dispatch finished
+					// without error, we will invoke
+					// UpdateConfDetails even if none were
+					// found. This allows the notifier to
+					// begin safely updating the height hint
+					// cache at tip, since any pending
+					// rescans have now completed.
+					err = b.txNotifier.UpdateConfDetails(
+						msg.ConfRequest, confDetails,
+					)
+					if err != nil {
+						chainntnfs.Log.Errorf("Unable "+
+							"to update conf "+
+							"details of %v: %v",
+							msg.ConfRequest, err)
+					}
+				}()
 
 			case *chainntnfs.HistoricalSpendDispatch:
 				fmt.Printf("HistoricalSpendDispatch received")
@@ -533,7 +573,21 @@ func (b *LightWalletNotifier) notifyBlockEpochClient(epochClient *blockEpochRegi
 func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	pkScript []byte, heightHint uint32) (*chainntnfs.SpendEvent, error) {
 
-	return nil, nil
+	spendID := atomic.AddUint64(&b.spendClientCounter, 1)
+	spendRequest, err := chainntnfs.NewSpendRequest(outpoint, pkScript)
+	if err != nil {
+		return nil, err
+	}
+	ntfn := &chainntnfs.SpendNtfn{
+		SpendID:      spendID,
+		SpendRequest: spendRequest,
+		Event: chainntnfs.NewSpendEvent(func() {
+			b.txNotifier.CancelSpend(spendRequest, spendID)
+		}),
+		HeightHint: heightHint,
+	}
+
+	return ntfn.Event, nil
 }
 
 // historicalSpendDetails attempts to manually scan the chain within the given
@@ -560,7 +614,45 @@ func (b *LightWalletNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 	pkScript []byte,
 	numConfs, heightHint uint32) (*chainntnfs.ConfirmationEvent, error) {
 
-	return nil, nil
+	// Construct a notification request for the transaction and send it to
+	// the main event loop.
+	confID := atomic.AddUint64(&b.confClientCounter, 1)
+	confRequest, err := chainntnfs.NewConfRequest(txid, pkScript)
+	if err != nil {
+		return nil, err
+	}
+	ntfn := &chainntnfs.ConfNtfn{
+		ConfID:           confID,
+		ConfRequest:      confRequest,
+		NumConfirmations: numConfs,
+		Event: chainntnfs.NewConfirmationEvent(numConfs, func() {
+			b.txNotifier.CancelConf(confRequest, confID)
+		}),
+		HeightHint: heightHint,
+	}
+
+	chainntnfs.Log.Infof("New confirmation subscription: %v, num_confs=%v",
+		confRequest, numConfs)
+
+	// Register the conf notification with the TxNotifier. A non-nil value
+	// for `dispatch` will be returned if we are required to perform a
+	// manual scan for the confirmation. Otherwise the notifier will begin
+	// watching at tip for the transaction to confirm.
+	dispatch, _, err := b.txNotifier.RegisterConf(ntfn)
+	if err != nil {
+		return nil, err
+	}
+
+	if dispatch == nil {
+		return ntfn.Event, nil
+	}
+
+	select {
+	case b.notificationRegistry <- dispatch:
+		return ntfn.Event, nil
+	case <-b.quit:
+		return nil, chainntnfs.ErrChainNotifierShuttingDown
+	}
 }
 
 // blockEpochRegistration represents a client's intent to receive a

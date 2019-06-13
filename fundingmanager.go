@@ -55,7 +55,7 @@ const (
 
 	// minChanFundingSize is the smallest channel that we'll allow to be
 	// created over the RPC interface.
-	minChanFundingSize = btcutil.Amount(20000)
+	minChanFundingSize = btcutil.Amount(1000) //20000
 
 	// maxBtcFundingAmount is a soft-limit of the maximum channel size
 	// currently accepted on the Bitcoin chain within the Lightning
