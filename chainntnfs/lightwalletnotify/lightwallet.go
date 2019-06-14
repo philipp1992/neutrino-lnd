@@ -345,11 +345,15 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 			continue
 		}
 
+		reversed := *blockHash
 
+		for left, right := 0, len(reversed)-1; left < right; left, right = left+1, right-1 {
+			reversed[left], reversed[right] = reversed[right], reversed[left]
+		}
 
 		// In the case that the filter exists, we'll attempt to see if
 		// any element in it matches our target public key script.
-		key := builder.DeriveKey(blockHash)
+		key := builder.DeriveKey(&reversed)
 		match, err := filter.Match(key, confRequest.PkScript.Script())
 		if err != nil {
 			return nil, fmt.Errorf("unable to query filter: %v", err)
