@@ -122,9 +122,9 @@ func (b *LightWalletNotifier) Start() error {
 	if err := b.chainConn.Start(); err != nil {
 		return err
 	}
-	//if err := b.chainConn.NotifyBlocks(); err != nil {
-	//	return err
-	//}
+	if err := b.chainConn.NotifyBlocks(); err != nil {
+		return err
+	}
 
 	currentHash, currentHeight, err := b.chainConn.GetBestBlock()
 	if err != nil {
@@ -289,8 +289,55 @@ out:
 		case ntfn := <-b.chainConn.Notifications():
 			switch item := ntfn.(type) {
 			case chain.BlockConnected:
-				fmt.Printf("BlockConnected received")
-				Mock(item)
+				blockHeader, err :=
+					b.chainConn.GetBlockHeader(&item.Hash)
+				if err != nil {
+					chainntnfs.Log.Errorf("Unable to fetch "+
+						"block header: %v", err)
+					continue
+				}
+
+				if blockHeader.PrevBlock != *b.bestBlock.Hash {
+					// Handle the case where the notifier
+					// missed some blocks from its chain
+					// backend.
+					chainntnfs.Log.Infof("Missed blocks, " +
+						"attempting to catch up")
+					newBestBlock, missedBlocks, err :=
+						chainntnfs.HandleMissedBlocks(
+							b.chainConn,
+							b.txNotifier,
+							b.bestBlock, item.Height,
+							true,
+						)
+
+					if err != nil {
+						// Set the bestBlock here in case
+						// a catch up partially completed.
+						b.bestBlock = newBestBlock
+						chainntnfs.Log.Error(err)
+						continue
+					}
+
+					for _, block := range missedBlocks {
+						err := b.handleBlockConnected(block)
+						if err != nil {
+							chainntnfs.Log.Error(err)
+							continue out
+						}
+					}
+				}
+
+				newBlock := chainntnfs.BlockEpoch{
+					Height: item.Height,
+					Hash:   &item.Hash,
+				}
+				if err := b.handleBlockConnected(newBlock); err != nil {
+					chainntnfs.Log.Error(err)
+				}
+
+				continue
+
 			case chain.BlockDisconnected:
 				fmt.Printf("BlockDisconnected received")
 
@@ -545,11 +592,16 @@ func (b *LightWalletNotifier) handleBlockConnected(block chainntnfs.BlockEpoch) 
 	// First, we'll fetch the raw block as we'll need to gather all the
 	// transactions to determine whether any are relevant to our registered
 	// clients.
-	rawBlock, err := b.chainConn.GetBlock(block.Hash)
+	filterBlock, err := b.chainConn.GetFilterBlock(block.Hash)
 	if err != nil {
-		return fmt.Errorf("unable to get block: %v", err)
+		return fmt.Errorf("unable to get block transactions: %v", err)
 	}
-	txns := btcutil.NewBlock(rawBlock).Transactions()
+
+	var rawBlock wire.MsgBlock
+
+	rawBlock.Transactions = filterBlock
+
+	txns := btcutil.NewBlock(&rawBlock).Transactions()
 
 	// We'll then extend the txNotifier's height with the information of
 	// this new block, which will handle all of the notification logic for
