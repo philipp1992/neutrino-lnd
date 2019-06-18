@@ -122,27 +122,21 @@ func (b *BtcWallet) GetUtxo(op *wire.OutPoint, pkScript []byte,
 		}, nil
 
 	case *chain.LightWalletClient:
-		txout, err := backend.GetTxOut(&op.Hash, op.Index)
+		txout, err := backend.GetUnspentOutput(&op.Hash, int32(op.Index))
 		if err != nil {
 			return nil, err
 		} else if txout == nil {
 			return nil, ErrOutputSpent
 		}
 
-		pkScript, err := hex.DecodeString(txout.ScriptPubKey.Hex)
+		pkScript, err := hex.DecodeString(txout.ScriptPubKeyHex)
 		if err != nil {
 			return nil, err
 		}
 
-		// Sadly, gettxout returns the output value in BTC instead of
-		// satoshis.
-		amt, err := btcutil.NewAmount(txout.Value)
-		if err != nil {
-			return nil, err
-		}
 
 		return &wire.TxOut{
-			Value:    int64(amt),
+			Value:    txout.Amount,
 			PkScript: pkScript,
 		}, nil
 
