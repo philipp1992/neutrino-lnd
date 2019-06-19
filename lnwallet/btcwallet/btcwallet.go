@@ -4,6 +4,11 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"math"
+	"strings"
+	"sync"
+	"time"
+
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -17,10 +22,6 @@ import (
 	"github.com/btcsuite/btcwallet/walletdb"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
-	"math"
-	"strings"
-	"sync"
-	"time"
 )
 
 const (
@@ -66,8 +67,9 @@ type BtcWallet struct {
 }
 
 // A compile time check to ensure that BtcWallet implements the
-// WalletController interface.
+// WalletController and BlockChainIO interfaces.
 var _ lnwallet.WalletController = (*BtcWallet)(nil)
+var _ lnwallet.BlockChainIO = (*BtcWallet)(nil)
 
 // New returns a new fully initialized instance of BtcWallet given a valid
 // configuration struct.
@@ -328,7 +330,14 @@ func (b *BtcWallet) CreateSimpleTx(outputs []*wire.TxOut,
 		return nil, lnwallet.ErrNoOutputs
 	}
 	for _, output := range outputs {
-		err := txrules.CheckOutput(output, feeSatPerKB)
+		// When checking an output for things like dusty-ness, we'll
+		// use the default mempool relay fee rather than the target
+		// effective fee rate to ensure accuracy. Otherwise, we may
+		// mistakenly mark small-ish, but not quite dust output as
+		// dust.
+		err := txrules.CheckOutput(
+			output, txrules.DefaultRelayFeePerKb,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -376,7 +385,7 @@ func (b *BtcWallet) ListUnspentWitness(minConfs, maxConfs int32) (
 			return nil, err
 		}
 
-		var addressType lnwallet.AddressType
+		addressType := lnwallet.UnknownAddressType
 		if txscript.IsPayToWitnessPubKeyHash(pkScript) {
 			addressType = lnwallet.WitnessPubKey
 		} else if txscript.IsPayToScriptHash(pkScript) {
@@ -510,8 +519,9 @@ func minedTransactionsToDetails(
 
 		var destAddresses []btcutil.Address
 		for _, txOut := range wireTx.TxOut {
-			_, outAddresses, _, err :=
-				txscript.ExtractPkScriptAddrs(txOut.PkScript, chainParams)
+			_, outAddresses, _, err := txscript.ExtractPkScriptAddrs(
+				txOut.PkScript, chainParams,
+			)
 			if err != nil {
 				return nil, err
 			}
@@ -527,6 +537,7 @@ func minedTransactionsToDetails(
 			Timestamp:        block.Timestamp,
 			TotalFees:        int64(tx.Fee),
 			DestAddresses:    destAddresses,
+			RawTx:            tx.Transaction,
 		}
 
 		balanceDelta, err := extractBalanceDelta(tx, wireTx)
@@ -546,6 +557,7 @@ func minedTransactionsToDetails(
 func unminedTransactionsToDetail(
 	summary base.TransactionSummary,
 ) (*lnwallet.TransactionDetail, error) {
+
 	wireTx := &wire.MsgTx{}
 	txReader := bytes.NewReader(summary.Transaction)
 
@@ -557,6 +569,7 @@ func unminedTransactionsToDetail(
 		Hash:      *summary.Hash,
 		TotalFees: int64(summary.Fee),
 		Timestamp: summary.Timestamp,
+		RawTx:     summary.Transaction,
 	}
 
 	balanceDelta, err := extractBalanceDelta(summary, wireTx)
@@ -595,7 +608,9 @@ func (b *BtcWallet) ListTransactionDetails() ([]*lnwallet.TransactionDetail, err
 	// TransactionDetail which re-packages the data returned by the base
 	// wallet.
 	for _, blockPackage := range txns.MinedTransactions {
-		details, err := minedTransactionsToDetails(currentHeight, blockPackage, b.netParams)
+		details, err := minedTransactionsToDetails(
+			currentHeight, blockPackage, b.netParams,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -732,8 +747,8 @@ func (b *BtcWallet) SubscribeTransactions() (lnwallet.TransactionSubscription, e
 	return txClient, nil
 }
 
-// IsSynced returns a boolean indicating if from the PoV of the wallet,
-// it has fully synced to the current best block in the main chain.
+// IsSynced returns a boolean indicating if from the PoV of the wallet, it has
+// fully synced to the current best block in the main chain.
 //
 // This is a part of the WalletController interface.
 func (b *BtcWallet) IsSynced() (bool, int64, error) {

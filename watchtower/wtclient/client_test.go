@@ -369,7 +369,7 @@ type testHarness struct {
 	clientDB  *wtmock.ClientDB
 	clientCfg *wtclient.Config
 	client    wtclient.Client
-	serverDB  *wtdb.MockDB
+	serverDB  *wtmock.TowerDB
 	serverCfg *wtserver.Config
 	server    *wtserver.Server
 	net       *mockNet
@@ -379,10 +379,11 @@ type testHarness struct {
 }
 
 type harnessCfg struct {
-	localBalance    lnwire.MilliSatoshi
-	remoteBalance   lnwire.MilliSatoshi
-	policy          wtpolicy.Policy
-	noRegisterChan0 bool
+	localBalance       lnwire.MilliSatoshi
+	remoteBalance      lnwire.MilliSatoshi
+	policy             wtpolicy.Policy
+	noRegisterChan0    bool
+	noAckCreateSession bool
 }
 
 func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
@@ -405,7 +406,7 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 	}
 
 	const timeout = 200 * time.Millisecond
-	serverDB := wtdb.NewMockDB()
+	serverDB := wtmock.NewTowerDB()
 
 	serverCfg := &wtserver.Config{
 		DB:           serverDB,
@@ -414,6 +415,7 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 		NewAddress: func() (btcutil.Address, error) {
 			return addr, nil
 		},
+		NoAckCreateSession: cfg.noAckCreateSession,
 	}
 
 	server, err := wtserver.New(serverCfg)
@@ -430,10 +432,11 @@ func newHarness(t *testing.T, cfg harnessCfg) *testHarness {
 		Dial: func(string, string) (net.Conn, error) {
 			return nil, nil
 		},
-		DB:           clientDB,
-		AuthDial:     mockNet.AuthDial,
-		PrivateTower: towerAddr,
-		Policy:       cfg.policy,
+		DB:            clientDB,
+		AuthDial:      mockNet.AuthDial,
+		SecretKeyRing: wtmock.NewSecretKeyRing(),
+		PrivateTower:  towerAddr,
+		Policy:        cfg.policy,
 		NewAddress: func() ([]byte, error) {
 			return addrScript, nil
 		},
@@ -573,17 +576,17 @@ func (h *testHarness) registerChannel(id uint64) {
 // advanceChannelN calls advanceState on the channel identified by id the number
 // of provided times and returns the breach hints corresponding to the new
 // states.
-func (h *testHarness) advanceChannelN(id uint64, n int) []wtdb.BreachHint {
+func (h *testHarness) advanceChannelN(id uint64, n int) []blob.BreachHint {
 	h.t.Helper()
 
 	channel := h.channel(id)
 
-	var hints []wtdb.BreachHint
+	var hints []blob.BreachHint
 	for i := uint64(0); i < uint64(n); i++ {
 		channel.advanceState(h.t)
 		commitTx, _ := h.channel(id).getState(i)
 		breachTxID := commitTx.TxHash()
-		hints = append(hints, wtdb.NewBreachHintFromHash(&breachTxID))
+		hints = append(hints, blob.NewBreachHintFromHash(&breachTxID))
 	}
 
 	return hints
@@ -602,6 +605,8 @@ func (h *testHarness) backupStates(id, from, to uint64, expErr error) {
 // backupStates instructs the channel identified by id to send a backup for
 // state i.
 func (h *testHarness) backupState(id, i uint64, expErr error) {
+	h.t.Helper()
+
 	_, retribution := h.channel(id).getState(i)
 
 	chanID := chanIDFromInt(id)
@@ -616,18 +621,18 @@ func (h *testHarness) backupState(id, i uint64, expErr error) {
 // party for each state in from-to times and returns the breach hints for states
 // [from, to).
 func (h *testHarness) sendPayments(id, from, to uint64,
-	amt lnwire.MilliSatoshi) []wtdb.BreachHint {
+	amt lnwire.MilliSatoshi) []blob.BreachHint {
 
 	h.t.Helper()
 
 	channel := h.channel(id)
 
-	var hints []wtdb.BreachHint
+	var hints []blob.BreachHint
 	for i := from; i < to; i++ {
 		h.channel(id).sendPayment(h.t, amt)
 		commitTx, _ := channel.getState(i)
 		breachTxID := commitTx.TxHash()
-		hints = append(hints, wtdb.NewBreachHintFromHash(&breachTxID))
+		hints = append(hints, blob.NewBreachHintFromHash(&breachTxID))
 	}
 
 	return hints
@@ -637,18 +642,18 @@ func (h *testHarness) sendPayments(id, from, to uint64,
 // remote party for each state in from-to times and returns the breach hints for
 // states [from, to).
 func (h *testHarness) recvPayments(id, from, to uint64,
-	amt lnwire.MilliSatoshi) []wtdb.BreachHint {
+	amt lnwire.MilliSatoshi) []blob.BreachHint {
 
 	h.t.Helper()
 
 	channel := h.channel(id)
 
-	var hints []wtdb.BreachHint
+	var hints []blob.BreachHint
 	for i := from; i < to; i++ {
 		channel.receivePayment(h.t, amt)
 		commitTx, _ := channel.getState(i)
 		breachTxID := commitTx.TxHash()
-		hints = append(hints, wtdb.NewBreachHintFromHash(&breachTxID))
+		hints = append(hints, blob.NewBreachHintFromHash(&breachTxID))
 	}
 
 	return hints
@@ -657,7 +662,7 @@ func (h *testHarness) recvPayments(id, from, to uint64,
 // waitServerUpdates blocks until the breach hints provided all appear in the
 // watchtower's database or the timeout expires. This is used to test that the
 // client in fact sends the updates to the server, even if it is offline.
-func (h *testHarness) waitServerUpdates(hints []wtdb.BreachHint,
+func (h *testHarness) waitServerUpdates(hints []blob.BreachHint,
 	timeout time.Duration) {
 
 	h.t.Helper()
@@ -666,7 +671,7 @@ func (h *testHarness) waitServerUpdates(hints []wtdb.BreachHint,
 	// assert that no updates appear.
 	wantUpdates := len(hints) > 0
 
-	hintSet := make(map[wtdb.BreachHint]struct{})
+	hintSet := make(map[blob.BreachHint]struct{})
 	for _, hint := range hints {
 		hintSet[hint] = struct{}{}
 	}
@@ -729,6 +734,36 @@ func (h *testHarness) waitServerUpdates(hints []wtdb.BreachHint,
 	}
 }
 
+// assertUpdatesForPolicy queries the server db for matches using the provided
+// breach hints, then asserts that each match has a session with the expected
+// policy.
+func (h *testHarness) assertUpdatesForPolicy(hints []blob.BreachHint,
+	expPolicy wtpolicy.Policy) {
+
+	// Query for matches on the provided hints.
+	matches, err := h.serverDB.QueryMatches(hints)
+	if err != nil {
+		h.t.Fatalf("unable to query for matches: %v", err)
+	}
+
+	// Assert that the number of matches is exactly the number of provided
+	// hints.
+	if len(matches) != len(hints) {
+		h.t.Fatalf("expected: %d matches, got: %d", len(hints),
+			len(matches))
+	}
+
+	// Assert that all of the matches correspond to a session with the
+	// expected policy.
+	for _, match := range matches {
+		matchPolicy := match.SessionInfo.Policy
+		if expPolicy != matchPolicy {
+			h.t.Fatalf("expected session to have policy: %v, "+
+				"got: %v", expPolicy, matchPolicy)
+		}
+	}
+}
+
 const (
 	localBalance  = lnwire.MilliSatoshi(100000000)
 	remoteBalance = lnwire.MilliSatoshi(200000000)
@@ -750,9 +785,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   20000,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 20000,
 			},
 			noRegisterChan0: true,
 		},
@@ -782,9 +819,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   20000,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 20000,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -815,9 +854,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   5,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 5,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -849,9 +890,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   20000,
-				SweepFeeRate: 1000000, // high sweep fee creates dust
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: 1000000, // high sweep fee creates dust
+				},
+				MaxUpdates: 20000,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -878,9 +921,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   20000,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 20000,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -958,9 +1003,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   5,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 5,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -1014,9 +1061,11 @@ var clientTests = []clientTest{
 			localBalance:  10000001, // ensure (% amt != 0)
 			remoteBalance: 20000001, // ensure (% amt != 0)
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   1000,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 1000,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -1056,9 +1105,11 @@ var clientTests = []clientTest{
 			localBalance:  localBalance,
 			remoteBalance: remoteBalance,
 			policy: wtpolicy.Policy{
-				BlobType:     blob.TypeDefault,
-				MaxUpdates:   5,
-				SweepFeeRate: 1,
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 5,
 			},
 		},
 		fn: func(h *testHarness) {
@@ -1078,7 +1129,7 @@ var clientTests = []clientTest{
 
 			// Generate the retributions for all 10 channels and
 			// collect the breach hints.
-			var hints []wtdb.BreachHint
+			var hints []blob.BreachHint
 			for id := uint64(0); id < 10; id++ {
 				chanHints := h.advanceChannelN(id, numUpdates)
 				hints = append(hints, chanHints...)
@@ -1096,6 +1147,235 @@ var clientTests = []clientTest{
 			// Wait for all of the updates to be populated in the
 			// server's database.
 			h.waitServerUpdates(hints, 10*time.Second)
+		},
+	},
+	{
+		name: "create session no ack",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 5,
+			},
+			noAckCreateSession: true,
+		},
+		fn: func(h *testHarness) {
+			const (
+				chanID     = 0
+				numUpdates = 3
+			)
+
+			// Generate the retributions that will be backed up.
+			hints := h.advanceChannelN(chanID, numUpdates)
+
+			// Now, queue the retributions for backup.
+			h.backupStates(chanID, 0, numUpdates, nil)
+
+			// Since the client is unable to create a session, the
+			// server should have no updates.
+			h.waitServerUpdates(nil, time.Second)
+
+			// Force quit the client since it has queued backups.
+			h.client.ForceQuit()
+
+			// Restart the server and allow it to ack session
+			// creation.
+			h.server.Stop()
+			h.serverCfg.NoAckCreateSession = false
+			h.startServer()
+			defer h.server.Stop()
+
+			// Restart the client with the same policy, which will
+			// immediately try to overwrite the old session with an
+			// identical one.
+			h.startClient()
+			defer h.client.ForceQuit()
+
+			// Now, queue the retributions for backup.
+			h.backupStates(chanID, 0, numUpdates, nil)
+
+			// Wait for all of the updates to be populated in the
+			// server's database.
+			h.waitServerUpdates(hints, 5*time.Second)
+
+			// Assert that the server has updates for the clients
+			// most recent policy.
+			h.assertUpdatesForPolicy(hints, h.clientCfg.Policy)
+		},
+	},
+	{
+		name: "create session no ack change policy",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 5,
+			},
+			noAckCreateSession: true,
+		},
+		fn: func(h *testHarness) {
+			const (
+				chanID     = 0
+				numUpdates = 3
+			)
+
+			// Generate the retributions that will be backed up.
+			hints := h.advanceChannelN(chanID, numUpdates)
+
+			// Now, queue the retributions for backup.
+			h.backupStates(chanID, 0, numUpdates, nil)
+
+			// Since the client is unable to create a session, the
+			// server should have no updates.
+			h.waitServerUpdates(nil, time.Second)
+
+			// Force quit the client since it has queued backups.
+			h.client.ForceQuit()
+
+			// Restart the server and allow it to ack session
+			// creation.
+			h.server.Stop()
+			h.serverCfg.NoAckCreateSession = false
+			h.startServer()
+			defer h.server.Stop()
+
+			// Restart the client with a new policy, which will
+			// immediately try to overwrite the prior session with
+			// the old policy.
+			h.clientCfg.Policy.SweepFeeRate *= 2
+			h.startClient()
+			defer h.client.ForceQuit()
+
+			// Now, queue the retributions for backup.
+			h.backupStates(chanID, 0, numUpdates, nil)
+
+			// Wait for all of the updates to be populated in the
+			// server's database.
+			h.waitServerUpdates(hints, 5*time.Second)
+
+			// Assert that the server has updates for the clients
+			// most recent policy.
+			h.assertUpdatesForPolicy(hints, h.clientCfg.Policy)
+		},
+	},
+	{
+		// Asserts that the client will not request a new session if
+		// already has an existing session with the same TxPolicy. This
+		// permits the client to continue using policies that differ in
+		// operational parameters, but don't manifest in different
+		// justice transactions.
+		name: "create session change policy same txpolicy",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 10,
+			},
+		},
+		fn: func(h *testHarness) {
+			const (
+				chanID     = 0
+				numUpdates = 6
+			)
+
+			// Generate the retributions that will be backed up.
+			hints := h.advanceChannelN(chanID, numUpdates)
+
+			// Now, queue the first half of the retributions.
+			h.backupStates(chanID, 0, numUpdates/2, nil)
+
+			// Wait for the server to collect the first half.
+			h.waitServerUpdates(hints[:numUpdates/2], time.Second)
+
+			// Stop the client, which should have no more backups.
+			h.client.Stop()
+
+			// Record the policy that the first half was stored
+			// under. We'll expect the second half to also be stored
+			// under the original policy, since we are only adjusting
+			// the MaxUpdates. The client should detect that the
+			// two policies have equivalent TxPolicies and continue
+			// using the first.
+			expPolicy := h.clientCfg.Policy
+
+			// Restart the client with a new policy.
+			h.clientCfg.Policy.MaxUpdates = 20
+			h.startClient()
+			defer h.client.ForceQuit()
+
+			// Now, queue the second half of the retributions.
+			h.backupStates(chanID, numUpdates/2, numUpdates, nil)
+
+			// Wait for all of the updates to be populated in the
+			// server's database.
+			h.waitServerUpdates(hints, 5*time.Second)
+
+			// Assert that the server has updates for the client's
+			// original policy.
+			h.assertUpdatesForPolicy(hints, expPolicy)
+		},
+	},
+	{
+		// Asserts that the client will deduplicate backups presented by
+		// a channel both in memory and after a restart. The client
+		// should only accept backups with a commit height greater than
+		// any processed already processed for a given policy.
+		name: "dedup backups",
+		cfg: harnessCfg{
+			localBalance:  localBalance,
+			remoteBalance: remoteBalance,
+			policy: wtpolicy.Policy{
+				TxPolicy: wtpolicy.TxPolicy{
+					BlobType:     blob.TypeAltruistCommit,
+					SweepFeeRate: wtpolicy.DefaultSweepFeeRate,
+				},
+				MaxUpdates: 5,
+			},
+		},
+		fn: func(h *testHarness) {
+			const (
+				numUpdates = 10
+				chanID     = 0
+			)
+
+			// Generate the retributions that will be backed up.
+			hints := h.advanceChannelN(chanID, numUpdates)
+
+			// Queue the first half of the retributions twice, the
+			// second batch should be entirely deduped by the
+			// client's in-memory tracking.
+			h.backupStates(chanID, 0, numUpdates/2, nil)
+			h.backupStates(chanID, 0, numUpdates/2, nil)
+
+			// Wait for the first half of the updates to be
+			// populated in the server's database.
+			h.waitServerUpdates(hints[:len(hints)/2], 5*time.Second)
+
+			// Restart the client, so we can ensure the deduping is
+			// maintained across restarts.
+			h.client.Stop()
+			h.startClient()
+			defer h.client.ForceQuit()
+
+			// Try to back up the full range of retributions. Only
+			// the second half should actually be sent.
+			h.backupStates(chanID, 0, numUpdates, nil)
+
+			// Wait for all of the updates to be populated in the
+			// server's database.
+			h.waitServerUpdates(hints, 5*time.Second)
 		},
 	},
 }

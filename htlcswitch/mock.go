@@ -163,7 +163,10 @@ func initSwitchWithDB(startingHeight uint32, db *channeldb.DB) (*Switch, error) 
 		}
 	}
 
+	priv, _ := btcec.NewPrivateKey(btcec.S256())
+	pubkey := priv.PubKey()
 	cfg := Config{
+		SelfKey:        pubkey,
 		DB:             db,
 		SwitchPackager: channeldb.NewSwitchPackager(),
 		FwdingLog: &mockForwardingLog{
@@ -368,7 +371,10 @@ func (o *mockObfuscator) EncryptFirstHop(failure lnwire.FailureMessage) (
 
 func (o *mockObfuscator) IntermediateEncrypt(reason lnwire.OpaqueReason) lnwire.OpaqueReason {
 	return reason
+}
 
+func (o *mockObfuscator) EncryptMalformedError(reason lnwire.OpaqueReason) lnwire.OpaqueReason {
+	return reason
 }
 
 // mockDeobfuscator mock implementation of the failure deobfuscator which
@@ -387,7 +393,11 @@ func (o *mockDeobfuscator) DecryptError(reason lnwire.OpaqueReason) (*Forwarding
 		return nil, err
 	}
 
+	priv, _ := btcec.NewPrivateKey(btcec.S256())
+	pubkey := priv.PubKey()
+
 	return &ForwardingError{
+		ErrorSource:    pubkey,
 		FailureMessage: failure,
 	}, nil
 }
@@ -400,6 +410,8 @@ type mockIteratorDecoder struct {
 	mu sync.RWMutex
 
 	responses map[[32]byte][]DecodeHopIteratorResponse
+
+	decodeFail bool
 }
 
 func newMockIteratorDecoder() *mockIteratorDecoder {
@@ -450,6 +462,10 @@ func (p *mockIteratorDecoder) DecodeHopIterators(id []byte,
 		iterator, failcode := p.DecodeHopIterator(
 			req.OnionReader, req.RHash, req.IncomingCltv,
 		)
+
+		if p.decodeFail {
+			failcode = lnwire.CodeTemporaryChannelFailure
+		}
 
 		resp := DecodeHopIteratorResponse{
 			HopIterator: iterator,
@@ -612,6 +628,8 @@ type mockChannelLink struct {
 	eligible bool
 
 	htlcID uint64
+
+	htlcSatifiesPolicyLocalResult lnwire.FailureMessage
 }
 
 // completeCircuit is a helper method for adding the finalized payment circuit
@@ -675,6 +693,13 @@ func (f *mockChannelLink) HtlcSatifiesPolicy([32]byte, lnwire.MilliSatoshi,
 	return nil
 }
 
+func (f *mockChannelLink) HtlcSatifiesPolicyLocal(payHash [32]byte,
+	amt lnwire.MilliSatoshi, timeout uint32,
+	heightNow uint32) lnwire.FailureMessage {
+
+	return f.htlcSatifiesPolicyLocalResult
+}
+
 func (f *mockChannelLink) Stats() (uint64, lnwire.MilliSatoshi, lnwire.MilliSatoshi) {
 	return 0, 0, 0
 }
@@ -728,7 +753,7 @@ func newDB() (*channeldb.DB, func(), error) {
 	return cdb, cleanUp, nil
 }
 
-const testInvoiceCltvExpiry = 4
+const testInvoiceCltvExpiry = 6
 
 type mockInvoiceRegistry struct {
 	settleChan chan lntypes.Hash
@@ -748,7 +773,9 @@ func newMockRegistry(minDelta uint32) *mockInvoiceRegistry {
 		return testInvoiceCltvExpiry, nil
 	}
 
-	registry := invoices.NewRegistry(cdb, decodeExpiry)
+	finalCltvRejectDelta := int32(5)
+
+	registry := invoices.NewRegistry(cdb, decodeExpiry, finalCltvRejectDelta)
 	registry.Start()
 
 	return &mockInvoiceRegistry{
@@ -766,10 +793,12 @@ func (i *mockInvoiceRegistry) SettleHodlInvoice(preimage lntypes.Preimage) error
 }
 
 func (i *mockInvoiceRegistry) NotifyExitHopHtlc(rhash lntypes.Hash,
-	amt lnwire.MilliSatoshi, hodlChan chan<- interface{}) (
-	*invoices.HodlEvent, error) {
+	amt lnwire.MilliSatoshi, expiry uint32, currentHeight int32,
+	hodlChan chan<- interface{}) (*invoices.HodlEvent, error) {
 
-	event, err := i.registry.NotifyExitHopHtlc(rhash, amt, hodlChan)
+	event, err := i.registry.NotifyExitHopHtlc(
+		rhash, amt, expiry, currentHeight, hodlChan,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -886,4 +915,59 @@ func (m *mockNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint, _ []byte,
 	return &chainntnfs.SpendEvent{
 		Spend: make(chan *chainntnfs.SpendDetail),
 	}, nil
+}
+
+type mockCircuitMap struct {
+	lookup chan *PaymentCircuit
+}
+
+var _ CircuitMap = (*mockCircuitMap)(nil)
+
+func (m *mockCircuitMap) OpenCircuits(...Keystone) error {
+	return nil
+}
+
+func (m *mockCircuitMap) TrimOpenCircuits(chanID lnwire.ShortChannelID,
+	start uint64) error {
+	return nil
+}
+
+func (m *mockCircuitMap) DeleteCircuits(inKeys ...CircuitKey) error {
+	return nil
+}
+
+func (m *mockCircuitMap) CommitCircuits(
+	circuit ...*PaymentCircuit) (*CircuitFwdActions, error) {
+
+	return nil, nil
+}
+
+func (m *mockCircuitMap) CloseCircuit(outKey CircuitKey) (*PaymentCircuit,
+	error) {
+	return nil, nil
+}
+
+func (m *mockCircuitMap) FailCircuit(inKey CircuitKey) (*PaymentCircuit,
+	error) {
+	return nil, nil
+}
+
+func (m *mockCircuitMap) LookupCircuit(inKey CircuitKey) *PaymentCircuit {
+	return <-m.lookup
+}
+
+func (m *mockCircuitMap) LookupOpenCircuit(outKey CircuitKey) *PaymentCircuit {
+	return nil
+}
+
+func (m *mockCircuitMap) LookupByPaymentHash(hash [32]byte) []*PaymentCircuit {
+	return nil
+}
+
+func (m *mockCircuitMap) NumPending() int {
+	return 0
+}
+
+func (m *mockCircuitMap) NumOpen() int {
+	return 0
 }

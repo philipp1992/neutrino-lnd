@@ -6,6 +6,7 @@ import (
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntypes"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 )
 
@@ -24,6 +25,7 @@ type InvoiceDatabase interface {
 	// htlc should be resolved. If the htlc cannot be resolved immediately,
 	// the resolution is sent on the passed in hodlChan later.
 	NotifyExitHopHtlc(payHash lntypes.Hash, paidAmount lnwire.MilliSatoshi,
+		expiry uint32, currentHeight int32,
 		hodlChan chan<- interface{}) (*invoices.HodlEvent, error)
 
 	// CancelInvoice attempts to cancel the invoice corresponding to the
@@ -107,6 +109,14 @@ type ChannelLink interface {
 		incomingTimeout, outgoingTimeout uint32,
 		heightNow uint32) lnwire.FailureMessage
 
+	// HtlcSatifiesPolicyLocal should return a nil error if the passed HTLC
+	// details satisfy the current channel policy.  Otherwise, a valid
+	// protocol failure message should be returned in order to signal the
+	// violation. This call is intended to be used for locally initiated
+	// payments for which there is no corresponding incoming htlc.
+	HtlcSatifiesPolicyLocal(payHash [32]byte, amt lnwire.MilliSatoshi,
+		timeout uint32, heightNow uint32) lnwire.FailureMessage
+
 	// Bandwidth returns the amount of milli-satoshis which current link
 	// might pass through channel link. The value returned from this method
 	// represents the up to date available flow through the channel. This
@@ -149,4 +159,21 @@ type ForwardingLog interface {
 	// sub-systems can then query the contents of the log for analysis,
 	// visualizations, etc.
 	AddForwardingEvents([]channeldb.ForwardingEvent) error
+}
+
+// TowerClient is the primary interface used by the daemon to backup pre-signed
+// justice transactions to watchtowers.
+type TowerClient interface {
+	// RegisterChannel persistently initializes any channel-dependent
+	// parameters within the client. This should be called during link
+	// startup to ensure that the client is able to support the link during
+	// operation.
+	RegisterChannel(lnwire.ChannelID) error
+
+	// BackupState initiates a request to back up a particular revoked
+	// state. If the method returns nil, the backup is guaranteed to be
+	// successful unless the tower is unavailable and client is force quit,
+	// or the justice transaction would create dust outputs when trying to
+	// abide by the negotiated policy.
+	BackupState(*lnwire.ChannelID, *lnwallet.BreachRetribution) error
 }

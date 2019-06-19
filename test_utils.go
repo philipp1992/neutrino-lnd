@@ -1,4 +1,4 @@
-package main
+package lnd
 
 import (
 	"bytes"
@@ -303,7 +303,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 
 	alicePool := lnwallet.NewSigPool(1, aliceSigner)
 	channelAlice, err := lnwallet.NewLightningChannel(
-		aliceSigner, nil, aliceChannelState, alicePool,
+		aliceSigner, aliceChannelState, alicePool,
 	)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -312,7 +312,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 
 	bobPool := lnwallet.NewSigPool(1, bobSigner)
 	channelBob, err := lnwallet.NewLightningChannel(
-		bobSigner, nil, bobChannelState, bobPool,
+		bobSigner, bobChannelState, bobPool,
 	)
 	if err != nil {
 		return nil, nil, nil, nil, err

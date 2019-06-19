@@ -15,11 +15,6 @@ import (
 	"sync"
 	"time"
 
-	"golang.org/x/net/context"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-	macaroon "gopkg.in/macaroon.v2"
-
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -27,7 +22,14 @@ import (
 	"github.com/go-errors/errors"
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/macaroons"
+	"golang.org/x/net/context"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	macaroon "gopkg.in/macaroon.v2"
 )
 
 var (
@@ -98,9 +100,14 @@ type BackendConfig interface {
 	// for using this node as a chain backend.
 	GenArgs() []string
 
-	// P2PAddr returns the address of this node to be used when connection
-	// over the Bitcoin P2P network.
-	P2PAddr() string
+	// ConnectMiner is called to establish a connection to the test miner.
+	ConnectMiner() error
+
+	// DisconnectMiner is called to bitconneeeect the miner.
+	DisconnectMiner() error
+
+	// Name returns the name of the backend type.
+	Name() string
 }
 
 type nodeConfig struct {
@@ -240,11 +247,19 @@ type HarnessNode struct {
 	lnrpc.LightningClient
 
 	lnrpc.WalletUnlockerClient
+
+	invoicesrpc.InvoicesClient
+
+	// RouterClient and WalletKitClient cannot be embedded, because a name
+	// collision would occur with LightningClient.
+	RouterClient    routerrpc.RouterClient
+	WalletKitClient walletrpc.WalletKitClient
 }
 
 // Assert *HarnessNode implements the lnrpc.LightningClient interface.
 var _ lnrpc.LightningClient = (*HarnessNode)(nil)
 var _ lnrpc.WalletUnlockerClient = (*HarnessNode)(nil)
+var _ invoicesrpc.InvoicesClient = (*HarnessNode)(nil)
 
 // newNode creates a new test lightning node instance from the passed config.
 func newNode(cfg nodeConfig) (*HarnessNode, error) {
@@ -290,6 +305,16 @@ func (hn *HarnessNode) Name() string {
 	return hn.cfg.Name
 }
 
+// TLSCertStr returns the path where the TLS certificate is stored.
+func (hn *HarnessNode) TLSCertStr() string {
+	return hn.cfg.TLSCertPath
+}
+
+// TLSKeyStr returns the path where the TLS key is stored.
+func (hn *HarnessNode) TLSKeyStr() string {
+	return hn.cfg.TLSKeyPath
+}
+
 // ChanBackupPath returns the fielpath to the on-disk channels.backup file for
 // this node.
 func (hn *HarnessNode) ChanBackupPath() string {
@@ -307,7 +332,7 @@ func (hn *HarnessNode) start(lndError chan<- error) error {
 
 	args := hn.cfg.genArgs()
 	args = append(args, fmt.Sprintf("--profile=%d", 9000+hn.NodeID))
-	hn.cmd = exec.Command("./lnd-itest", args...)
+	hn.cmd = exec.Command("../../lnd-itest", args...)
 
 	// Redirect stderr output to buffer
 	var errb bytes.Buffer
@@ -487,9 +512,49 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	// Construct the LightningClient that will allow us to use the
 	// HarnessNode directly for normal rpc operations.
 	hn.LightningClient = lnrpc.NewLightningClient(conn)
+	hn.InvoicesClient = invoicesrpc.NewInvoicesClient(conn)
+	hn.RouterClient = routerrpc.NewRouterClient(conn)
+	hn.WalletKitClient = walletrpc.NewWalletKitClient(conn)
 
 	// Set the harness node's pubkey to what the node claims in GetInfo.
 	err := hn.FetchNodeInfo()
+	if err != nil {
+		return err
+	}
+
+	// Due to a race condition between the ChannelRouter starting and us
+	// making the subscription request, it's possible for our graph
+	// subscription to fail. To ensure we don't start listening for updates
+	// until then, we'll create a dummy subscription to ensure we can do so
+	// successfully before proceeding. We use a dummy subscription in order
+	// to not consume an update from the real one.
+	err = WaitNoError(func() error {
+		req := &lnrpc.GraphTopologySubscription{}
+		ctx, cancelFunc := context.WithCancel(context.Background())
+		topologyClient, err := hn.SubscribeChannelGraph(ctx, req)
+		if err != nil {
+			return err
+		}
+
+		// We'll wait to receive an error back within a one second
+		// timeout. This is needed since creating the client's stream is
+		// independent of the graph subscription being created. The
+		// stream is closed from the server's side upon an error.
+		errChan := make(chan error, 1)
+		go func() {
+			if _, err := topologyClient.Recv(); err != nil {
+				errChan <- err
+			}
+		}()
+
+		select {
+		case err = <-errChan:
+		case <-time.After(time.Second):
+		}
+
+		cancelFunc()
+		return err
+	}, DefaultTimeout)
 	if err != nil {
 		return err
 	}

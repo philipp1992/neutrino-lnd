@@ -92,17 +92,17 @@ btcd:
 
 build:
 	@$(call print, "Building debug lnd and lncli.")
-	$(GOBUILD) -tags="$(DEV_TAGS)" -o lnd-debug $(LDFLAGS) $(PKG)
+	$(GOBUILD) -tags="$(DEV_TAGS)" -o lnd-debug $(LDFLAGS) $(PKG)/cmd/lnd
 	$(GOBUILD) -tags="$(DEV_TAGS)" -o lncli-debug $(LDFLAGS) $(PKG)/cmd/lncli
 
 build-itest:
 	@$(call print, "Building itest lnd and lncli.")
-	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lnd-itest $(LDFLAGS) $(PKG)
+	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lnd-itest $(LDFLAGS) $(PKG)/cmd/lnd
 	$(GOBUILD) -tags="$(ITEST_TAGS)" -o lncli-itest $(LDFLAGS) $(PKG)/cmd/lncli
 
 install:
 	@$(call print, "Installing lnd and lncli.")
-	$(GOINSTALL) -tags="${tags}" $(LDFLAGS) $(PKG)
+	$(GOINSTALL) -tags="${tags}" $(LDFLAGS) $(PKG)/cmd/lnd
 	$(GOINSTALL) -tags="${tags}" $(LDFLAGS) $(PKG)/cmd/lncli
 
 scratch: build
@@ -115,7 +115,7 @@ scratch: build
 check: unit itest
 
 itest-only:
-	@$(call print, "Running integration tests.")
+	@$(call print, "Running integration tests with ${backend} backend.")
 	$(ITEST)
 
 itest: btcd build-itest itest-only
@@ -126,7 +126,8 @@ unit: btcd
 
 unit-cover: $(GOACC_BIN)
 	@$(call print, "Running unit coverage tests.")
-	$(GOACC_BIN) $$(go list ./... | grep -v lnrpc) -- -test.tags="$(DEV_TAGS) $(LOG_TAGS)"
+	$(GOACC_BIN) $(COVER_PKG) -- -test.tags="$(DEV_TAGS) $(LOG_TAGS)"
+
 
 unit-race:
 	@$(call print, "Running unit race tests.")
@@ -148,7 +149,7 @@ travis-itest: lint itest
 # =============
 
 flakehunter: build-itest
-	@$(call print, "Flake hunting integration tests.")
+	@$(call print, "Flake hunting ${backend} integration tests.")
 	while [ $$? -eq 0 ]; do $(ITEST); done
 
 flake-unit:

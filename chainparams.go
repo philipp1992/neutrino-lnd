@@ -1,4 +1,4 @@
-package main
+package lnd
 
 import (
 	"github.com/btcsuite/btcd/chaincfg"
@@ -92,9 +92,10 @@ var litecoinMainNetParams = litecoinNetParams{
 	CoinType: keychain.CoinTypeLitecoin,
 }
 
-// regTestNetParams contains parameters specific to a local regtest network.
-var regTestNetParams = bitcoinNetParams{
-	Params:   &bitcoinCfg.RegressionNetParams,
+// litecoinRegTestNetParams contains parameters specific to a local litecoin
+// regtest network.
+var litecoinRegTestNetParams = litecoinNetParams{
+	Params:   &litecoinCfg.RegressionNetParams,
 	rpcPort:  "18334",
 	CoinType: keychain.CoinTypeTestnet,
 }
@@ -120,6 +121,14 @@ var xsnRegTestNetParams = xsncoinNetParams{
 	Params:   &xsncoinCfg.RegressionNetParams,
 	rpcPort:  "18334",
 	CoinType: keychain.CoinTypeStakenet,
+}
+
+// bitcoinRegTestNetParams contains parameters specific to a local bitcoin
+// regtest network.
+var bitcoinRegTestNetParams = bitcoinNetParams{
+	Params:   &bitcoinCfg.RegressionNetParams,
+	rpcPort:  "18334",
+	CoinType: keychain.CoinTypeTestnet,
 }
 
 // applyLitecoinParams applies the relevant chain configuration parameters that

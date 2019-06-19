@@ -21,6 +21,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/multimutex"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -131,7 +132,7 @@ type Config struct {
 	// that the daemon is connected to. If supplied, the exclude parameter
 	// indicates that the target peer should be excluded from the
 	// broadcast.
-	Broadcast func(skips map[routing.Vertex]struct{},
+	Broadcast func(skips map[route.Vertex]struct{},
 		msg ...lnwire.Message) error
 
 	// NotifyWhenOnline is a function that allows the gossiper to be
@@ -139,9 +140,7 @@ type Config struct {
 	// retry sending a peer message.
 	//
 	// NOTE: The peerChan channel must be buffered.
-	//
-	// TODO(wilmer): use [33]byte to avoid unnecessary serializations.
-	NotifyWhenOnline func(peer *btcec.PublicKey, peerChan chan<- lnpeer.Peer)
+	NotifyWhenOnline func(peerPubKey [33]byte, peerChan chan<- lnpeer.Peer)
 
 	// NotifyWhenOffline is a function that allows the gossiper to be
 	// notified when a certain peer disconnects, allowing it to request a
@@ -204,6 +203,14 @@ type Config struct {
 	// activeSyncer due to the current one not completing its state machine
 	// within the timeout.
 	ActiveSyncerTimeoutTicker ticker.Ticker
+
+	// MinimumBatchSize is minimum size of a sub batch of announcement
+	// messages.
+	MinimumBatchSize int
+
+	// SubBatchDelay is the delay between sending sub batches of
+	// gossip messages.
+	SubBatchDelay time.Duration
 }
 
 // AuthenticatedGossiper is a subsystem which is responsible for receiving
@@ -306,12 +313,11 @@ func New(cfg Config, selfKey *btcec.PublicKey) *AuthenticatedGossiper {
 		channelMtx:              multimutex.NewMutex(),
 		recentRejects:           make(map[uint64]struct{}),
 		syncMgr: newSyncManager(&SyncManagerCfg{
-			ChainHash:                 cfg.ChainHash,
-			ChanSeries:                cfg.ChanSeries,
-			RotateTicker:              cfg.RotateTicker,
-			HistoricalSyncTicker:      cfg.HistoricalSyncTicker,
-			ActiveSyncerTimeoutTicker: cfg.ActiveSyncerTimeoutTicker,
-			NumActiveSyncers:          cfg.NumActiveSyncers,
+			ChainHash:            cfg.ChainHash,
+			ChanSeries:           cfg.ChanSeries,
+			RotateTicker:         cfg.RotateTicker,
+			HistoricalSyncTicker: cfg.HistoricalSyncTicker,
+			NumActiveSyncers:     cfg.NumActiveSyncers,
 		}),
 	}
 
@@ -343,7 +349,7 @@ func (d *AuthenticatedGossiper) SynchronizeNode(syncPeer lnpeer.Peer) error {
 	// We'll use this map to ensure we don't send the same node
 	// announcement more than one time as one node may have many channel
 	// anns we'll need to send.
-	nodePubsSent := make(map[routing.Vertex]struct{})
+	nodePubsSent := make(map[route.Vertex]struct{})
 
 	// As peers are expecting channel announcements before node
 	// announcements, we first retrieve the initial announcement, as well as
@@ -655,14 +661,14 @@ type msgWithSenders struct {
 	msg lnwire.Message
 
 	// sender is the set of peers that sent us this message.
-	senders map[routing.Vertex]struct{}
+	senders map[route.Vertex]struct{}
 }
 
 // mergeSyncerMap is used to merge the set of senders of a particular message
 // with peers that we have an active GossipSyncer with. We do this to ensure
 // that we don't broadcast messages to any peers that we have active gossip
 // syncers for.
-func (m *msgWithSenders) mergeSyncerMap(syncers map[routing.Vertex]*GossipSyncer) {
+func (m *msgWithSenders) mergeSyncerMap(syncers map[route.Vertex]*GossipSyncer) {
 	for peerPub := range syncers {
 		m.senders[peerPub] = struct{}{}
 	}
@@ -683,7 +689,7 @@ type deDupedAnnouncements struct {
 	channelUpdates map[channelUpdateID]msgWithSenders
 
 	// nodeAnnouncements are identified by the Vertex field.
-	nodeAnnouncements map[routing.Vertex]msgWithSenders
+	nodeAnnouncements map[route.Vertex]msgWithSenders
 
 	sync.Mutex
 }
@@ -705,7 +711,7 @@ func (d *deDupedAnnouncements) reset() {
 	// appropriate key points to the corresponding lnwire.Message.
 	d.channelAnnouncements = make(map[lnwire.ShortChannelID]msgWithSenders)
 	d.channelUpdates = make(map[channelUpdateID]msgWithSenders)
-	d.nodeAnnouncements = make(map[routing.Vertex]msgWithSenders)
+	d.nodeAnnouncements = make(map[route.Vertex]msgWithSenders)
 }
 
 // addMsg adds a new message to the current batch. If the message is already
@@ -723,13 +729,13 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 	// Channel announcements are identified by the short channel id field.
 	case *lnwire.ChannelAnnouncement:
 		deDupKey := msg.ShortChannelID
-		sender := routing.NewVertex(message.source)
+		sender := route.NewVertex(message.source)
 
 		mws, ok := d.channelAnnouncements[deDupKey]
 		if !ok {
 			mws = msgWithSenders{
 				msg:     msg,
-				senders: make(map[routing.Vertex]struct{}),
+				senders: make(map[route.Vertex]struct{}),
 			}
 			mws.senders[sender] = struct{}{}
 
@@ -745,7 +751,7 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 	// Channel updates are identified by the (short channel id,
 	// channelflags) tuple.
 	case *lnwire.ChannelUpdate:
-		sender := routing.NewVertex(message.source)
+		sender := route.NewVertex(message.source)
 		deDupKey := channelUpdateID{
 			msg.ShortChannelID,
 			msg.ChannelFlags,
@@ -771,7 +777,7 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 		if oldTimestamp < msg.Timestamp {
 			mws = msgWithSenders{
 				msg:     msg,
-				senders: make(map[routing.Vertex]struct{}),
+				senders: make(map[route.Vertex]struct{}),
 			}
 
 			// We'll mark the sender of the message in the
@@ -794,8 +800,8 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 	// Node announcements are identified by the Vertex field.  Use the
 	// NodeID to create the corresponding Vertex.
 	case *lnwire.NodeAnnouncement:
-		sender := routing.NewVertex(message.source)
-		deDupKey := routing.Vertex(msg.NodeID)
+		sender := route.NewVertex(message.source)
+		deDupKey := route.Vertex(msg.NodeID)
 
 		// We do the same for node announcements as we did for channel
 		// updates, as they also carry a timestamp.
@@ -814,7 +820,7 @@ func (d *deDupedAnnouncements) addMsg(message networkMsg) {
 		if oldTimestamp < msg.Timestamp {
 			mws = msgWithSenders{
 				msg:     msg,
-				senders: make(map[routing.Vertex]struct{}),
+				senders: make(map[route.Vertex]struct{}),
 			}
 
 			mws.senders[sender] = struct{}{}
@@ -879,6 +885,71 @@ func (d *deDupedAnnouncements) Emit() []msgWithSenders {
 
 	// Return the array of lnwire.messages.
 	return msgs
+}
+
+// calculateSubBatchSize is a helper function that calculates the size to break
+// down the batchSize into.
+func calculateSubBatchSize(totalDelay, subBatchDelay time.Duration,
+	minimumBatchSize, batchSize int) int {
+	if subBatchDelay > totalDelay {
+		return batchSize
+	}
+
+	subBatchSize := (int(batchSize)*int(subBatchDelay) + int(totalDelay) - 1) /
+		int(totalDelay)
+
+	if subBatchSize < minimumBatchSize {
+		return minimumBatchSize
+	}
+
+	return subBatchSize
+}
+
+// splitAnnouncementBatches takes an exiting list of announcements and
+// decomposes it into sub batches controlled by the `subBatchSize`.
+func splitAnnouncementBatches(subBatchSize int,
+	announcementBatch []msgWithSenders) [][]msgWithSenders {
+	var splitAnnouncementBatch [][]msgWithSenders
+
+	for subBatchSize < len(announcementBatch) {
+		// For slicing with minimal allocation
+		// https://github.com/golang/go/wiki/SliceTricks
+		announcementBatch, splitAnnouncementBatch =
+			announcementBatch[subBatchSize:],
+			append(splitAnnouncementBatch,
+				announcementBatch[0:subBatchSize:subBatchSize])
+	}
+	splitAnnouncementBatch = append(splitAnnouncementBatch, announcementBatch)
+
+	return splitAnnouncementBatch
+}
+
+// sendBatch broadcasts a list of announcements to our peers.
+func (d *AuthenticatedGossiper) sendBatch(announcementBatch []msgWithSenders) {
+	syncerPeers := d.syncMgr.GossipSyncers()
+
+	// We'll first attempt to filter out this new message
+	// for all peers that have active gossip syncers
+	// active.
+	for _, syncer := range syncerPeers {
+		syncer.FilterGossipMsgs(announcementBatch...)
+	}
+
+	for _, msgChunk := range announcementBatch {
+		// With the syncers taken care of, we'll merge
+		// the sender map with the set of syncers, so
+		// we don't send out duplicate messages.
+		msgChunk.mergeSyncerMap(syncerPeers)
+
+		err := d.cfg.Broadcast(
+			msgChunk.senders, msgChunk.msg,
+		)
+		if err != nil {
+			log.Errorf("Unable to send batch "+
+				"announcements: %v", err)
+			continue
+		}
+	}
 }
 
 // networkHandler is the primary goroutine that drives this service. The roles
@@ -1072,39 +1143,33 @@ func (d *AuthenticatedGossiper) networkHandler() {
 				continue
 			}
 
-			// For the set of peers that have an active gossip
-			// syncers, we'll collect their pubkeys so we can avoid
-			// sending them the full message blast below.
-			syncerPeers := d.syncMgr.GossipSyncers()
-
-			log.Infof("Broadcasting batch of %v new announcements",
-				len(announcementBatch))
-
-			// We'll first attempt to filter out this new message
-			// for all peers that have active gossip syncers
-			// active.
-			for _, syncer := range syncerPeers {
-				syncer.FilterGossipMsgs(announcementBatch...)
-			}
-
 			// Next, If we have new things to announce then
 			// broadcast them to all our immediately connected
 			// peers.
-			for _, msgChunk := range announcementBatch {
-				// With the syncers taken care of, we'll merge
-				// the sender map with the set of syncers, so
-				// we don't send out duplicate messages.
-				msgChunk.mergeSyncerMap(syncerPeers)
+			subBatchSize := calculateSubBatchSize(
+				d.cfg.TrickleDelay, d.cfg.SubBatchDelay, d.cfg.MinimumBatchSize,
+				len(announcementBatch),
+			)
 
-				err := d.cfg.Broadcast(
-					msgChunk.senders, msgChunk.msg,
-				)
-				if err != nil {
-					log.Errorf("unable to send batch "+
-						"announcements: %v", err)
-					continue
+			splitAnnouncementBatch := splitAnnouncementBatches(
+				subBatchSize, announcementBatch,
+			)
+
+			d.wg.Add(1)
+			go func() {
+				defer d.wg.Done()
+				log.Infof("Broadcasting %v new announcements in %d sub batches",
+					len(announcementBatch), len(splitAnnouncementBatch))
+
+				for _, announcementBatch := range splitAnnouncementBatch {
+					d.sendBatch(announcementBatch)
+					select {
+					case <-time.After(d.cfg.SubBatchDelay):
+					case <-d.quit:
+						return
+					}
 				}
-			}
+			}()
 
 		// The retransmission timer has ticked which indicates that we
 		// should check if we need to prune or re-broadcast any of our
@@ -1138,7 +1203,7 @@ func (d *AuthenticatedGossiper) InitSyncState(syncPeer lnpeer.Peer) {
 // PruneSyncState is called by outside sub-systems once a peer that we were
 // previously connected to has been disconnected. In this case we can stop the
 // existing GossipSyncer assigned to the peer and free up resources.
-func (d *AuthenticatedGossiper) PruneSyncState(peer routing.Vertex) {
+func (d *AuthenticatedGossiper) PruneSyncState(peer route.Vertex) {
 	d.syncMgr.PruneSyncState(peer)
 }
 

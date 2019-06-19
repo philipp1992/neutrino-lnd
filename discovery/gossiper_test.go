@@ -27,6 +27,7 @@ import (
 	"github.com/lightningnetwork/lnd/lntest"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
+	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/ticker"
 )
 
@@ -272,7 +273,7 @@ func (r *mockGraphSource) GetChannelByID(chanID lnwire.ShortChannelID) (
 }
 
 func (r *mockGraphSource) FetchLightningNode(
-	nodePub routing.Vertex) (*channeldb.LightningNode, error) {
+	nodePub route.Vertex) (*channeldb.LightningNode, error) {
 
 	for _, node := range r.nodes {
 		if bytes.Equal(nodePub[:], node.PubKeyBytes[:]) {
@@ -285,7 +286,7 @@ func (r *mockGraphSource) FetchLightningNode(
 
 // IsStaleNode returns true if the graph source has a node announcement for the
 // target node with a more recent timestamp.
-func (r *mockGraphSource) IsStaleNode(nodePub routing.Vertex, timestamp time.Time) bool {
+func (r *mockGraphSource) IsStaleNode(nodePub route.Vertex, timestamp time.Time) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -312,7 +313,7 @@ func (r *mockGraphSource) IsStaleNode(nodePub routing.Vertex, timestamp time.Tim
 
 // IsPublicNode determines whether the given vertex is seen as a public node in
 // the graph from the graph's source node's point of view.
-func (r *mockGraphSource) IsPublicNode(node routing.Vertex) (bool, error) {
+func (r *mockGraphSource) IsPublicNode(node route.Vertex) (bool, error) {
 	for _, info := range r.infos {
 		if !bytes.Equal(node[:], info.NodeKey1Bytes[:]) &&
 			!bytes.Equal(node[:], info.NodeKey2Bytes[:]) {
@@ -721,7 +722,7 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 	broadcastedMessage := make(chan msgWithSenders, 10)
 	gossiper := New(Config{
 		Notifier: notifier,
-		Broadcast: func(senders map[routing.Vertex]struct{},
+		Broadcast: func(senders map[route.Vertex]struct{},
 			msgs ...lnwire.Message) error {
 
 			for _, msg := range msgs {
@@ -733,25 +734,28 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 
 			return nil
 		},
-		NotifyWhenOnline: func(target *btcec.PublicKey,
+		NotifyWhenOnline: func(target [33]byte,
 			peerChan chan<- lnpeer.Peer) {
-			peerChan <- &mockPeer{target, nil, nil}
+
+			pk, _ := btcec.ParsePubKey(target[:], btcec.S256())
+			peerChan <- &mockPeer{pk, nil, nil}
 		},
 		NotifyWhenOffline: func(_ [33]byte) <-chan struct{} {
 			c := make(chan struct{})
 			return c
 		},
-		Router:                    router,
-		TrickleDelay:              trickleDelay,
-		RetransmitDelay:           retransmitDelay,
-		ProofMatureDelta:          proofMatureDelta,
-		WaitingProofStore:         waitingProofStore,
-		MessageStore:              newMockMessageStore(),
-		RotateTicker:              ticker.NewForce(DefaultSyncerRotationInterval),
-		HistoricalSyncTicker:      ticker.NewForce(DefaultHistoricalSyncInterval),
-		ActiveSyncerTimeoutTicker: ticker.NewForce(DefaultActiveSyncerTimeout),
-		NumActiveSyncers:          3,
-		AnnSigner:                 &mockSigner{nodeKeyPriv1},
+		Router:               router,
+		TrickleDelay:         trickleDelay,
+		RetransmitDelay:      retransmitDelay,
+		ProofMatureDelta:     proofMatureDelta,
+		WaitingProofStore:    waitingProofStore,
+		MessageStore:         newMockMessageStore(),
+		RotateTicker:         ticker.NewForce(DefaultSyncerRotationInterval),
+		HistoricalSyncTicker: ticker.NewForce(DefaultHistoricalSyncInterval),
+		NumActiveSyncers:     3,
+		AnnSigner:            &mockSigner{nodeKeyPriv1},
+		SubBatchDelay:        time.Second * 5,
+		MinimumBatchSize:     10,
 	}, nodeKeyPub1)
 
 	if err := gossiper.Start(); err != nil {
@@ -786,7 +790,7 @@ func TestProcessAnnouncement(t *testing.T) {
 	defer cleanup()
 
 	assertSenderExistence := func(sender *btcec.PublicKey, msg msgWithSenders) {
-		if _, ok := msg.senders[routing.NewVertex(sender)]; !ok {
+		if _, ok := msg.senders[route.NewVertex(sender)]; !ok {
 			t.Fatalf("sender=%x not present in %v",
 				sender.SerializeCompressed(), spew.Sdump(msg))
 		}
@@ -979,11 +983,13 @@ func TestSignatureAnnouncementLocalFirst(t *testing.T) {
 	// Set up a channel that we can use to inspect the messages sent
 	// directly from the gossiper.
 	sentMsgs := make(chan lnwire.Message, 10)
-	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(target *btcec.PublicKey,
+	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(target [33]byte,
 		peerChan chan<- lnpeer.Peer) {
 
+		pk, _ := btcec.ParsePubKey(target[:], btcec.S256())
+
 		select {
-		case peerChan <- &mockPeer{target, sentMsgs, ctx.gossiper.quit}:
+		case peerChan <- &mockPeer{pk, sentMsgs, ctx.gossiper.quit}:
 		case <-ctx.gossiper.quit:
 		}
 	}
@@ -1176,11 +1182,13 @@ func TestOrphanSignatureAnnouncement(t *testing.T) {
 	// Set up a channel that we can use to inspect the messages sent
 	// directly from the gossiper.
 	sentMsgs := make(chan lnwire.Message, 10)
-	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(target *btcec.PublicKey,
+	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(target [33]byte,
 		peerChan chan<- lnpeer.Peer) {
 
+		pk, _ := btcec.ParsePubKey(target[:], btcec.S256())
+
 		select {
-		case peerChan <- &mockPeer{target, sentMsgs, ctx.gossiper.quit}:
+		case peerChan <- &mockPeer{pk, sentMsgs, ctx.gossiper.quit}:
 		case <-ctx.gossiper.quit:
 		}
 	}
@@ -1401,7 +1409,7 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 	// channel through which it gets sent to control exactly when to
 	// dispatch it.
 	notifyPeers := make(chan chan<- lnpeer.Peer, 1)
-	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(peer *btcec.PublicKey,
+	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(peer [33]byte,
 		connectedChan chan<- lnpeer.Peer) {
 		notifyPeers <- connectedChan
 	}
@@ -1480,20 +1488,21 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 	// the message to the peer.
 	ctx.gossiper.Stop()
 	gossiper := New(Config{
-		Notifier:                  ctx.gossiper.cfg.Notifier,
-		Broadcast:                 ctx.gossiper.cfg.Broadcast,
-		NotifyWhenOnline:          ctx.gossiper.reliableSender.cfg.NotifyWhenOnline,
-		NotifyWhenOffline:         ctx.gossiper.reliableSender.cfg.NotifyWhenOffline,
-		Router:                    ctx.gossiper.cfg.Router,
-		TrickleDelay:              trickleDelay,
-		RetransmitDelay:           retransmitDelay,
-		ProofMatureDelta:          proofMatureDelta,
-		WaitingProofStore:         ctx.gossiper.cfg.WaitingProofStore,
-		MessageStore:              ctx.gossiper.cfg.MessageStore,
-		RotateTicker:              ticker.NewForce(DefaultSyncerRotationInterval),
-		HistoricalSyncTicker:      ticker.NewForce(DefaultHistoricalSyncInterval),
-		ActiveSyncerTimeoutTicker: ticker.NewForce(DefaultActiveSyncerTimeout),
-		NumActiveSyncers:          3,
+		Notifier:             ctx.gossiper.cfg.Notifier,
+		Broadcast:            ctx.gossiper.cfg.Broadcast,
+		NotifyWhenOnline:     ctx.gossiper.reliableSender.cfg.NotifyWhenOnline,
+		NotifyWhenOffline:    ctx.gossiper.reliableSender.cfg.NotifyWhenOffline,
+		Router:               ctx.gossiper.cfg.Router,
+		TrickleDelay:         trickleDelay,
+		RetransmitDelay:      retransmitDelay,
+		ProofMatureDelta:     proofMatureDelta,
+		WaitingProofStore:    ctx.gossiper.cfg.WaitingProofStore,
+		MessageStore:         ctx.gossiper.cfg.MessageStore,
+		RotateTicker:         ticker.NewForce(DefaultSyncerRotationInterval),
+		HistoricalSyncTicker: ticker.NewForce(DefaultHistoricalSyncInterval),
+		NumActiveSyncers:     3,
+		MinimumBatchSize:     10,
+		SubBatchDelay:        time.Second * 5,
 	}, ctx.gossiper.selfKey)
 	if err != nil {
 		t.Fatalf("unable to recreate gossiper: %v", err)
@@ -1606,7 +1615,7 @@ func TestSignatureAnnouncementFullProofWhenRemoteProof(t *testing.T) {
 
 	// Override NotifyWhenOnline to return the remote peer which we expect
 	// meesages to be sent to.
-	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(peer *btcec.PublicKey,
+	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(peer [33]byte,
 		peerChan chan<- lnpeer.Peer) {
 
 		peerChan <- remotePeer
@@ -1989,7 +1998,7 @@ func TestDeDuplicatedAnnouncements(t *testing.T) {
 	if len(announcements.nodeAnnouncements) != 2 {
 		t.Fatal("node announcement not replaced in batch")
 	}
-	nodeID := routing.NewVertex(nodeKeyPriv2.PubKey())
+	nodeID := route.NewVertex(nodeKeyPriv2.PubKey())
 	stored, ok := announcements.nodeAnnouncements[nodeID]
 	if !ok {
 		t.Fatalf("node announcement not found in batch")
@@ -2439,7 +2448,7 @@ func TestReceiveRemoteChannelUpdateFirst(t *testing.T) {
 
 	// Override NotifyWhenOnline to return the remote peer which we expect
 	// meesages to be sent to.
-	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(peer *btcec.PublicKey,
+	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(peer [33]byte,
 		peerChan chan<- lnpeer.Peer) {
 
 		peerChan <- remotePeer
@@ -2980,7 +2989,7 @@ func TestSendChannelUpdateReliably(t *testing.T) {
 	// NotifyWhenOffline to instead give us access to the channel that will
 	// receive the notification.
 	notifyOnline := make(chan chan<- lnpeer.Peer, 1)
-	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(_ *btcec.PublicKey,
+	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(_ [33]byte,
 		peerChan chan<- lnpeer.Peer) {
 
 		notifyOnline <- peerChan
@@ -3357,13 +3366,13 @@ func TestPropagateChanPolicyUpdate(t *testing.T) {
 	// pubkey, and hand it our mock peer above.
 	notifyErr := make(chan error, 1)
 	ctx.gossiper.reliableSender.cfg.NotifyWhenOnline = func(
-		targetPub *btcec.PublicKey, peerChan chan<- lnpeer.Peer) {
+		targetPub [33]byte, peerChan chan<- lnpeer.Peer) {
 
-		if !targetPub.IsEqual(remoteKey) {
+		if !bytes.Equal(targetPub[:], remoteKey.SerializeCompressed()) {
 			notifyErr <- fmt.Errorf("reliableSender attempted to send the "+
 				"message to the wrong peer: expected %x got %x",
 				remoteKey.SerializeCompressed(),
-				targetPub.SerializeCompressed())
+				targetPub)
 		}
 
 		peerChan <- remotePeer
@@ -3543,5 +3552,100 @@ func assertMessage(t *testing.T, expected, got lnwire.Message) {
 	if !reflect.DeepEqual(expected, got) {
 		t.Fatalf("expected: %v\ngot: %v", spew.Sdump(expected),
 			spew.Sdump(got))
+	}
+}
+
+// TestSplitAnnouncementsCorrectSubBatches checks that we split a given
+// sizes of announcement list into the correct number of batches.
+func TestSplitAnnouncementsCorrectSubBatches(t *testing.T) {
+	t.Parallel()
+
+	const subBatchSize = 10
+
+	announcementBatchSizes := []int{2, 5, 20, 45, 80, 100, 1005}
+	expectedNumberMiniBatches := []int{1, 1, 2, 5, 8, 10, 101}
+
+	lengthAnnouncementBatchSizes := len(announcementBatchSizes)
+	lengthExpectedNumberMiniBatches := len(expectedNumberMiniBatches)
+
+	if lengthAnnouncementBatchSizes != lengthExpectedNumberMiniBatches {
+		t.Fatal("Length of announcementBatchSizes and " +
+			"expectedNumberMiniBatches should be equal")
+	}
+
+	for testIndex := range announcementBatchSizes {
+		var batchSize = announcementBatchSizes[testIndex]
+		announcementBatch := make([]msgWithSenders, batchSize)
+
+		splitAnnouncementBatch := splitAnnouncementBatches(
+			subBatchSize, announcementBatch,
+		)
+
+		lengthMiniBatches := len(splitAnnouncementBatch)
+
+		if lengthMiniBatches != expectedNumberMiniBatches[testIndex] {
+			t.Fatalf("Expecting %d mini batches, actual %d",
+				expectedNumberMiniBatches[testIndex], lengthMiniBatches)
+		}
+	}
+}
+
+func assertCorrectSubBatchSize(t *testing.T, expectedSubBatchSize,
+	actualSubBatchSize int) {
+
+	t.Helper()
+
+	if actualSubBatchSize != expectedSubBatchSize {
+		t.Fatalf("Expecting subBatch size of %d, actual %d",
+			expectedSubBatchSize, actualSubBatchSize)
+	}
+}
+
+// TestCalculateCorrectSubBatchSize checks that we check the correct
+// sub batch size for each of the input vectors of batch sizes.
+func TestCalculateCorrectSubBatchSizes(t *testing.T) {
+	t.Parallel()
+
+	const minimumSubBatchSize = 10
+	const batchDelay = time.Duration(100)
+	const subBatchDelay = time.Duration(10)
+
+	batchSizes := []int{2, 200, 250, 305, 352, 10010, 1000001}
+	expectedSubBatchSize := []int{10, 20, 25, 31, 36, 1001, 100001}
+
+	for testIndex := range batchSizes {
+		batchSize := batchSizes[testIndex]
+		expectedBatchSize := expectedSubBatchSize[testIndex]
+
+		actualSubBatchSize := calculateSubBatchSize(
+			batchDelay, subBatchDelay, minimumSubBatchSize, batchSize,
+		)
+
+		assertCorrectSubBatchSize(t, expectedBatchSize, actualSubBatchSize)
+	}
+}
+
+// TestCalculateCorrectSubBatchSizesDifferentDelay checks that we check the
+// correct sub batch size for each of different delay.
+func TestCalculateCorrectSubBatchSizesDifferentDelay(t *testing.T) {
+	t.Parallel()
+
+	const batchSize = 100
+	const minimumSubBatchSize = 10
+
+	batchDelays := []time.Duration{100, 50, 20, 25, 5, 0}
+	const subBatchDelay = 10
+
+	expectedSubBatchSize := []int{10, 20, 50, 40, 100, 100}
+
+	for testIndex := range batchDelays {
+		batchDelay := batchDelays[testIndex]
+		expectedBatchSize := expectedSubBatchSize[testIndex]
+
+		actualSubBatchSize := calculateSubBatchSize(
+			batchDelay, subBatchDelay, minimumSubBatchSize, batchSize,
+		)
+
+		assertCorrectSubBatchSize(t, expectedBatchSize, actualSubBatchSize)
 	}
 }

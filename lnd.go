@@ -2,7 +2,7 @@
 // Copyright (c) 2015-2016 The Decred developers
 // Copyright (C) 2015-2017 The Lightning Network Developers
 
-package main
+package lnd
 
 import (
 	"bytes"
@@ -18,13 +18,15 @@ import (
 	"math/big"
 	"net"
 	"net/http"
-	_ "net/http/pprof"
 	"os"
 	"path/filepath"
 	"runtime/pprof"
 	"strings"
 	"sync"
 	"time"
+
+	// Blank import to set up profiling HTTP handlers.
+	_ "net/http/pprof"
 
 	"gopkg.in/macaroon-bakery.v2/bakery"
 
@@ -34,9 +36,9 @@ import (
 	"google.golang.org/grpc/credentials"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
-	flags "github.com/jessevdk/go-flags"
 	"github.com/lightninglabs/neutrino"
 
 	"github.com/lightningnetwork/lnd/autopilot"
@@ -50,6 +52,8 @@ import (
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/walletunlocker"
+	"github.com/lightningnetwork/lnd/watchtower"
+	"github.com/lightningnetwork/lnd/watchtower/wtdb"
 )
 
 const (
@@ -89,10 +93,10 @@ var (
 	}
 )
 
-// lndMain is the true entry point for lnd. This function is required since
-// defers created in the top-level scope of a main method aren't executed if
-// os.Exit() is called.
-func lndMain() error {
+// Main is the true entry point for lnd. This function is required since defers
+// created in the top-level scope of a main method aren't executed if os.Exit()
+// is called.
+func Main() error {
 	// Load the configuration, and parse any command line options. This
 	// function will also set up logging properly.
 	loadedConfig, err := loadConfig()
@@ -122,7 +126,7 @@ func lndMain() error {
 	case cfg.Bitcoin.SimNet || cfg.Litecoin.SimNet:
 		network = "simnet"
 
-	case cfg.Bitcoin.RegTest ||  cfg.Xsncoin.RegTest:
+	case cfg.Bitcoin.RegTest || cfg.Litecoin.RegTest ||  cfg.Xsncoin.RegTest:
 		network = "regtest"
 	}
 
@@ -312,11 +316,65 @@ func lndMain() error {
 			"is proxying over Tor as well", cfg.Tor.StreamIsolation)
 	}
 
+	// If the watchtower client should be active, open the client database.
+	// This is done here so that Close always executes when lndMain returns.
+	var towerClientDB *wtdb.ClientDB
+	if cfg.WtClient.IsActive() {
+		var err error
+		towerClientDB, err = wtdb.OpenClientDB(graphDir)
+		if err != nil {
+			ltndLog.Errorf("Unable to open watchtower client db: %v", err)
+		}
+		defer towerClientDB.Close()
+	}
+
+	var tower *watchtower.Standalone
+	if cfg.Watchtower.Active {
+		// Segment the watchtower directory by chain and network.
+		towerDBDir := filepath.Join(
+			cfg.Watchtower.TowerDir,
+			registeredChains.PrimaryChain().String(),
+			normalizeNetwork(activeNetParams.Name),
+		)
+
+		towerDB, err := wtdb.OpenTowerDB(towerDBDir)
+		if err != nil {
+			ltndLog.Errorf("Unable to open watchtower db: %v", err)
+			return err
+		}
+		defer towerDB.Close()
+
+		wtConfig, err := cfg.Watchtower.Apply(&watchtower.Config{
+			BlockFetcher:   activeChainControl.chainIO,
+			DB:             towerDB,
+			EpochRegistrar: activeChainControl.chainNotifier,
+			Net:            cfg.net,
+			NewAddress: func() (btcutil.Address, error) {
+				return activeChainControl.wallet.NewAddress(
+					lnwallet.WitnessPubKey, false,
+				)
+			},
+			NodePrivKey: idPrivKey,
+			PublishTx:   activeChainControl.wallet.PublishTransaction,
+			ChainHash:   *activeNetParams.GenesisHash,
+		}, lncfg.NormalizeAddresses)
+		if err != nil {
+			ltndLog.Errorf("Unable to configure watchtower: %v", err)
+			return err
+		}
+
+		tower, err = watchtower.New(wtConfig)
+		if err != nil {
+			ltndLog.Errorf("Unable to create watchtower: %v", err)
+			return err
+		}
+	}
+
 	// Set up the core server which will listen for incoming peer
 	// connections.
 	server, err := newServer(
-		cfg.Listeners, chanDB, activeChainControl, idPrivKey,
-		walletInitParams.ChansToRestore,
+		cfg.Listeners, chanDB, towerClientDB, activeChainControl,
+		idPrivKey, walletInitParams.ChansToRestore,
 	)
 	if err != nil {
 		srvrLog.Errorf("unable to create server: %v\n", err)
@@ -417,6 +475,14 @@ func lndMain() error {
 		}
 	}
 
+	if cfg.Watchtower.Active {
+		if err := tower.Start(); err != nil {
+			ltndLog.Errorf("Unable to start watchtower: %v", err)
+			return err
+		}
+		defer tower.Stop()
+	}
+
 	// Wait for shutdown signal from either a graceful server stop or from
 	// the interrupt handler.
 	<-signal.ShutdownChannel()
@@ -436,13 +502,39 @@ func getTLSConfig(cfg *config) (*tls.Config, *credentials.TransportCredentials,
 		}
 	}
 
-	cert, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+	certData, err := tls.LoadX509KeyPair(cfg.TLSCertPath, cfg.TLSKeyPath)
 	if err != nil {
 		return nil, nil, "", err
 	}
 
+	cert, err := x509.ParseCertificate(certData.Certificate[0])
+	if err != nil {
+		return nil, nil, "", err
+	}
+
+	// If the certificate expired, delete it and the TLS key and generate a new pair
+	if time.Now().After(cert.NotAfter) {
+		ltndLog.Info("TLS certificate is expired, generating a new one")
+
+		err := os.Remove(cfg.TLSCertPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
+
+		err = os.Remove(cfg.TLSKeyPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
+
+		err = genCertPair(cfg.TLSCertPath, cfg.TLSKeyPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
+
+	}
+
 	tlsCfg := &tls.Config{
-		Certificates: []tls.Certificate{cert},
+		Certificates: []tls.Certificate{certData},
 		CipherSuites: tlsCipherSuites,
 		MinVersion:   tls.VersionTLS12,
 	}
@@ -466,18 +558,6 @@ func getTLSConfig(cfg *config) (*tls.Config, *credentials.TransportCredentials,
 	}
 
 	return tlsCfg, &restCreds, restProxyDest, nil
-}
-
-func main() {
-	// Call the "real" main in a nested manner so the defers will properly
-	// be executed in the case of a graceful shutdown.
-	if err := lndMain(); err != nil {
-		if e, ok := err.(*flags.Error); ok && e.Type == flags.ErrHelp {
-		} else {
-			fmt.Fprintln(os.Stderr, err)
-		}
-		os.Exit(1)
-	}
 }
 
 // fileExists reports whether the named file or directory exists.
@@ -542,10 +622,12 @@ func genCertPair(certFile, keyFile string) error {
 		}
 	}
 
-	// Add extra IP to the slice.
-	ipAddr := net.ParseIP(cfg.TLSExtraIP)
-	if ipAddr != nil {
-		addIP(ipAddr)
+	// Add extra IPs to the slice.
+	for _, ip := range cfg.TLSExtraIPs {
+		ipAddr := net.ParseIP(ip)
+		if ipAddr != nil {
+			addIP(ipAddr)
+		}
 	}
 
 	// Collect the host's names into a slice.
@@ -557,9 +639,7 @@ func genCertPair(certFile, keyFile string) error {
 	if host != "localhost" {
 		dnsNames = append(dnsNames, "localhost")
 	}
-	if cfg.TLSExtraDomain != "" {
-		dnsNames = append(dnsNames, cfg.TLSExtraDomain)
-	}
+	dnsNames = append(dnsNames, cfg.TLSExtraDomains...)
 
 	// Also add fake hostnames for unix sockets, otherwise hostname
 	// verification will fail in the client.
@@ -849,7 +929,6 @@ func waitForWalletPassword(grpcEndpoints, restEndpoints []net.Addr,
 		netDir := btcwallet.NetworkDir(
 			chainConfig.ChainDir, activeNetParams.Params,
 		)
-
 		loader := wallet.NewLoader(
 			activeNetParams.Params, netDir, uint32(recoveryWindow),
 		)

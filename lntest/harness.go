@@ -460,11 +460,11 @@ func (n *NetworkHarness) EnsureConnected(ctx context.Context, a, b *HarnessNode)
 		// can exit early.
 		return nil
 
-	case aErr != errConnectionRequested:
+	case aErr != nil && aErr != errConnectionRequested:
 		// Return any critical errors returned by either alice.
 		return aErr
 
-	case bErr != errConnectionRequested:
+	case bErr != nil && bErr != errConnectionRequested:
 		// Return any critical errors returned by either bob.
 		return bErr
 
@@ -1314,6 +1314,12 @@ func (n *NetworkHarness) sendCoins(ctx context.Context, amt btcutil.Amount,
 	// Now, wait for ListUnspent to show the unconfirmed transaction
 	// containing the correct pkscript.
 	err = WaitNoError(func() error {
+		// Since neutrino doesn't support unconfirmed outputs, skip
+		// this check.
+		if target.cfg.BackendCfg.Name() == "neutrino" {
+			return nil
+		}
+
 		req := &lnrpc.ListUnspentRequest{}
 		resp, err := target.ListUnspent(ctx, req)
 		if err != nil {

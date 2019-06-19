@@ -5,18 +5,19 @@ require (
 	github.com/NebulousLabs/fastrand v0.0.0-20180208210444-3cf7173006a0 // indirect
 	github.com/NebulousLabs/go-upnp v0.0.0-20180202185039-29b680b06c82
 	github.com/Yawning/aez v0.0.0-20180114000226-4dad034d9db2
-	github.com/aead/chacha20 v0.0.0-20180709150244-8b13a72661da // indirect
-	github.com/btcsuite/btcd v0.0.0-20190410025418-9bfb2ca0346b
+	github.com/btcsuite/btcd v0.0.0-20190614013741-962a206e94e9
 	github.com/btcsuite/btclog v0.0.0-20170628155309-84c8d2346e9f
-	github.com/btcsuite/btcutil v0.0.0-20190316010144-3ac1210f4b38
-	github.com/btcsuite/btcwallet v0.0.0-20190419031546-9e694e2bfc91
+	github.com/btcsuite/btcutil v0.0.0-20190425235716-9e5f4b9a998d
+	github.com/btcsuite/btcwallet v0.0.0-20190619005538-de02d6fdfb23
 	github.com/btcsuite/fastsha256 v0.0.0-20160815193821-637e65642941
 	github.com/coreos/bbolt v1.3.2
 	github.com/davecgh/go-spew v1.1.1
 	github.com/go-errors/errors v1.0.1
-	github.com/golang/protobuf v1.2.0
+	github.com/golang/protobuf v1.3.1
+	github.com/grpc-ecosystem/go-grpc-middleware v1.0.0
+	github.com/grpc-ecosystem/go-grpc-prometheus v1.2.0
 	github.com/grpc-ecosystem/grpc-gateway v0.0.0-20170724004829-f2862b476edc
-	github.com/jackpal/gateway v1.0.4
+	github.com/jackpal/gateway v1.0.5
 	github.com/jackpal/go-nat-pmp v0.0.0-20170405195558-28a68d0c24ad
 	github.com/jessevdk/go-flags v1.4.0
 	github.com/jrick/logrotate v1.0.0
@@ -28,12 +29,13 @@ require (
 	github.com/juju/utils v0.0.0-20180820210520-bf9cc5bdd62d // indirect
 	github.com/juju/version v0.0.0-20180108022336-b64dbd566305 // indirect
 	github.com/kkdai/bstream v0.0.0-20181106074824-b3251f7901ec
-	github.com/lightninglabs/neutrino v0.0.0-20190419021618-2e9d0617aa96
-	github.com/lightningnetwork/lightning-onion v0.0.0-20180605012408-ac4d9da8f1d6
+	github.com/lightninglabs/neutrino v0.0.0-20190606084233-98b149cd0468
+	github.com/lightningnetwork/lightning-onion v0.0.0-20190430041606-751fb4dd8b72
 	github.com/lightningnetwork/lnd/queue v1.0.1
 	github.com/lightningnetwork/lnd/ticker v1.0.0
 	github.com/ltcsuite/ltcd v0.0.0-20190101042124-f37f8bf35796
 	github.com/miekg/dns v0.0.0-20171125082028-79bfde677fa8
+	github.com/prometheus/client_golang v0.9.3
 	github.com/rogpeppe/fastuuid v0.0.0-20150106093220-6724a57986af // indirect
 	github.com/tv42/zbase32 v0.0.0-20160707012821-501572607d02
 	github.com/urfave/cli v1.18.0

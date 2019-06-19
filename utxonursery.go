@@ -1,4 +1,4 @@
-package main
+package lnd
 
 import (
 	"bytes"
@@ -8,7 +8,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
@@ -155,6 +154,12 @@ import (
 
 var byteOrder = binary.BigEndian
 
+const (
+	// kgtnOutputConfTarget is the default confirmation target we'll use for
+	// sweeps of CSV delayed outputs.
+	kgtnOutputConfTarget = 6
+)
+
 var (
 	// ErrContractNotFound is returned when the nursery is unable to
 	// retrieve information about a queried contract.
@@ -196,7 +201,7 @@ type NurseryConfig struct {
 	Store NurseryStore
 
 	// Sweep sweeps an input back to the wallet.
-	SweepInput func(input input.Input) (chan sweep.Result, error)
+	SweepInput func(input.Input, sweep.FeePreference) (chan sweep.Result, error)
 }
 
 // utxoNursery is a system dedicated to incubating time-locked outputs created
@@ -455,9 +460,11 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 	// We'll examine all the baby outputs just inserted into the database,
 	// if the output has already expired, then we'll *immediately* sweep
 	// it. This may happen if the caller raced a block to call this method.
-	for _, babyOutput := range babyOutputs {
+	for i, babyOutput := range babyOutputs {
 		if uint32(bestHeight) >= babyOutput.expiry {
-			err = u.sweepCribOutput(babyOutput.expiry, &babyOutput)
+			err = u.sweepCribOutput(
+				babyOutput.expiry, &babyOutputs[i],
+			)
 			if err != nil {
 				return err
 			}
@@ -468,9 +475,9 @@ func (u *utxoNursery) IncubateOutputs(chanPoint wire.OutPoint,
 	// confirmation notification that will transition it to the
 	// kindergarten bucket.
 	if len(kidOutputs) != 0 {
-		for _, kidOutput := range kidOutputs {
+		for i := range kidOutputs {
 			err := u.registerPreschoolConf(
-				&kidOutput, broadcastHeight,
+				&kidOutputs[i], broadcastHeight,
 			)
 			if err != nil {
 				return err
@@ -802,12 +809,13 @@ func (u *utxoNursery) sweepMatureOutputs(classHeight uint32,
 	utxnLog.Infof("Sweeping %v CSV-delayed outputs with sweep tx for "+
 		"height %v", len(kgtnOutputs), classHeight)
 
+	feePref := sweep.FeePreference{ConfTarget: kgtnOutputConfTarget}
 	for _, output := range kgtnOutputs {
 		// Create local copy to prevent pointer to loop variable to be
-		// passed in with disastruous consequences.
+		// passed in with disastrous consequences.
 		local := output
 
-		resultChan, err := u.cfg.SweepInput(&local)
+		resultChan, err := u.cfg.SweepInput(&local, feePref)
 		if err != nil {
 			return err
 		}
@@ -1220,19 +1228,6 @@ func (u *utxoNursery) closeAndRemoveIfMature(chanPoint *wire.OutPoint) error {
 	utxnLog.Infof("Removed channel %v from nursery store", chanPoint)
 
 	return nil
-}
-
-// newSweepPkScript creates a new public key script which should be used to
-// sweep any time-locked, or contested channel funds into the wallet.
-// Specifically, the script generated is a version 0, pay-to-witness-pubkey-hash
-// (p2wkh) output.
-func newSweepPkScript(wallet lnwallet.WalletController) ([]byte, error) {
-	sweepAddr, err := wallet.NewAddress(lnwallet.WitnessPubKey, false)
-	if err != nil {
-		return nil, err
-	}
-
-	return txscript.PayToAddrScript(sweepAddr)
 }
 
 // babyOutput represents a two-stage CSV locked output, and is used to track

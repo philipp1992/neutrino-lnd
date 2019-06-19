@@ -51,6 +51,12 @@ type UnknownElementType struct {
 	element interface{}
 }
 
+// NewUnknownElementType creates a new UnknownElementType error from the passed
+// method name and element.
+func NewUnknownElementType(method string, el interface{}) UnknownElementType {
+	return UnknownElementType{method: method, element: el}
+}
+
 // Error returns the name of the method that encountered the error, as well as
 // the type that was unsupported.
 func (e UnknownElementType) Error() string {
@@ -97,6 +103,11 @@ func WriteElement(w io.Writer, element interface{}) error {
 			return err
 		}
 
+	case lnwire.ChannelID:
+		if _, err := w.Write(e[:]); err != nil {
+			return err
+		}
+
 	case uint64:
 		if err := binary.Write(w, byteOrder, e); err != nil {
 			return err
@@ -117,6 +128,11 @@ func WriteElement(w io.Writer, element interface{}) error {
 			return err
 		}
 
+	case uint8:
+		if err := binary.Write(w, byteOrder, e); err != nil {
+			return err
+		}
+
 	case bool:
 		if err := binary.Write(w, byteOrder, e); err != nil {
 			return err
@@ -129,6 +145,12 @@ func WriteElement(w io.Writer, element interface{}) error {
 
 	case lnwire.MilliSatoshi:
 		if err := binary.Write(w, byteOrder, uint64(e)); err != nil {
+			return err
+		}
+
+	case *btcec.PrivateKey:
+		b := e.Serialize()
+		if _, err := w.Write(b); err != nil {
 			return err
 		}
 
@@ -253,6 +275,11 @@ func ReadElement(r io.Reader, element interface{}) error {
 		}
 		*e = lnwire.NewShortChanIDFromInt(a)
 
+	case *lnwire.ChannelID:
+		if _, err := io.ReadFull(r, e[:]); err != nil {
+			return err
+		}
+
 	case *uint64:
 		if err := binary.Read(r, byteOrder, e); err != nil {
 			return err
@@ -269,6 +296,11 @@ func ReadElement(r io.Reader, element interface{}) error {
 		}
 
 	case *uint16:
+		if err := binary.Read(r, byteOrder, e); err != nil {
+			return err
+		}
+
+	case *uint8:
 		if err := binary.Read(r, byteOrder, e); err != nil {
 			return err
 		}
@@ -293,6 +325,15 @@ func ReadElement(r io.Reader, element interface{}) error {
 		}
 
 		*e = lnwire.MilliSatoshi(a)
+
+	case **btcec.PrivateKey:
+		var b [btcec.PrivKeyBytesLen]byte
+		if _, err := io.ReadFull(r, b[:]); err != nil {
+			return err
+		}
+
+		priv, _ := btcec.PrivKeyFromBytes(btcec.S256(), b[:])
+		*e = priv
 
 	case **btcec.PublicKey:
 		var b [btcec.PubKeyBytesLenCompressed]byte
