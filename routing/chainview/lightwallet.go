@@ -192,6 +192,10 @@ func (c *LWFilteredChainView) chainFilterer() {
 
 	for {
 		select {
+
+		case update := <-c.filterUpdates:
+			log.Tracef("Updating chain filter with new UTXO's: %v",
+				update.newUtxos)
 		//TODO
 		//case update := <-c.filterUpdates:
 		//	// First, we'll add all the new UTXO's to the set of
