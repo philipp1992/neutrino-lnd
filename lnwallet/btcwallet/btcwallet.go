@@ -783,7 +783,7 @@ func (b *BtcWallet) IsSynced() (bool, int64, error) {
 
 	// If the timestamp on the best header is more than 2 hours in the
 	// past, then we're not yet synced.
-	// TODO: yuraolex, change this back, just for tests
+	// TODO(yuraolex): change this back, just for tests
 	minus24Hours := time.Now().Add(-2 * time.Hour * 24 * 365 * 10)
 	if blockHeader.Timestamp.Before(minus24Hours) {
 		return false, bestTimestamp, nil
