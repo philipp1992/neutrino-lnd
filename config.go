@@ -810,7 +810,11 @@ func loadConfig() (*config, error) {
 			numNets++
 			activeNetParams = bitcoinTestNetParams
 		}
-		if cfg.Bitcoin.RegTest {
+		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node == "lightwallet" {
+			numNets++
+			activeNetParams = btcLightWalletRegtestParams
+		}
+		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node != "lightwallet"{
 			numNets++
 			activeNetParams = bitcoinRegTestNetParams
 		}
@@ -883,7 +887,7 @@ func loadConfig() (*config, error) {
 			// No need to get RPC parameters.
 
 		case "lightwallet":
-			if !cfg.Bitcoin.MainNet {
+			if !cfg.Bitcoin.MainNet && !cfg.Bitcoin.RegTest {
 				return nil, fmt.Errorf("%s: only bitcoin mainnet "+
 					"currently supports lightWallet mode", funcName)
 			}

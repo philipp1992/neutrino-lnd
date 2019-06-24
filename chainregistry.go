@@ -293,9 +293,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 
 		// Create a special websockets rpc client for btcd which will be used
 		// by the wallet for notifications, calls, etc.
-
 		walletConfig.ChainSource = lightWalletConn.NewLightWalletClient();
-
 		if err != nil {
 			return nil, err
 		}
