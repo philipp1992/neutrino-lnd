@@ -3060,6 +3060,14 @@
         }
       }
     },
+    "lnrpcResolveResponse": {
+      "type": "object",
+      "properties": {
+        "preimage": {
+          "type": "string"
+        }
+      }
+    },
     "lnrpcRoute": {
       "type": "object",
       "properties": {
