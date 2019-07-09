@@ -708,7 +708,11 @@ func loadConfig() (*config, error) {
 		// while we're at it.
 		numNets := 0
 		var ltcParams litecoinNetParams
-		if cfg.Litecoin.MainNet {
+		if cfg.Litecoin.MainNet && cfg.Litecoin.Node == "lightwallet" {
+			numNets++
+			ltcParams = ltcLightWalletParams
+		}
+		if cfg.Litecoin.MainNet && cfg.Litecoin.Node != "lightwallet"{
 			numNets++
 			ltcParams = litecoinMainNetParams
 		}
@@ -716,8 +720,11 @@ func loadConfig() (*config, error) {
 			numNets++
 			ltcParams = litecoinTestNetParams
 		}
-
-		if cfg.Litecoin.RegTest {
+		if cfg.Litecoin.RegTest && cfg.Litecoin.Node == "lightwallet" {
+			numNets++
+			ltcParams = ltcLightWalletRegtestParams
+		}
+		if cfg.Litecoin.RegTest && cfg.Litecoin.Node != "lightwallet"{
 			numNets++
 			ltcParams = litecoinRegTestNetParams
 		}
@@ -775,6 +782,20 @@ func loadConfig() (*config, error) {
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
 					"credentials for litecoind: %v", err)
+				return nil, err
+			}
+		case "lightwallet":
+			if !cfg.Litecoin.MainNet && !cfg.Litecoin.RegTest {
+				return nil, fmt.Errorf("%s: only litecoin mainnet "+
+					"regtest currently supports lightWallet mode", funcName)
+			}
+
+			err := parseRPCParams(
+				cfg.Litecoin, cfg.LightWalletMode, litecoinChain, funcName,
+			)
+			if err != nil {
+				err := fmt.Errorf("unable to load RPC "+
+					"credentials for bitcoin testnet: %v", err)
 				return nil, err
 			}
 		default:
