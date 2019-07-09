@@ -1,6 +1,7 @@
 package btcwallet
 
 import (
+	//"github.com/btcsuite/btcwallet/wallet"
 	"path/filepath"
 	"time"
 
@@ -9,7 +10,7 @@ import (
 	"github.com/btcsuite/btcutil"
 
 	"github.com/btcsuite/btcwallet/chain"
-	"github.com/btcsuite/btcwallet/wallet"
+	//"github.com/btcsuite/btcwallet/wallet"
 
 	// This is required to register bdb as a valid walletdb driver. In the
 	// init function of the package, it registers itself. The import is used
@@ -89,7 +90,7 @@ type Config struct {
 	// is nil, then a wallet might have just been created or is simply not
 	// encrypted at all, in which case it should be attempted to be loaded
 	// normally when creating the BtcWallet.
-	Wallet *wallet.Wallet
+	Wallet interface{}//*wallet.Wallet
 }
 
 // NetworkDir returns the directory name of a network directory to hold wallet

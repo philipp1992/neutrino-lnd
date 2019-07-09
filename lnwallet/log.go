@@ -3,7 +3,7 @@ package lnwallet
 import (
 	"github.com/btcsuite/btclog"
 	"github.com/btcsuite/btcwallet/chain"
-	btcwallet "github.com/btcsuite/btcwallet/wallet"
+	//btcwallet "github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/wtxmgr"
 
 	"github.com/lightningnetwork/lnd/build"
@@ -31,7 +31,7 @@ func DisableLog() {
 func UseLogger(logger btclog.Logger) {
 	walletLog = logger
 
-	btcwallet.UseLogger(logger)
+	//btcwallet.UseLogger(logger)
 	wtxmgr.UseLogger(logger)
 	chain.UseLogger(logger)
 }

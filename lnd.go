@@ -14,6 +14,8 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
+	//"github.com/btcsuite/btcwallet/wallet"
+
 	"io/ioutil"
 	"math/big"
 	"net"
@@ -37,7 +39,7 @@ import (
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet"
+	//"github.com/btcsuite/btcwallet/wallet"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightninglabs/neutrino"
 
@@ -48,7 +50,6 @@ import (
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/walletunlocker"
@@ -787,7 +788,7 @@ type WalletUnlockParams struct {
 	// the unlocker service to check if the password is correct and again
 	// later when lnd actually uses it). Because unlocking involves scrypt
 	// which is resource intensive, we want to avoid doing it twice.
-	Wallet *wallet.Wallet
+	Wallet interface{}//*wallet.Wallet
 
 	// ChansToRestore a set of static channel backups that should be
 	// restored before the main server instance starts up.
@@ -926,28 +927,34 @@ func waitForWalletPassword(grpcEndpoints, restEndpoints []net.Addr,
 				keychain.KeyDerivationVersion)
 		}
 
-		netDir := btcwallet.NetworkDir(
-			chainConfig.ChainDir, activeNetParams.Params,
-		)
-		loader := wallet.NewLoader(
-			activeNetParams.Params, netDir, uint32(recoveryWindow),
-		)
+		panic("Creating new wallet")
 
-		// With the seed, we can now use the wallet loader to create
-		// the wallet, then pass it back to avoid unlocking it again.
+		//netDir := btcwallet.NetworkDir(
+		//	chainConfig.ChainDir, activeNetParams.Params,
+		//)
+
+
+		//loader := wallet.NewLoader(
+		//	activeNetParams.Params, netDir, uint32(recoveryWindow),
+		//)
+		//
+		//// With the seed, we can now use the wallet loader to create
+		//// the wallet, then pass it back to avoid unlocking it again.
 		birthday := cipherSeed.BirthdayTime()
-		newWallet, err := loader.CreateNewWallet(
-			password, password, cipherSeed.Entropy[:], birthday,
-		)
-		if err != nil {
-			// Don't leave the file open in case the new wallet
-			// could not be created for whatever reason.
-			if err := loader.UnloadWallet(); err != nil {
-				ltndLog.Errorf("Could not unload new "+
-					"wallet: %v", err)
-			}
-			return nil, err
-		}
+		//newWallet, err := loader.CreateNewWallet(
+		//	password, password, cipherSeed.Entropy[:], birthday,
+		//)
+		//if err != nil {
+		//	// Don't leave the file open in case the new wallet
+		//	// could not be created for whatever reason.
+		//	if err := loader.UnloadWallet(); err != nil {
+		//		ltndLog.Errorf("Could not unload new "+
+		//			"wallet: %v", err)
+		//	}
+		//	return nil, err
+		//}
+
+		newWallet := 228
 
 		return &WalletUnlockParams{
 			Password:       password,

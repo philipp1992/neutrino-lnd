@@ -4,18 +4,15 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"os"
-	"time"
-
 	"github.com/btcsuite/btcd/chaincfg"
-	"github.com/btcsuite/btcwallet/wallet"
-	"github.com/lightningnetwork/lnd/aezeed"
-	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnrpc"
-	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"golang.org/x/net/context"
+	"time"
+
+	//"github.com/btcsuite/btcwallet/wallet"
+	"github.com/lightningnetwork/lnd/aezeed"
+	"github.com/lightningnetwork/lnd/chanbackup"
 )
 
 // ChannelsToRecover wraps any set of packed (serialized+encrypted) channel
@@ -76,7 +73,7 @@ type WalletUnlockMsg struct {
 	// password is correct, here in the WalletUnlocker and again later when
 	// lnd actually uses it). Because unlocking involves scrypt which is
 	// resource intensive, we want to avoid doing it twice.
-	Wallet *wallet.Wallet
+	Wallet interface{}//*wallet.Wallet
 
 	// ChanBackups a set of static channel backups that should be received
 	// after the wallet has been unlocked.
@@ -127,12 +124,13 @@ func (u *UnlockerService) GenSeed(ctx context.Context,
 
 	// Before we start, we'll ensure that the wallet hasn't already created
 	// so we don't show a *new* seed to the user if one already exists.
-	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
-	loader := wallet.NewLoader(u.netParams, netDir, 0)
-	walletExists, err := loader.WalletExists()
-	if err != nil {
-		return nil, err
-	}
+	//netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
+	//loader := wallet.NewLoader(u.netParams, netDir, 0)
+	//walletExists, err := loader.WalletExists()
+	//if err != nil {
+	//	return nil, err
+	//}
+	walletExists := false
 	if walletExists {
 		return nil, fmt.Errorf("wallet already exists")
 	}
@@ -256,19 +254,19 @@ func (u *UnlockerService) InitWallet(ctx context.Context,
 
 	// We'll then open up the directory that will be used to store the
 	// wallet's files so we can check if the wallet already exists.
-	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
-	loader := wallet.NewLoader(u.netParams, netDir, uint32(recoveryWindow))
-
-	walletExists, err := loader.WalletExists()
-	if err != nil {
-		return nil, err
-	}
-
-	// If the wallet already exists, then we'll exit early as we can't
-	// create the wallet if it already exists!
-	if walletExists {
-		return nil, fmt.Errorf("wallet already exists")
-	}
+	//netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
+	//loader := wallet.NewLoader(u.netParams, netDir, uint32(recoveryWindow))
+	//
+	//walletExists, err := loader.WalletExists()
+	//if err != nil {
+	//	return nil, err
+	//}
+	//
+	//// If the wallet already exists, then we'll exit early as we can't
+	//// create the wallet if it already exists!
+	//if walletExists {
+	//	return nil, fmt.Errorf("wallet already exists")
+	//}
 
 	// At this point, we know that the wallet doesn't already exist. So
 	// we'll map the user provided aezeed and passphrase into a decoded
@@ -312,28 +310,30 @@ func (u *UnlockerService) UnlockWallet(ctx context.Context,
 
 	password := in.WalletPassword
 	recoveryWindow := uint32(in.RecoveryWindow)
+	//
+	//netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
+	//loader := wallet.NewLoader(u.netParams, netDir, recoveryWindow)
+	//
+	//// Check if wallet already exists.
+	//walletExists, err := loader.WalletExists()
+	//if err != nil {
+	//	return nil, err
+	//}
+	//
+	//if !walletExists {
+	//	// Cannot unlock a wallet that does not exist!
+	//	return nil, fmt.Errorf("wallet not found")
+	//}
+	//
+	//// Try opening the existing wallet with the provided password.
+	//unlockedWallet, err := loader.OpenExistingWallet(password, false)
+	//if err != nil {
+	//	// Could not open wallet, most likely this means that provided
+	//	// password was incorrect.
+	//	return nil, err
+	//}
 
-	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
-	loader := wallet.NewLoader(u.netParams, netDir, recoveryWindow)
-
-	// Check if wallet already exists.
-	walletExists, err := loader.WalletExists()
-	if err != nil {
-		return nil, err
-	}
-
-	if !walletExists {
-		// Cannot unlock a wallet that does not exist!
-		return nil, fmt.Errorf("wallet not found")
-	}
-
-	// Try opening the existing wallet with the provided password.
-	unlockedWallet, err := loader.OpenExistingWallet(password, false)
-	if err != nil {
-		// Could not open wallet, most likely this means that provided
-		// password was incorrect.
-		return nil, err
-	}
+	unlockedWallet := new(int)
 
 	// We successfully opened the wallet and pass the instance back to
 	// avoid it needing to be unlocked again.
@@ -364,69 +364,69 @@ func (u *UnlockerService) UnlockWallet(ctx context.Context,
 func (u *UnlockerService) ChangePassword(ctx context.Context,
 	in *lnrpc.ChangePasswordRequest) (*lnrpc.ChangePasswordResponse, error) {
 
-	netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
-	loader := wallet.NewLoader(u.netParams, netDir, 0)
-
-	// First, we'll make sure the wallet exists for the specific chain and
-	// network.
-	walletExists, err := loader.WalletExists()
-	if err != nil {
-		return nil, err
-	}
-
-	if !walletExists {
-		return nil, errors.New("wallet not found")
-	}
-
-	publicPw := in.CurrentPassword
-	privatePw := in.CurrentPassword
-
-	// If the current password is blank, we'll assume the user is coming
-	// from a --noseedbackup state, so we'll use the default passwords.
-	if len(in.CurrentPassword) == 0 {
-		publicPw = lnwallet.DefaultPublicPassphrase
-		privatePw = lnwallet.DefaultPrivatePassphrase
-	}
-
-	// Make sure the new password meets our constraints.
-	if err := ValidatePassword(in.NewPassword); err != nil {
-		return nil, err
-	}
-
-	// Load the existing wallet in order to proceed with the password change.
-	w, err := loader.OpenExistingWallet(publicPw, false)
-	if err != nil {
-		return nil, err
-	}
-	// Unload the wallet to allow lnd to open it later on.
-	defer loader.UnloadWallet()
-
-	// Since the macaroon database is also encrypted with the wallet's
-	// password, we'll remove all of the macaroon files so that they're
-	// re-generated at startup using the new password. We'll make sure to do
-	// this after unlocking the wallet to ensure macaroon files don't get
-	// deleted with incorrect password attempts.
-	for _, file := range u.macaroonFiles {
-		err := os.Remove(file)
-		if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-	}
-
-	// Attempt to change both the public and private passphrases for the
-	// wallet. This will be done atomically in order to prevent one
-	// passphrase change from being successful and not the other.
-	err = w.ChangePassphrases(
-		publicPw, in.NewPassword, privatePw, in.NewPassword,
-	)
-	if err != nil {
-		return nil, fmt.Errorf("unable to change wallet passphrase: "+
-			"%v", err)
-	}
-
-	// Finally, send the new password across the UnlockPasswords channel to
-	// automatically unlock the wallet.
-	u.UnlockMsgs <- &WalletUnlockMsg{Passphrase: in.NewPassword}
+	//netDir := btcwallet.NetworkDir(u.chainDir, u.netParams)
+	//loader := wallet.NewLoader(u.netParams, netDir, 0)
+	//
+	//// First, we'll make sure the wallet exists for the specific chain and
+	//// network.
+	//walletExists, err := loader.WalletExists()
+	//if err != nil {
+	//	return nil, err
+	//}
+	//
+	//if !walletExists {
+	//	return nil, errors.New("wallet not found")
+	//}
+	//
+	//publicPw := in.CurrentPassword
+	//privatePw := in.CurrentPassword
+	//
+	//// If the current password is blank, we'll assume the user is coming
+	//// from a --noseedbackup state, so we'll use the default passwords.
+	//if len(in.CurrentPassword) == 0 {
+	//	publicPw = lnwallet.DefaultPublicPassphrase
+	//	privatePw = lnwallet.DefaultPrivatePassphrase
+	//}
+	//
+	//// Make sure the new password meets our constraints.
+	//if err := ValidatePassword(in.NewPassword); err != nil {
+	//	return nil, err
+	//}
+	//
+	//// Load the existing wallet in order to proceed with the password change.
+	//w, err := loader.OpenExistingWallet(publicPw, false)
+	//if err != nil {
+	//	return nil, err
+	//}
+	//// Unload the wallet to allow lnd to open it later on.
+	//defer loader.UnloadWallet()
+	//
+	//// Since the macaroon database is also encrypted with the wallet's
+	//// password, we'll remove all of the macaroon files so that they're
+	//// re-generated at startup using the new password. We'll make sure to do
+	//// this after unlocking the wallet to ensure macaroon files don't get
+	//// deleted with incorrect password attempts.
+	//for _, file := range u.macaroonFiles {
+	//	err := os.Remove(file)
+	//	if err != nil && !os.IsNotExist(err) {
+	//		return nil, err
+	//	}
+	//}
+	//
+	//// Attempt to change both the public and private passphrases for the
+	//// wallet. This will be done atomically in order to prevent one
+	//// passphrase change from being successful and not the other.
+	//err = w.ChangePassphrases(
+	//	publicPw, in.NewPassword, privatePw, in.NewPassword,
+	//)
+	//if err != nil {
+	//	return nil, fmt.Errorf("unable to change wallet passphrase: "+
+	//		"%v", err)
+	//}
+	//
+	//// Finally, send the new password across the UnlockPasswords channel to
+	//// automatically unlock the wallet.
+	//u.UnlockMsgs <- &WalletUnlockMsg{Passphrase: in.NewPassword}
 
 	return &lnrpc.ChangePasswordResponse{}, nil
 }
