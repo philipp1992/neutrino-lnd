@@ -708,10 +708,6 @@ func loadConfig() (*config, error) {
 		// while we're at it.
 		numNets := 0
 		var ltcParams litecoinNetParams
-		if cfg.Litecoin.MainNet && cfg.Litecoin.Node == "lightwallet" {
-			numNets++
-			ltcParams = ltcLightWalletParams
-		}
 		if cfg.Litecoin.MainNet && cfg.Litecoin.Node != "lightwallet"{
 			numNets++
 			ltcParams = litecoinMainNetParams
@@ -719,10 +715,6 @@ func loadConfig() (*config, error) {
 		if cfg.Litecoin.TestNet3 {
 			numNets++
 			ltcParams = litecoinTestNetParams
-		}
-		if cfg.Litecoin.RegTest && cfg.Litecoin.Node == "lightwallet" {
-			numNets++
-			ltcParams = ltcLightWalletRegtestParams
 		}
 		if cfg.Litecoin.RegTest && cfg.Litecoin.Node != "lightwallet"{
 			numNets++

@@ -29,7 +29,7 @@ func (lw *LightWalletController) NewAddress(addrType lnwallet.AddressType, chang
 		panic("implement me")
 	}
 
-	addrStr, err := lw.client.ChainConn.Client.GetLastAddress(change)
+	addrStr, err := lw.client.ChainConn.RPCClient().GetLastAddress(change)
 
 	if err != nil {
 		return nil, err
