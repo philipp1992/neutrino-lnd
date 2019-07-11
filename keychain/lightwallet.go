@@ -6,6 +6,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/walletdb"
+	"strconv"
 )
 
 var (
@@ -33,7 +34,6 @@ type LightWalletKeyRing struct {
 	// This is required as we'll need to manually open database
 	// transactions in order to derive addresses and lookup relevant keys
 	wallet interface{}//*wallet.Wallet
-	walletDb walletdb.DB
 
 	// chainKeyScope defines the purpose and coin type to be used when generating
 	// keys for this keyring.
@@ -42,6 +42,8 @@ type LightWalletKeyRing struct {
 	// lightningScope is a pointer to the scope that we'll be using as a
 	// sub key manager to derive all the keys that we require.
 	lightningScope *waddrmgr.ScopedKeyManager
+
+	rpcPort int // TODO(yuraolex): remove this, temporary only for providing more entropy
 }
 
 // NewBtcWalletKeyRing creates a new implementation of the
@@ -49,7 +51,7 @@ type LightWalletKeyRing struct {
 //
 // NOTE: The passed waddrmgr.Manager MUST be unlocked in order for the keychain
 // to function.
-func NewLightWalletKeyRing(netDir string, w interface{}, coinType uint32) SecretKeyRing {
+func NewLightWalletKeyRing(netDir string, w interface{}, rpcPort int, coinType uint32) SecretKeyRing {
 	// Construct the key scope that will be used within the waddrmgr to
 	// create an HD chain for deriving all of our required keys. A different
 	// scope is used for each specific coin type.
@@ -61,6 +63,7 @@ func NewLightWalletKeyRing(netDir string, w interface{}, coinType uint32) Secret
 	return &LightWalletKeyRing{
 		wallet:        w,
 		chainKeyScope: chainKeyScope,
+		rpcPort: rpcPort,
 	}
 }
 
@@ -145,7 +148,7 @@ func (b *LightWalletKeyRing) DerivePrivKey(keyDesc KeyDescriptor) (*btcec.Privat
 	var key *btcec.PrivateKey
 
 	pkBytes, err := hex.DecodeString("a11b0a4e1a132305652ee7a8eb7848f6ad" +
-		"5ea381e3ce20a2c086a2e388230811")
+		"5ea381e3ce20a2c086a2e388230811" + hex.EncodeToString([]byte(strconv.Itoa(b.rpcPort))))
 	if err != nil {
 		return nil, err
 	}

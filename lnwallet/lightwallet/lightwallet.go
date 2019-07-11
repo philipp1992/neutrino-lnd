@@ -1,6 +1,7 @@
 package lightwallet
 
 import (
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
@@ -57,7 +58,41 @@ func (lw *LightWalletController) CreateSimpleTx(outputs []*wire.TxOut, feeRate l
 }
 
 func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int32) ([]*lnwallet.Utxo, error) {
-	panic("implement me")
+
+	result, err := lw.client.ChainConn.RPCClient().ListUtxos()
+
+	if err != nil {
+		return nil, err
+	}
+
+	var utxos []*lnwallet.Utxo
+
+	for _, utxo := range result  {
+
+		pkScript, err := btcutil.DecodeAddress(utxo.Address, lw.config.NetParams)
+
+		if err != nil {
+			return nil, err
+		}
+
+		hash, _ := chainhash.NewHashFromStr(utxo.TxID)
+
+
+		tmp := &lnwallet.Utxo {
+			AddressType: lnwallet.WitnessPubKey,
+			Confirmations: utxo.Confirmations,
+			PkScript: pkScript.ScriptAddress(),
+			Value: btcutil.Amount(utxo.Amount),
+			OutPoint: wire.OutPoint{
+				Hash: *hash,
+				Index: utxo.Vout,
+			},
+		}
+
+		utxos = append(utxos, tmp)
+	}
+
+	return utxos, nil
 }
 
 func (lw *LightWalletController) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
@@ -65,11 +100,11 @@ func (lw *LightWalletController) ListTransactionDetails() ([]*lnwallet.Transacti
 }
 
 func (lw *LightWalletController) LockOutpoint(o wire.OutPoint) {
-	panic("implement me")
+	//panic("implement me")
 }
 
 func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
-	panic("implement me")
+	//panic("implement me")
 }
 
 func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
