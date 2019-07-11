@@ -227,7 +227,6 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	// If spv mode is active, then we'll be using a distinct set of
 	// chainControl interfaces that interface directly with the p2p network
 	// of the selected chain.
-	var rpcPort int
 	switch homeChainConfig.Node {
 	case "neutrino":
 		// We'll create ChainNotifier and FilteredChainView instances,
@@ -273,13 +272,13 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		var lightWalletHost string
 		if strings.Contains(lightWalletMode.RPCHost, ":") {
 			lightWalletHost = lightWalletMode.RPCHost
-			rpcPort, _ = strconv.Atoi(strings.Split(lightWalletHost, ":")[1])
 		} else {
 			// The RPC ports specified in chainparams.go assume
 			// btcd, which picks a different port so that btcwallet
 			// can use the same RPC port as bitcoind. We convert
 			// this back to the btcwallet/bitcoind port.
-			rpcPort, err = strconv.Atoi(activeNetParams.rpcPort)
+			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
+
 			if err != nil {
 				return nil, err
 			}
@@ -598,6 +597,9 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	//	wc.InternalWallet(), activeNetParams.CoinType,
 	//)
 	netDir := btcwallet.NetworkDir(walletConfig.DataDir, walletConfig.NetParams)
+
+	rpcPort, _ := strconv.Atoi(strings.Split(cfg.RawRPCListeners[0], ":")[1])
+
 	keyRing := keychain.NewLightWalletKeyRing(
 		netDir, cc.wc,
 		rpcPort,

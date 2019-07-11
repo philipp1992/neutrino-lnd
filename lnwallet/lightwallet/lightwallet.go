@@ -1,6 +1,7 @@
 package lightwallet
 
 import (
+	"encoding/hex"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -69,7 +70,8 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 
 	for _, utxo := range result  {
 
-		pkScript, err := btcutil.DecodeAddress(utxo.Address, lw.config.NetParams)
+
+		pkScript, err := hex.DecodeString(utxo.PkScript)
 
 		if err != nil {
 			return nil, err
@@ -77,18 +79,17 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 
 		hash, _ := chainhash.NewHashFromStr(utxo.TxID)
 
-
 		tmp := &lnwallet.Utxo {
 			AddressType: lnwallet.WitnessPubKey,
 			Confirmations: utxo.Confirmations,
-			PkScript: pkScript.ScriptAddress(),
+			PkScript: pkScript,
 			Value: btcutil.Amount(utxo.Amount),
 			OutPoint: wire.OutPoint{
 				Hash: *hash,
 				Index: utxo.Vout,
 			},
 		}
-
+		
 		utxos = append(utxos, tmp)
 	}
 
