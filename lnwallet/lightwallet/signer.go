@@ -4,6 +4,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
@@ -192,31 +193,24 @@ var _ input.Signer = (*LightWalletController)(nil)
 
 func (lw *LightWalletController) SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) {
 
-
 	privKey, err := lw.keychain.DerivePrivKey(keychain.KeyDescriptor{
 		PubKey: pubKey,
 	})
-
-	fmt.Printf("\nSigning message, pubKey: %s\nprivKey: %s\nderivedKey: %s\n",
-		hex.EncodeToString(pubKey.SerializeCompressed()),
-		hex.EncodeToString(privKey.Serialize()),
-		hex.EncodeToString(privKey.PubKey().SerializeCompressed()))
 
 	if err != nil {
 		return nil, err
 	}
 
-	signature, err := privKey.Sign(msg)
+	// Double hash and sign the data.
+	msgDigest := chainhash.DoubleHashB(msg)
+
+	signature, err := privKey.Sign(msgDigest)
 
 	if err != nil {
 		return nil, err
 	}
 
 	pubKey.Curve = btcec.S256()
-
-	if !signature.Verify(msg, pubKey) {
-		return nil, err
-	}
 
 	return signature, nil
 }
