@@ -3,24 +3,9 @@ package keychain
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"fmt"
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcwallet/waddrmgr"
-	"github.com/btcsuite/btcwallet/walletdb"
-	"strconv"
-)
-
-var (
-	// lightningAddrSchema is the scope addr schema for all keys that we
-	// derive. We'll treat them all as p2wkh addresses, as atm we must
-	// specify a particular type.
-	lightningAddrSchema = waddrmgr.ScopeAddrSchema{
-		ExternalAddrType: waddrmgr.WitnessPubKey,
-		InternalAddrType: waddrmgr.WitnessPubKey,
-	}
-
-	// waddrmgrNamespaceKey is the namespace key that the waddrmgr state is
-	// stored within the top-level waleltdb buckets of btcwallet.
-	waddrmgrNamespaceKey = []byte("waddrmgr")
+	"github.com/btcsuite/btcd/rpcclient"
 )
 
 // BtcWalletKeyRing is an implementation of both the KeyRing and SecretKeyRing
@@ -30,20 +15,7 @@ var (
 // construction means that all key derivation will be protected under the root
 // seed of the wallet, making each derived key fully deterministic.
 type LightWalletKeyRing struct {
-	// wallet is a pointer to the active instance of the btcwallet core.
-	// This is required as we'll need to manually open database
-	// transactions in order to derive addresses and lookup relevant keys
-	wallet interface{}//*wallet.Wallet
-
-	// chainKeyScope defines the purpose and coin type to be used when generating
-	// keys for this keyring.
-	chainKeyScope waddrmgr.KeyScope
-
-	// lightningScope is a pointer to the scope that we'll be using as a
-	// sub key manager to derive all the keys that we require.
-	lightningScope *waddrmgr.ScopedKeyManager
-
-	rpcPort int // TODO(yuraolex): remove this, temporary only for providing more entropy
+	rpcClient *rpcclient.Client
 }
 
 // NewBtcWalletKeyRing creates a new implementation of the
@@ -51,58 +23,11 @@ type LightWalletKeyRing struct {
 //
 // NOTE: The passed waddrmgr.Manager MUST be unlocked in order for the keychain
 // to function.
-func NewLightWalletKeyRing(netDir string, w interface{}, rpcPort int, coinType uint32) SecretKeyRing {
-	// Construct the key scope that will be used within the waddrmgr to
-	// create an HD chain for deriving all of our required keys. A different
-	// scope is used for each specific coin type.
-	chainKeyScope := waddrmgr.KeyScope{
-		Purpose: BIP0043Purpose,
-		Coin:    coinType,
+func NewLightWalletKeyRing(rpcClient *rpcclient.Client) *LightWalletKeyRing {
+
+	return &LightWalletKeyRing {
+		rpcClient: rpcClient,
 	}
-
-	return &LightWalletKeyRing{
-		wallet:        w,
-		chainKeyScope: chainKeyScope,
-		rpcPort: rpcPort,
-	}
-}
-
-// keyScope attempts to return the key scope that we'll use to derive all of
-// our keys. If the scope has already been fetched from the database, then a
-// cached version will be returned. Otherwise, we'll fetch it from the database
-// and cache it for subsequent accesses.
-func (b *LightWalletKeyRing) keyScope() (*waddrmgr.ScopedKeyManager, error) {
-	// If the scope has already been populated, then we'll return it
-	// directly.
-	if b.lightningScope != nil {
-		return b.lightningScope, nil
-	}
-
-	return nil, nil
-}
-
-// createAccountIfNotExists will create the corresponding account for a key
-// family if it doesn't already exist in the database.
-func (b *LightWalletKeyRing) createAccountIfNotExists(
-	addrmgrNs walletdb.ReadWriteBucket, keyFam KeyFamily,
-	scope *waddrmgr.ScopedKeyManager) error {
-
-	// If this is the multi-sig key family, then we can return early as
-	// this is the default account that's created.
-	if keyFam == KeyFamilyMultiSig {
-		return nil
-	}
-
-	// Otherwise, we'll check if the account already exists, if so, we can
-	// once again bail early.
-	_, err := scope.AccountName(addrmgrNs, uint32(keyFam))
-	if err == nil {
-		return nil
-	}
-
-	// If we reach this point, then the account hasn't yet been created, so
-	// we'll need to create it before we can proceed.
-	return scope.NewRawAccount(addrmgrNs, uint32(keyFam))
 }
 
 // DeriveNextKey attempts to derive the *next* key within the key family
@@ -111,15 +36,27 @@ func (b *LightWalletKeyRing) createAccountIfNotExists(
 //
 // NOTE: This is part of the keychain.KeyRing interface.
 func (b *LightWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, error) {
-	var (
-		pubKey *btcec.PublicKey
-		keyLoc KeyLocator
-	)
+	var keyDesc KeyDescriptor
 
-	return KeyDescriptor{
-		PubKey:     pubKey,
-		KeyLocator: keyLoc,
-	}, nil
+	res, err := b.rpcClient.DeriveNextKey(uint32(keyFam))
+
+	if err != nil {
+		return keyDesc, err
+	}
+
+	decodedBytes, _ := hex.DecodeString(res.HexPubKey)
+	keyDesc.PubKey, err = btcec.ParsePubKey(decodedBytes, btcec.S256())
+
+	if len(decodedBytes) == 0 || err != nil {
+		return keyDesc, err
+	}
+
+	keyDesc.Index = res.Locator.Index
+	keyDesc.Family = KeyFamily(res.Locator.Family)
+
+	fmt.Printf("DeriveNextKey: fam: %v %v %v, pubkey: %s\n", keyFam, keyDesc.Family, keyDesc.Index, hex.EncodeToString(keyDesc.PubKey.SerializeCompressed()))
+
+	return keyDesc, nil
 }
 
 // DeriveKey attempts to derive an arbitrary key specified by the passed
@@ -130,12 +67,23 @@ func (b *LightWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, err
 func (b *LightWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error) {
 	var keyDesc KeyDescriptor
 
-	privKey, err := b.DerivePrivKey(KeyDescriptor{keyLoc, nil })
+	desc, err := b.rpcClient.DeriveKey(uint32(keyLoc.Family), keyLoc.Index)
 
-	if err == nil {
-		keyDesc.KeyLocator = keyLoc
-		keyDesc.PubKey = privKey.PubKey()
+	decodedBytes, _ := hex.DecodeString(desc.HexPubKey)
+
+	if len(decodedBytes) == 0 || err != nil {
+		return keyDesc, nil
 	}
+
+	keyDesc.PubKey, err = btcec.ParsePubKey(decodedBytes, btcec.S256())
+
+	if err != nil {
+		return keyDesc, err
+	}
+
+	keyDesc.KeyLocator = keyLoc
+
+	fmt.Printf("DeriveKey: %v %v, pubkey: %s\n", keyDesc.Family, keyDesc.Index, hex.EncodeToString(keyDesc.PubKey.SerializeCompressed()))
 
 	return keyDesc, nil
 }
@@ -147,13 +95,26 @@ func (b *LightWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error)
 func (b *LightWalletKeyRing) DerivePrivKey(keyDesc KeyDescriptor) (*btcec.PrivateKey, error) {
 	var key *btcec.PrivateKey
 
-	pkBytes, err := hex.DecodeString("a11b0a4e1a132305652ee7a8eb7848f6ad" +
-		"5ea381e3ce20a2c086a2e388230811" + hex.EncodeToString([]byte(strconv.Itoa(b.rpcPort))))
+	var hexEncodedPubKey string
+	if keyDesc.PubKey != nil {
+		hexEncodedPubKey = hex.EncodeToString(keyDesc.PubKey.SerializeCompressed())
+	}
+
+	hexPrivKey, err := b.rpcClient.DerivePrivKey(uint32(keyDesc.Family), keyDesc.Index, hexEncodedPubKey)
+
 	if err != nil {
 		return nil, err
 	}
 
-	key, _ = btcec.PrivKeyFromBytes(btcec.S256(), pkBytes)
+	pkBytes, err := hex.DecodeString(*hexPrivKey)
+
+	if len(pkBytes) == 0 || err != nil {
+		return nil, err
+	}
+
+	key, pubKey := btcec.PrivKeyFromBytes(btcec.S256(), pkBytes)
+
+	fmt.Printf("DerivePrivKey: %v %v, pubkey: %s\n", keyDesc.Family, keyDesc.Index, hex.EncodeToString(pubKey.SerializeCompressed()))
 
 	return key, nil
 }

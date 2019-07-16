@@ -207,6 +207,7 @@ type lightWalletConfig struct {
 	RPCUser         string `long:"rpcuser" description:"Username for RPC connections"`
 	RPCPass         string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
 	ZMQPubRawHeader string `long:"zmqpubrawheader" description:"The address listening for ZMQ connections to deliver raw header notifications"`
+	UseWalletBackend bool  `long:"usewalletbackend" description:"Use light wallet as lnwallet backend"`
 }
 
 type autoPilotConfig struct {
@@ -404,6 +405,7 @@ func loadConfig() (*config, error) {
 		LightWalletMode: &lightWalletConfig {
 			Dir: defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
+			UseWalletBackend: false,
 		},
 		MaxPendingChannels: DefaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,

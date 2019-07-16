@@ -120,6 +120,8 @@ func (b *LightWalletNotifier) Start() error {
 	// Connect to lightwallet, and register for notifications on connected,
 	// and disconnected blocks.
 
+	b.chainConn.Start()
+
 	if err := b.chainConn.NotifyBlocks(); err != nil {
 		return err
 	}

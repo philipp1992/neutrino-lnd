@@ -1,6 +1,7 @@
 package lightwallet
 
 import (
+	"encoding/hex"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 )
@@ -17,7 +18,24 @@ func (lw *LightWalletController) GetBestBlock() (*chainhash.Hash, int32, error) 
 
 func (lw *LightWalletController) GetUtxo(op *wire.OutPoint, pkScript []byte, heightHint uint32,
 	cancel <-chan struct{}) (*wire.TxOut, error) {
-	panic("implement me")
+
+	utxo, err := lw.client.GetUnspentOutput(&op.Hash, op.Index)
+
+	if err != nil {
+		return nil, err
+	}
+
+	parsed, err := hex.DecodeString(utxo.ScriptPubKeyHex)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &wire.TxOut{
+		Value: utxo.Amount,
+		PkScript: parsed,
+
+	}, nil
 }
 
 func (lw *LightWalletController) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {

@@ -2,6 +2,7 @@ package routing
 
 import (
 	"bytes"
+	"encoding/hex"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -37,6 +38,7 @@ func ValidateChannelAnn(a *lnwire.ChannelAnnouncement) error {
 		return err
 	}
 	if !bitcoinSig1.Verify(dataHash, bitcoinKey1) {
+		fmt.Printf("Failed to verify sig, key: %s\n", hex.EncodeToString(bitcoinKey1.SerializeCompressed()))
 		return errors.New("can't verify first bitcoin signature")
 	}
 

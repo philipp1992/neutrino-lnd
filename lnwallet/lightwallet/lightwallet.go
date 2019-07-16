@@ -2,11 +2,13 @@ package lightwallet
 
 import (
 	"encoding/hex"
+	"fmt"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 )
@@ -14,12 +16,27 @@ import (
 type LightWalletController struct{
 	// client is the RPC client to the bitcoind node.
 	client *chain.LightWalletClient
-
 	config btcwallet.Config
+	keychain *keychain.LightWalletKeyRing
 }
 
 func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
-	panic("implement me")
+	utxo, err := lw.client.GetUnspentOutput(&prevOut.Hash, prevOut.Index)
+
+	if err != nil {
+		return nil, err
+	}
+
+	pkScript, err := hex.DecodeString(utxo.ScriptPubKeyHex)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &wire.TxOut{
+		Value: utxo.Amount,
+		PkScript: pkScript,
+	}, nil
 }
 
 func (lw *LightWalletController) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
@@ -89,7 +106,7 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 				Index: utxo.Vout,
 			},
 		}
-		
+
 		utxos = append(utxos, tmp)
 	}
 
@@ -109,7 +126,11 @@ func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
 }
 
 func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
-	panic("implement me")
+	txid, err := lw.client.SendRawTransaction(tx, true)
+
+	fmt.Printf("Published transaction with txid: %v", txid)
+
+	return err
 }
 
 func (lw *LightWalletController) SubscribeTransactions() (lnwallet.TransactionSubscription, error) {
@@ -133,6 +154,7 @@ func (lw *LightWalletController) IsSynced() (bool, int64, error) {
 }
 
 func (lw *LightWalletController) Start() error {
+	lw.client.NotifyBlocks()
 	return nil
 }
 
@@ -144,9 +166,10 @@ func (lw *LightWalletController) BackEnd() string {
 	panic("implement me")
 }
 
-func New(cfg btcwallet.Config, 	client *chain.LightWalletClient) (*LightWalletController, error) {
+func New(cfg btcwallet.Config, 	client *chain.LightWalletClient, keychain *keychain.LightWalletKeyRing) (*LightWalletController, error) {
 	return &LightWalletController{
 		config: cfg,
 		client: client,
+		keychain: keychain,
 	}, nil
 }

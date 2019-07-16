@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"github.com/lightningnetwork/lnd/lnwallet/lightwallet"
 
-	//"github.com/btcsuite/btcwallet/wallet"
 	"io/ioutil"
 	"net"
 	"os"
@@ -19,7 +18,7 @@ import (
 	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
-	//"github.com/btcsuite/btcwallet/wallet"
+	"github.com/btcsuite/btcwallet/wallet"
 	"github.com/btcsuite/btcwallet/walletdb"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightninglabs/neutrino/headerfs"
@@ -148,7 +147,7 @@ type chainControl struct {
 // neutrino light client instance, `neutrinoCS` must be non-nil.
 func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	privateWalletPw, publicWalletPw []byte, birthday time.Time,
-	recoveryWindow uint32, wallet interface{},//*wallet.Wallet,
+	recoveryWindow uint32, wallet *wallet.Wallet,
 	neutrinoCS *neutrino.ChainService) (*chainControl, error) {
 
 	// Set the RPC config from the "home" chain. Multi-chain isn't yet
@@ -327,12 +326,22 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			return nil, err
 		}
 
-		wc, err := lightwallet.New(*walletConfig, lwClient)
+		if lightWalletMode.UseWalletBackend {
 
-		cc.msgSigner = wc
-		cc.signer = wc
-		cc.chainIO = wc
-		cc.wc = wc
+			lwKeyRing := keychain.NewLightWalletKeyRing(lwClient.ChainConn.RPCClient())
+			wc, err := lightwallet.New(*walletConfig, lwClient, lwKeyRing)
+
+			if err != nil {
+				return nil, err
+			}
+
+			cc.keyRing = lwKeyRing
+			cc.msgSigner = wc
+			cc.signer = wc
+			cc.chainIO = wc
+			cc.wc = wc
+		}
+
 
 
 	case "bitcoind", "litecoind", "xsnd":
@@ -580,33 +589,29 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			homeChainConfig.Node)
 	}
 
-	//wc, err := btcwallet.New(*walletConfig)
-
-	if err != nil {
-		fmt.Printf("unable to create wallet controller: %v\n", err)
-		return nil, err
+	if cc.wc == nil {
+		wc, err := btcwallet.New(*walletConfig)
+		if err != nil {
+			fmt.Printf("unable to create wallet controller: %v\n", err)
+			return nil, err
+		}
+		keyRing := keychain.NewBtcWalletKeyRing(
+			wc.InternalWallet(), activeNetParams.CoinType,
+		)
+		// Select the default channel constraints for the primary chain.
+		cc.keyRing = keyRing
+		cc.msgSigner = wc
+		cc.signer = wc
+		cc.chainIO = wc
+		cc.wc = wc
 	}
 
-	// Select the default channel constraints for the primary chain.
+
+
 	channelConstraints := defaultBtcChannelConstraints
 	if registeredChains.PrimaryChain() == litecoinChain {
 		channelConstraints = defaultLtcChannelConstraints
 	}
-
-	//keyRing := keychain.NewBtcWalletKeyRing(
-	//	wc.InternalWallet(), activeNetParams.CoinType,
-	//)
-	netDir := btcwallet.NetworkDir(walletConfig.DataDir, walletConfig.NetParams)
-
-	rpcPort, _ := strconv.Atoi(strings.Split(cfg.RawRPCListeners[0], ":")[1])
-
-	keyRing := keychain.NewLightWalletKeyRing(
-		netDir, cc.wc,
-		rpcPort,
-		activeNetParams.CoinType,
-
-	)
-	cc.keyRing = keyRing
 
 	// Create, and start the lnwallet, which handles the core payment
 	// channel logic, and exposes control via proxy state machines.
@@ -616,7 +621,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		WalletController:   cc.wc,
 		Signer:             cc.signer,
 		FeeEstimator:       cc.feeEstimator,
-		SecretKeyRing:      keyRing,
+		SecretKeyRing:      cc.keyRing,
 		ChainIO:            cc.chainIO,
 		DefaultConstraints: channelConstraints,
 		NetParams:          *activeNetParams.Params,
