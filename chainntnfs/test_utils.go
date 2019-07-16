@@ -67,10 +67,12 @@ func GetTestTxidAndScript(h *rpctest.Harness) (*chainhash.Hash, []byte, error) {
 		return nil, nil, fmt.Errorf("unable to generate pkScript: %v", err)
 	}
 	output := &wire.TxOut{Value: 2e8, PkScript: pkScript}
-	txid, err := h.SendOutputs([]*wire.TxOut{output}, 10)
+	tx, err := h.SendOutputsLW([]*wire.TxOut{output}, 10)
 	if err != nil {
 		return nil, nil, err
 	}
+
+	txid, err := h.Client.SendRawTransaction(tx, true)
 
 	return txid, pkScript, nil
 }
@@ -81,7 +83,7 @@ func WaitForMempoolTx(miner *rpctest.Harness, txid *chainhash.Hash) error {
 	trickle := time.After(2 * trickleInterval)
 	for {
 		// Check for the harness' knowledge of the txid.
-		tx, err := miner.Node.GetRawTransaction(txid)
+		tx, err := miner.Client.GetRawTransaction(txid)
 		if err != nil {
 			jsonErr, ok := err.(*btcjson.RPCError)
 			if ok && jsonErr.Code == btcjson.ErrRPCNoTxInfo {
@@ -128,16 +130,26 @@ func CreateSpendableOutput(t *testing.T,
 		t.Fatalf("unable to generate pkScript: %v", err)
 	}
 	output := &wire.TxOut{Value: 2e8, PkScript: pkScript}
-	txid, err := miner.SendOutputsWithoutChange([]*wire.TxOut{output}, 10)
+	msgTx, err := miner.SendOutputsWithoutChangeLW([]*wire.TxOut{output}, 10)
 	if err != nil {
 		t.Fatalf("unable to create tx: %v", err)
+	}
+
+	txid, err := miner.Client.SendRawTransaction(msgTx, true)
+	if err != nil {
+		t.Fatalf("unable to send raw tx: %v", err)
+	}
+
+	if _, err := miner.Client.Generate(1); err != nil {
+		t.Fatalf("unable to generate single block: %v", err)
 	}
 
 	// Mine the transaction to mark the output as spendable.
 	if err := WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
-	if _, err := miner.Node.Generate(1); err != nil {
+	
+	if _, err := miner.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate single block: %v", err)
 	}
 
@@ -256,6 +268,39 @@ func NewBitcoindBackend(t *testing.T, minerAddr string,
 		os.RemoveAll(tempBitcoindDir)
 	}
 }
+
+// NewBitcoindBackend spawns a new bitcoind node that connects to a miner at the
+// specified address. The txindex boolean can be set to determine whether the
+// backend node should maintain a transaction index. A connection to the newly
+// spawned bitcoind node is returned.
+func NewLightWalletBackend(t *testing.T, minerAddr string,
+	txindex bool) (*chain.LightWalletConn, func()) {
+
+	t.Helper()
+
+	rpcPort := 12345
+
+	zmqHeaderHost := "tcp://127.0.0.1:23456"
+
+	host := fmt.Sprintf("127.0.0.1:%d", rpcPort)
+	chainConn, err := chain.NewLightWalletConn(
+		&chaincfg.LightWalletRegTestParams, host, "weks",
+		"weks", zmqHeaderHost,
+		100*time.Millisecond,
+	)
+	if err != nil {
+		t.Fatalf("unable to establish connection to lightwallet: %v", err)
+	}
+
+	if err := chainConn.Start(); err != nil {
+		t.Fatalf("unable to establish connection to lightwallet: %v", err)
+	}
+
+	return chainConn, func() {
+		chainConn.Stop()
+	}
+}
+
 
 // NewNeutrinoBackend spawns a new neutrino node that connects to a miner at
 // the specified address.
