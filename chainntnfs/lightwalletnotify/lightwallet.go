@@ -192,13 +192,11 @@ out:
 	for {
 		select {
 		case cancelMsg := <-b.notificationCancels:
-			fmt.Printf("notificationCancels received")
 			Mock(cancelMsg)
 
 		case registerMsg := <-b.notificationRegistry:
 			switch msg := registerMsg.(type) {
 			case *chainntnfs.HistoricalConfDispatch:
-				fmt.Printf("HistoricalConfDispatch received")
 				// Look up whether the transaction is already
 				// included in the active chain. We'll do this
 				// in a goroutine to prevent blocking
@@ -417,6 +415,8 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 		// In the case that the filter exists, we'll attempt to see if
 		// any element in it matches our target public key script.
 		key := builder.DeriveKey(&reversed)
+		// TODO(yuraolex): fix it back after filters are properly built
+
 		match, err := filter.Match(key, confRequest.PkScript.Script())
 		if err != nil {
 			return nil, fmt.Errorf("unable to query filter: %v", err)

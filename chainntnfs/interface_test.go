@@ -71,7 +71,7 @@ func testSingleConfirmationNotification(miner *rpctest.Harness,
 
 	// Now generate a single block, the transaction should be included which
 	// should trigger a notification event.
-	_, err = miner.Client.Generate(2)
+	_, err = miner.Client.Generate(1)
 	if err != nil {
 		t.Fatalf("unable to generate single block: %v", err)
 	}
@@ -103,12 +103,10 @@ func testSingleConfirmationNotification(miner *rpctest.Harness,
 			}
 
 		case <-time.After(20 * time.Second):
-			t.Fatalf("confirmation notification never received")
 			fmt.Printf("\nTimeout")
+			t.Fatalf("confirmation notification never received")
 			break
 	}
-
-	fmt.Printf("\nExiting\n")
 }
 
 func testMultiConfirmationNotification(miner *rpctest.Harness,
@@ -163,15 +161,13 @@ func testMultiConfirmationNotification(miner *rpctest.Harness,
 
 	select {
 	case <-confIntent.Confirmed:
-		fmt.Printf("\nRecv")
-		//break
+		break
 	case <-time.After(20 * time.Second):
-		fmt.Printf("\nTimer")
 		t.Fatalf("confirmation notification never received")
 	}
 
 }
-//
+
 //func testBatchConfirmationNotification(miner *rpctest.Harness,
 //	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
 //
@@ -397,25 +393,19 @@ func testSpendNotification(miner *rpctest.Harness,
 		t.Fatalf("unable to generate single block: %v", err)
 	}
 
-	fmt.Printf("\nHere")
-
 	_, currentHeight, err = miner.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to get current height: %v", err)
 	}
-
-	fmt.Printf("\nHere1")
 
 	for _, c := range spendClients {
 		select {
 		case ntfn := <-c.Spend:
 			// We've received the spend nftn. So now verify all the
 			// fields have been set properly.
-			fmt.Printf("\nhere")
 			checkNotificationFields(ntfn, outpoint, spenderSha,
 				currentHeight, t)
 		case <-time.After(30 * time.Second):
-			fmt.Printf("\nSpendNever")
 			t.Fatalf("spend ntfn never received")
 		}
 	}
@@ -453,11 +443,7 @@ func testBlockEpochNotification(miner *rpctest.Harness,
 
 	epochsSent := make(chan struct{})
 	go func() {
-		fmt.Printf("\nWait\n")
 		wg.Wait()
-
-		time.Sleep(time.Second *8)
-		fmt.Printf("\nWait finished\n")
 		close(epochsSent)
 	}()
 
@@ -467,85 +453,81 @@ func testBlockEpochNotification(miner *rpctest.Harness,
 		t.Fatalf("unable to generate blocks: %v", err)
 	}
 
-	fmt.Printf("\nbefore select\n")
-
 	select {
 		case <-epochsSent:
 	case <-time.After(10 * time.Second):
-		fmt.Printf("\nNotSent\n")
 		t.Fatalf("all notifications not sent")
 	}
 
-	fmt.Printf("\nFinished\n")
 }
 
-//func testMultiClientConfirmationNotification(miner *rpctest.Harness,
-//	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
-//
-//	// We'd like to test the case of a multiple clients registered to
-//	// receive a confirmation notification for the same transaction.
-//	txid, pkScript, err := chainntnfs.GetTestTxidAndScript(miner)
-//	if err != nil {
-//		t.Fatalf("unable to create test tx: %v", err)
-//	}
-//	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
-//		t.Fatalf("tx not relayed to miner: %v", err)
-//	}
-//
-//	var wg sync.WaitGroup
-//	const (
-//		numConfsClients = 5
-//		numConfs        = 1
-//	)
-//
-//	_, currentHeight, err := miner.Node.GetBestBlock()
-//	if err != nil {
-//		t.Fatalf("unable to get current height: %v", err)
-//	}
-//
-//	// Register for a conf notification for the above generated txid with
-//	// numConfsClients distinct clients.
-//	for i := 0; i < numConfsClients; i++ {
-//		var confClient *chainntnfs.ConfirmationEvent
-//		if scriptDispatch {
-//			confClient, err = notifier.RegisterConfirmationsNtfn(
-//				nil, pkScript, numConfs, uint32(currentHeight),
-//			)
-//		} else {
-//			confClient, err = notifier.RegisterConfirmationsNtfn(
-//				txid, pkScript, numConfs, uint32(currentHeight),
-//			)
-//		}
-//		if err != nil {
-//			t.Fatalf("unable to register for confirmation: %v", err)
-//		}
-//
-//		wg.Add(1)
-//		go func() {
-//			<-confClient.Confirmed
-//			wg.Done()
-//		}()
-//	}
-//
-//	confsSent := make(chan struct{})
-//	go func() {
-//		wg.Wait()
-//		close(confsSent)
-//	}()
-//
-//	// Finally, generate a single block which should trigger the unblocking
-//	// of all numConfsClients blocked on the channel read above.
-//	if _, err := miner.Node.Generate(1); err != nil {
-//		t.Fatalf("unable to generate block: %v", err)
-//	}
-//
-//	select {
-//	case <-confsSent:
-//	case <-time.After(30 * time.Second):
-//		t.Fatalf("all confirmation notifications not sent")
-//	}
-//}
-//
+func testMultiClientConfirmationNotification(miner *rpctest.Harness,
+	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
+
+	// We'd like to test the case of a multiple clients registered to
+	// receive a confirmation notification for the same transaction.
+	txid, pkScript, err := chainntnfs.GetTestTxidAndScript(miner)
+	if err != nil {
+		t.Fatalf("unable to create test tx: %v", err)
+	}
+	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
+		t.Fatalf("tx not relayed to miner: %v", err)
+	}
+
+	var wg sync.WaitGroup
+	const (
+		numConfsClients = 5
+		numConfs        = 1
+	)
+
+	_, currentHeight, err := miner.Node.GetBestBlock()
+	if err != nil {
+		t.Fatalf("unable to get current height: %v", err)
+	}
+
+	// Register for a conf notification for the above generated txid with
+	// numConfsClients distinct clients.
+	for i := 0; i < numConfsClients; i++ {
+		var confClient *chainntnfs.ConfirmationEvent
+		if scriptDispatch {
+			confClient, err = notifier.RegisterConfirmationsNtfn(
+				nil, pkScript, numConfs, uint32(currentHeight),
+			)
+		} else {
+			confClient, err = notifier.RegisterConfirmationsNtfn(
+				txid, pkScript, numConfs, uint32(currentHeight),
+			)
+		}
+		if err != nil {
+			t.Fatalf("unable to register for confirmation: %v", err)
+		}
+
+		wg.Add(1)
+		go func() {
+			<-confClient.Confirmed
+			wg.Done()
+		}()
+	}
+
+	confsSent := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(confsSent)
+	}()
+
+	// Finally, generate a single block which should trigger the unblocking
+	// of all numConfsClients blocked on the channel read above.
+	if _, err := miner.Node.Generate(1); err != nil {
+		t.Fatalf("unable to generate block: %v", err)
+	}
+
+	select {
+	case <-confsSent:
+	case <-time.After(30 * time.Second):
+		t.Fatalf("all confirmation notifications not sent")
+	}
+}
+
 //// Tests the case in which a confirmation notification is requested for a
 //// transaction that has already been included in a block. In this case, the
 //// confirmation notification should be dispatched immediately.
@@ -1879,10 +1861,10 @@ var txNtfnTests = []txNtfnTestCase{
 }
 //
 var blockNtfnTests = []blockNtfnTestCase{
-	{
-		name: "block epoch",
-		test: testBlockEpochNotification,
-	},
+	//{
+	//	name: "block epoch",
+	//	test: testBlockEpochNotification,
+	//},
 //	{
 //		name: "cancel epoch ntfn",
 //		test: testCancelEpochNtfn,
