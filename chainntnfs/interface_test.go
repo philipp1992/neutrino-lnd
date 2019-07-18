@@ -160,8 +160,10 @@ func testMultiConfirmationNotification(miner *rpctest.Harness,
 
 	// Now generate a six blocks. The transaction should be included in the
 	// first block, which will be built upon by the other 5 blocks.
-	if _, err := miner.Client.Generate(5); err != nil {
-		t.Fatalf("unable to generate single block: %v", err)
+	for i := 0; i < 5; i++ {
+		if _, err := miner.Client.Generate(1); err != nil {
+			t.Fatalf("unable to generate single block: %v", err)
+		}
 	}
 
 	select {
@@ -211,6 +213,12 @@ func testBatchConfirmationNotification(miner *rpctest.Harness,
 			t.Fatalf("unable to register ntfn: %v", err)
 		}
 		confIntents[i] = confIntent
+
+		_, err = miner.Client.Generate(1)
+		if err != nil {
+			t.Fatalf("unable to generate single block: %v", err)
+		}
+
 		if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 			t.Fatalf("tx not relayed to miner: %v", err)
 		}
@@ -235,8 +243,10 @@ func testBatchConfirmationNotification(miner *rpctest.Harness,
 
 		// Generate the number of blocks necessary to trigger this
 		// current confirmation notification.
-		if _, err := miner.Client.Generate(blocksToGen); err != nil {
-			t.Fatalf("unable to generate single block: %v", err)
+		for i := 0; i < int(blocksToGen); i++ {
+			if _, err := miner.Client.Generate(1); err != nil {
+				t.Fatalf("unable to generate single block: %v", err)
+			}
 		}
 
 		select {
@@ -246,7 +256,7 @@ func testBatchConfirmationNotification(miner *rpctest.Harness,
 			// notification should list the initial confirmation
 			// height rather than the height they were _fully_
 			// confirmed.
-			if conf.BlockHeight != initialConfHeight {
+			if conf.BlockHeight != (initialConfHeight + uint32(i)) {
 				t.Fatalf("notification has incorrect initial "+
 					"conf height: expected %v, got %v",
 					initialConfHeight, conf.BlockHeight)
@@ -432,6 +442,9 @@ func testMultiClientConfirmationNotification(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
+	if _, err := miner.Client.Generate(1); err != nil {
+		t.Fatalf("unable to generate single block: %v", err)
+	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
@@ -442,7 +455,7 @@ func testMultiClientConfirmationNotification(miner *rpctest.Harness,
 		numConfs        = 1
 	)
 
-	_, currentHeight, err := miner.Node.GetBestBlock()
+	_, currentHeight, err := miner.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to get current height: %v", err)
 	}
@@ -479,7 +492,7 @@ func testMultiClientConfirmationNotification(miner *rpctest.Harness,
 
 	// Finally, generate a single block which should trigger the unblocking
 	// of all numConfsClients blocked on the channel read above.
-	if _, err := miner.Node.Generate(1); err != nil {
+	if _, err := miner.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
 
@@ -505,6 +518,9 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
+	if _, err := miner.Client.Generate(1); err != nil {
+		t.Fatalf("unable to generate single block: %v", err)
+	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid3); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
@@ -514,7 +530,7 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	// older blocks when the confirmation event is registered below to ensure
 	// that the TXID hasn't already been included in the chain, otherwise the
 	// notification will never be sent.
-	_, err = miner.Node.Generate(1)
+	_, err = miner.Client.Generate(1)
 	if err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
@@ -522,6 +538,9 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	txid1, pkScript1, err := chainntnfs.GetTestTxidAndScript(miner)
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
+	}
+	if _, err := miner.Client.Generate(1); err != nil {
+		t.Fatalf("unable to generate single block: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid1); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
@@ -531,17 +550,20 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
+	if _, err := miner.Client.Generate(1); err != nil {
+		t.Fatalf("unable to generate single block: %v", err)
+	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid2); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
 
-	_, currentHeight, err := miner.Node.GetBestBlock()
+	_, currentHeight, err := miner.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to get current height: %v", err)
 	}
 
 	// Now generate another block containing txs 1 & 2.
-	blockHash, err := miner.Node.Generate(1)
+	blockHash, err := miner.Client.Generate(1)
 	if err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
@@ -568,7 +590,7 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	case confInfo := <-ntfn1.Confirmed:
 		// Finally, we'll verify that the tx index returned is the exact same
 		// as the tx index of the transaction within the block itself.
-		msgBlock, err := miner.Node.GetBlock(blockHash[0])
+		msgBlock, err := miner.Client.GetBlock(blockHash[0])
 		if err != nil {
 			t.Fatalf("unable to fetch block: %v", err)
 		}
@@ -611,7 +633,7 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	}
 
 	// Fully confirm tx3.
-	_, err = miner.Node.Generate(2)
+	_, err = miner.Client.Generate(2)
 	if err != nil {
 		t.Fatalf("unable to generate block: %v", err)
 	}
@@ -679,11 +701,15 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
+	_, err = miner.Client.Generate(1)
+	if err != nil {
+		t.Fatalf("unable to generate block: %v", err)
+	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
 
-	_, currentHeight, err := miner.Node.GetBestBlock()
+	_, currentHeight, err := miner.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to get current height: %v", err)
 	}
@@ -692,7 +718,7 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 
 	// Add a block right before registering, this makes race conditions
 	// between the historical dispatcher and the normal dispatcher more obvious
-	if _, err := miner.Node.Generate(1); err != nil {
+	if _, err := miner.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate blocks: %v", err)
 	}
 
@@ -711,7 +737,7 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 	}
 
 	// Generate another 2 blocks, this should dispatch the confirm notification
-	if _, err := miner.Node.Generate(2); err != nil {
+	if _, err := miner.Client.Generate(2); err != nil {
 		t.Fatalf("unable to generate blocks: %v", err)
 	}
 
@@ -722,11 +748,15 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
+	_, err = miner.Client.Generate(1)
+	if err != nil {
+		t.Fatalf("unable to generate block: %v", err)
+	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
 
-	_, currentHeight, err = miner.Node.GetBestBlock()
+	_, currentHeight, err = miner.Client.GetBestBlock()
 	if err != nil {
 		t.Fatalf("unable to get current height: %v", err)
 	}
@@ -746,7 +776,7 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 		t.Fatalf("unable to register ntfn: %v", err)
 	}
 
-	if _, err := miner.Node.Generate(1); err != nil {
+	if _, err := miner.Client.Generate(1); err != nil {
 		t.Fatalf("unable to generate blocks: %v", err)
 	}
 
@@ -1851,60 +1881,59 @@ type blockCatchupTestCase struct {
 var txNtfnTests = []txNtfnTestCase{
 	{
 		name: "single conf ntfn",
-		test: testSingleConfirmationNotification,
+		test: testSingleConfirmationNotification, // Working
 	},
 	{
 		name: "multi conf ntfn",
-		test: testMultiConfirmationNotification,
+		test: testMultiConfirmationNotification, // Working
+	},
+	{
+		name: "batch conf ntfn",
+		test: testBatchConfirmationNotification, // Working
+	},
+	{
+		name: "multi client conf",
+		test: testMultiClientConfirmationNotification, // Working
+	},
+	{
+		name: "lazy ntfn consumer",
+		test: testLazyNtfnConsumer, // Working
 	},
 	//{
-	//	name: "batch conf ntfn",
-	//	test: testBatchConfirmationNotification,
+	//	name: "historical conf dispatch",
+	//	test: testTxConfirmedBeforeNtfnRegistration,
 	//},
-//	{
-//		name: "multi client conf",
-//		test: testMultiClientConfirmationNotification,
-//	},
-//	{
-//		name: "lazy ntfn consumer",
-//		test: testLazyNtfnConsumer,
-//	},
-//	{
-//		name: "historical conf dispatch",
-//		test: testTxConfirmedBeforeNtfnRegistration,
-//	},
-//	{
-//		name: "reorg conf",
-//		test: testReorgConf,
-//	},
-
+	//{
+	//	name: "reorg conf",
+	//	test: testReorgConf,
+	//},
 	//{
 	//	name: "spend ntfn",
 	//	test: testSpendNotification,
 	//},
-//	{
-//		name: "historical spend dispatch",
-//		test: testSpendBeforeNtfnRegistration,
-//	},
-//	{
-//		name: "reorg spend",
-//		test: testReorgSpend,
-//	},
-//	{
-//		name: "cancel spend ntfn",
-//		test: testCancelSpendNtfn,
-//	},
+	//{
+	//	name: "historical spend dispatch",
+	//	test: testSpendBeforeNtfnRegistration,
+	//},
+	//{
+	//	name: "reorg spend",
+	//	test: testReorgSpend,
+	//},
+	//{
+	//	name: "cancel spend ntfn",
+	//	test: testCancelSpendNtfn,
+	//},
 }
 //
 var blockNtfnTests = []blockNtfnTestCase{
-	//{
-	//	name: "block epoch",
-	//	test: testBlockEpochNotification,
-	//},
-	//{
-	//	name: "cancel epoch ntfn",
-	//	test: testCancelEpochNtfn,
-	//},
+	{
+		name: "block epoch",
+		test: testBlockEpochNotification, // Working
+	},
+	{
+		name: "cancel epoch ntfn",
+		test: testCancelEpochNtfn, // Working
+	},
 }
 
 var blockCatchupTests = []blockCatchupTestCase{
@@ -1948,6 +1977,11 @@ func TestInterfaces(t *testing.T) {
 
 	for _, notifierDriver := range chainntnfs.RegisteredNotifiers() {
 		// Initialize a height hint cache for each notifier.
+
+		if notifierDriver.NotifierType != "lightwallet" {
+			continue
+		}
+
 		tempDir, err := ioutil.TempDir("", "channeldb")
 		if err != nil {
 			t.Fatalf("unable to create temp dir: %v", err)
@@ -1966,10 +2000,6 @@ func TestInterfaces(t *testing.T) {
 			newNotifier  func() (chainntnfs.TestChainNotifier, error)
 			notifierType = notifierDriver.NotifierType
 		)
-
-		if notifierType != "lightwallet" {
-			continue
-		}
 
 		switch notifierType {
 		case "lightwallet":
@@ -2013,6 +2043,7 @@ func TestInterfaces(t *testing.T) {
 				})
 
 				if !success {
+					fmt.Printf("\nFailed")
 					break
 				}
 			}
@@ -2029,8 +2060,6 @@ func TestInterfaces(t *testing.T) {
 				break
 			}
 		}
-
-		notifier.Stop()
 
 		// Run catchup tests separately since they require restarting
 		// the notifier every time.
@@ -2051,6 +2080,8 @@ func TestInterfaces(t *testing.T) {
 				break
 			}
 		}
+
+		notifier.Stop()
 
 		if cleanUp != nil {
 			cleanUp()

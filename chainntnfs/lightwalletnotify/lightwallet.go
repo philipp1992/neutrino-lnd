@@ -194,7 +194,6 @@ out:
 		case cancelMsg := <-b.notificationCancels:
 			switch msg := cancelMsg.(type) {
 			case *epochCancel:
-				fmt.Printf("notificationCancels received")
 				chainntnfs.Log.Infof("Cancelling epoch "+
 					"notification, epoch_id=%v", msg.epochID)
 
