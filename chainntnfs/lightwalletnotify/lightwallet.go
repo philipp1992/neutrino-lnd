@@ -786,7 +786,7 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	// the outpoint has been spent. If it hasn't, we can return to the
 	// caller as well.
 	txOut, err := b.chainConn.GetUnspentOutput(
-		&spendRequest.OutPoint.Hash, int32(spendRequest.OutPoint.Index))
+		&spendRequest.OutPoint.Hash, spendRequest.OutPoint.Index)
 	if err != nil {
 		return nil, err
 	}
