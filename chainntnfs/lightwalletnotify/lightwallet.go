@@ -192,7 +192,32 @@ out:
 	for {
 		select {
 		case cancelMsg := <-b.notificationCancels:
-			Mock(cancelMsg)
+			switch msg := cancelMsg.(type) {
+			case *epochCancel:
+				chainntnfs.Log.Infof("Cancelling epoch "+
+					"notification, epoch_id=%v", msg.epochID)
+
+				// First, we'll lookup the original
+				// registration in order to stop the active
+				// queue goroutine.
+				reg := b.blockEpochClients[msg.epochID]
+				reg.epochQueue.Stop()
+
+				// Next, close the cancel channel for this
+				// specific client, and wait for the client to
+				// exit.
+				close(b.blockEpochClients[msg.epochID].cancelChan)
+				b.blockEpochClients[msg.epochID].wg.Wait()
+
+				// Once the client has exited, we can then
+				// safely close the channel used to send epoch
+				// notifications, in order to notify any
+				// listeners that the intent has been
+				// cancelled.
+				close(b.blockEpochClients[msg.epochID].epochChan)
+				delete(b.blockEpochClients, msg.epochID)
+
+			}
 
 		case registerMsg := <-b.notificationRegistry:
 			switch msg := registerMsg.(type) {
@@ -452,8 +477,6 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 		// In the case that the filter exists, we'll attempt to see if
 		// any element in it matches our target public key script.
 		key := builder.DeriveKey(&reversed)
-		// TODO(yuraolex): fix it back after filters are properly built
-
 		match, err := filter.Match(key, confRequest.PkScript.Script())
 		if err != nil {
 			return nil, fmt.Errorf("unable to query filter: %v", err)
