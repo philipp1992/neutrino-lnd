@@ -77,14 +77,13 @@ func (lw *LightWalletController) CreateSimpleTx(outputs []*wire.TxOut, feeRate l
 
 func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int32) ([]*lnwallet.Utxo, error) {
 
-	result, err := lw.client.ChainConn.RPCClient().ListUtxos()
-
+	var addresses []string
+	result, err := lw.client.ChainConn.RPCClient().ListUtxos(1, 9999999, addresses)
 	if err != nil {
 		return nil, err
 	}
 
 	var utxos []*lnwallet.Utxo
-
 	for _, utxo := range result  {
 
 

@@ -1,12 +1,9 @@
 package lightwalletnotify
 
 import (
-	"bytes"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"github.com/btcsuite/btcutil/gcs/builder"
-	"strings"
 	"sync"
 	"sync/atomic"
 
@@ -141,8 +138,6 @@ func (b *LightWalletNotifier) Start() error {
 		Hash:   currentHash,
 	}
 
-	b.chainConn.StartRescan(currentHash)
-
 	b.wg.Add(1)
 	go b.notificationDispatcher()
 
@@ -172,8 +167,6 @@ func (b *LightWalletNotifier) Stop() error {
 		close(epochClient.epochChan)
 	}
 	b.txNotifier.TearDown()
-
-	b.chainConn.StopRescan()
 
 	return nil
 }
@@ -516,95 +509,6 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 	return nil, nil
 }
 
-// confDetailsFromTxIndex looks up whether a transaction is already included in
-// a block in the active chain by using the backend node's transaction index.
-// If the transaction is found its TxConfStatus is returned. If it was found in
-// the mempool this will be TxFoundMempool, if it is found in a block this will
-// be TxFoundIndex. Otherwise TxNotFoundIndex is returned. If the tx is found
-// in a block its confirmation details are also returned.
-func (b *LightWalletNotifier) confDetailsFromTxIndex(txid *chainhash.Hash,
-) (*chainntnfs.TxConfirmation, chainntnfs.TxConfStatus, error) {
-
-	// If the transaction has some or all of its confirmations required,
-	// then we may be able to dispatch it immediately.
-	rawTxRes, err := b.chainConn.GetRawTransactionVerbose(txid)
-	if err != nil {
-		// If the transaction lookup was successful, but it wasn't found
-		// within the index itself, then we can exit early. We'll also
-		// need to look at the error message returned as the error code
-		// is used for multiple errors.
-		txNotFoundErr := "No such mempool or blockchain transaction"
-		jsonErr, ok := err.(*btcjson.RPCError)
-		if ok && jsonErr.Code == btcjson.ErrRPCNoTxInfo &&
-			strings.Contains(jsonErr.Message, txNotFoundErr) {
-
-			return nil, chainntnfs.TxNotFoundIndex, nil
-		}
-
-		return nil, chainntnfs.TxNotFoundIndex,
-			fmt.Errorf("unable to query for txid %v: %v", txid, err)
-	}
-
-	// Make sure we actually retrieved a transaction that is included in a
-	// block. If not, the transaction must be unconfirmed (in the mempool),
-	// and we'll return TxFoundMempool together with a nil TxConfirmation.
-	if rawTxRes.BlockHash == "" {
-		return nil, chainntnfs.TxFoundMempool, nil
-	}
-
-	// As we need to fully populate the returned TxConfirmation struct,
-	// grab the block in which the transaction was confirmed so we can
-	// locate its exact index within the block.
-	blockHash, err := chainhash.NewHashFromStr(rawTxRes.BlockHash)
-	if err != nil {
-		return nil, chainntnfs.TxNotFoundIndex,
-			fmt.Errorf("unable to get block hash %v for "+
-				"historical dispatch: %v", rawTxRes.BlockHash, err)
-	}
-	block, err := b.chainConn.GetBlockVerbose(blockHash)
-	if err != nil {
-		return nil, chainntnfs.TxNotFoundIndex,
-			fmt.Errorf("unable to get block with hash %v for "+
-				"historical dispatch: %v", blockHash, err)
-	}
-
-	// If the block was obtained, locate the transaction's index within the
-	// block so we can give the subscriber full confirmation details.
-	txidStr := txid.String()
-	for txIndex, txHash := range block.Tx {
-		if txHash != txidStr {
-			continue
-		}
-
-		// Deserialize the hex-encoded transaction to include it in the
-		// confirmation details.
-		rawTx, err := hex.DecodeString(rawTxRes.Hex)
-		if err != nil {
-			return nil, chainntnfs.TxFoundIndex,
-				fmt.Errorf("unable to deserialize tx %v: %v",
-					txHash, err)
-		}
-		var tx wire.MsgTx
-		if err := tx.Deserialize(bytes.NewReader(rawTx)); err != nil {
-			return nil, chainntnfs.TxFoundIndex,
-				fmt.Errorf("unable to deserialize tx %v: %v",
-					txHash, err)
-		}
-
-		return &chainntnfs.TxConfirmation{
-			Tx:          &tx,
-			BlockHash:   blockHash,
-			BlockHeight: uint32(block.Height),
-			TxIndex:     uint32(txIndex),
-		}, chainntnfs.TxFoundIndex, nil
-	}
-
-	// We return an error because we should have found the transaction
-	// within the block, but didn't.
-	return nil, chainntnfs.TxNotFoundIndex, fmt.Errorf("unable to locate "+
-		"tx %v in block %v", txid, blockHash)
-}
-
 // confDetailsManually looks up whether a transaction/output script has already
 // been included in a block in the active chain by scanning the chain's blocks
 // within the given range. If the transaction/output script is found, its
@@ -831,7 +735,7 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	// index (if enabled) to determine if we have a better rescan starting
 	// height. We can do this as the GetRawTransaction call will return the
 	// hash of the block it was included in within the chain.
-	tx, err := b.chainConn.GetRawTransactionVerbose(&spendRequest.OutPoint.Hash)
+	tx, err := b.chainConn.GetRawTransaction(&spendRequest.OutPoint.Hash)
 	if err != nil {
 		// Avoid returning an error if the transaction was not found to
 		// proceed with fallback methods.
@@ -848,11 +752,11 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	if tx != nil {
 		// If the transaction containing the outpoint hasn't confirmed
 		// on-chain, then there's no need to perform a rescan.
-		if tx.BlockHash == "" {
+		if tx.Hash().String() == "" {
 			return ntfn.Event, nil
 		}
 
-		blockHash, err := chainhash.NewHashFromStr(tx.BlockHash)
+		blockHash, err := chainhash.NewHashFromStr(tx.Hash().String())
 		if err != nil {
 			return nil, err
 		}

@@ -156,9 +156,6 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	if registeredChains.PrimaryChain() == litecoinChain {
 		homeChainConfig = cfg.Litecoin
 	}
-	ltndLog.Infof("Primary chain is set to: %v",
-		registeredChains.PrimaryChain())
-
 	if registeredChains.PrimaryChain() == xsncoinChain {
 		homeChainConfig = cfg.Xsncoin
 	}

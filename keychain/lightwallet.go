@@ -5,7 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/rpcclient"
+	"github.com/btcsuite/btcd/grpcclient"
 )
 
 // BtcWalletKeyRing is an implementation of both the KeyRing and SecretKeyRing
@@ -15,7 +15,7 @@ import (
 // construction means that all key derivation will be protected under the root
 // seed of the wallet, making each derived key fully deterministic.
 type LightWalletKeyRing struct {
-	rpcClient *rpcclient.Client
+	rpcClient *grpcclient.Client
 }
 
 // NewBtcWalletKeyRing creates a new implementation of the
@@ -23,7 +23,7 @@ type LightWalletKeyRing struct {
 //
 // NOTE: The passed waddrmgr.Manager MUST be unlocked in order for the keychain
 // to function.
-func NewLightWalletKeyRing(rpcClient *rpcclient.Client) *LightWalletKeyRing {
+func NewLightWalletKeyRing(rpcClient *grpcclient.Client) *LightWalletKeyRing {
 
 	return &LightWalletKeyRing {
 		rpcClient: rpcClient,
