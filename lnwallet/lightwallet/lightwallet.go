@@ -40,7 +40,8 @@ func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.T
 }
 
 func (lw *LightWalletController) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
-	panic("implement me")
+	//panic("implement me")
+	return 1000000, nil
 }
 
 func (lw *LightWalletController) NewAddress(addrType lnwallet.AddressType, change bool) (btcutil.Address, error) {
@@ -62,7 +63,7 @@ func (lw *LightWalletController) LastUnusedAddress(addrType lnwallet.AddressType
 }
 
 func (lw *LightWalletController) IsOurAddress(a btcutil.Address) bool {
-	panic("implement me")
+	return lw.client.ChainConn.RPCClient().IsOurAddress(a.ScriptAddress())
 }
 
 func (lw *LightWalletController) SendOutputs(outputs []*wire.TxOut,
@@ -113,7 +114,8 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 }
 
 func (lw *LightWalletController) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
-	panic("implement me")
+	//panic("implement me")
+	return nil, nil
 }
 
 func (lw *LightWalletController) LockOutpoint(o wire.OutPoint) {
@@ -125,7 +127,12 @@ func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
 }
 
 func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
+
 	txid, err := lw.client.SendRawTransaction(tx, true)
+	if err != nil {
+		fmt.Printf("\n\n\nFailed to send raw tx, err %s", err.Error())
+		return err
+	}
 
 	fmt.Printf("Published transaction with txid: %v", txid)
 
@@ -133,7 +140,8 @@ func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
 }
 
 func (lw *LightWalletController) SubscribeTransactions() (lnwallet.TransactionSubscription, error) {
-	panic("implement me")
+	//panic("implement me")
+	return nil, nil
 }
 
 func (lw *LightWalletController) IsSynced() (bool, int64, error) {
