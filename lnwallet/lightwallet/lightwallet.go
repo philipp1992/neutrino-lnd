@@ -63,7 +63,7 @@ func (lw *LightWalletController) LastUnusedAddress(addrType lnwallet.AddressType
 }
 
 func (lw *LightWalletController) IsOurAddress(a btcutil.Address) bool {
-	return lw.client.ChainConn.RPCClient().IsOurAddress(a.ScriptAddress())
+	return lw.client.ChainConn.RPCClient().IsOurAddress(a.EncodeAddress())
 }
 
 func (lw *LightWalletController) SendOutputs(outputs []*wire.TxOut,
