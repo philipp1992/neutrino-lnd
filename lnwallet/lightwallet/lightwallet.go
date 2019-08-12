@@ -1,16 +1,20 @@
 package lightwallet
 
 import (
+	"bytes"
 	"encoding/hex"
 	"fmt"
+	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
+	"sync"
 )
 
 type LightWalletController struct{
@@ -19,6 +23,18 @@ type LightWalletController struct{
 	config btcwallet.Config
 	keychain *keychain.LightWalletKeyRing
 }
+
+type txSubscriptionClient struct {
+	confirmed   chan *lnwallet.TransactionDetail
+	unconfirmed chan *lnwallet.TransactionDetail
+
+	lw 		  *chain.LightWalletClient
+	netParams *chaincfg.Params
+
+	wg   sync.WaitGroup
+	quit chan struct{}
+}
+
 
 func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 	utxo, err := lw.client.GetUnspentOutput(&prevOut.Hash, prevOut.Index)
@@ -140,8 +156,130 @@ func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
 }
 
 func (lw *LightWalletController) SubscribeTransactions() (lnwallet.TransactionSubscription, error) {
-	//panic("implement me")
-	return nil, nil
+
+	txClient := &txSubscriptionClient{
+		confirmed:   make(chan *lnwallet.TransactionDetail),
+		unconfirmed: make(chan *lnwallet.TransactionDetail),
+		lw:          lw.client,
+		netParams:   lw.config.NetParams,
+		quit:        make(chan struct{}),
+	}
+
+	txClient.wg.Add(1)
+	go txClient.notificationProxier()
+
+	return txClient, nil
+}
+
+// ConfirmedTransactions returns a channel which will be sent on as new
+// relevant transactions are confirmed.
+//
+// This is part of the TransactionSubscription interface.
+func (t *txSubscriptionClient) ConfirmedTransactions() chan *lnwallet.TransactionDetail {
+	return t.confirmed
+}
+
+// UnconfirmedTransactions returns a channel which will be sent on as
+// new relevant transactions are seen within the network.
+//
+// This is part of the TransactionSubscription interface.
+func (t *txSubscriptionClient) UnconfirmedTransactions() chan *lnwallet.TransactionDetail {
+	return t.unconfirmed
+}
+
+// Cancel finalizes the subscription, cleaning up any resources allocated.
+//
+// This is part of the TransactionSubscription interface.
+func (t *txSubscriptionClient) Cancel() {
+	close(t.quit)
+	t.wg.Wait()
+}
+
+// minedTransactionsToDetails is a helper function which converts a summary
+// information about mined transactions to a TransactionDetail.
+func minedTransactionsToDetails(currentHeight int32, blockHeader *btcjson.GetBlockHeaderVerboseResult,
+	filterBlock []*wire.MsgTx) ([]*lnwallet.TransactionDetail, error) {
+
+	details := make([]*lnwallet.TransactionDetail, 0, len(filterBlock))
+	for _, tx := range filterBlock {
+		txHash := tx.TxHash()
+		blockHash, _ := chainhash.NewHashFromStr(blockHeader.Hash)
+
+		var rawTx bytes.Buffer
+		tx.Serialize(&rawTx)
+
+		txDetail := &lnwallet.TransactionDetail{
+			Hash:             txHash,
+			NumConfirmations: currentHeight - blockHeader.Height + 1,
+			BlockHash:        blockHash,
+			BlockHeight:      blockHeader.Height,
+			Timestamp:        blockHeader.Time,
+			RawTx:            rawTx.Bytes(),
+		}
+
+		details = append(details, txDetail)
+	}
+
+	return details, nil
+}
+
+func (t *txSubscriptionClient) notificationProxier() {
+out:
+	for {
+		select {
+		case ntfn := <-t.lw.Notifications():
+			switch update := ntfn.(type) {
+			case chain.BlockConnected:
+				// Launch a goroutine to re-package and send
+				// notifications for any newly confirmed transactions.
+				filterBlock, err := t.lw.GetFilterBlock(&update.Hash)
+				if err != nil {
+					return
+				}
+
+				blockHeader, err := t.lw.GetBlockHeaderVerbose(&update.Hash)
+				if err != nil {
+					return
+				}
+
+				go func() {
+					details, err := minedTransactionsToDetails(update.Height, blockHeader, filterBlock)
+					if err != nil {
+						return
+					}
+
+					for _, d := range details {
+						select {
+						case t.confirmed <- d:
+						case <-t.quit:
+							return
+						}
+					}
+				}()
+
+				// Launch a goroutine to re-package and send
+				// notifications for any newly unconfirmed transactions.
+				//go func() {
+				//	for _, tx := range txNtfn.UnminedTransactions {
+				//		detail, err := unminedTransactionsToDetail(tx)
+				//		if err != nil {
+				//			continue
+				//		}
+				//
+				//		select {
+				//		case t.unconfirmed <- detail:
+				//		case <-t.quit:
+				//			return
+				//		}
+				//	}
+				//}()
+			}
+		case <-t.quit:
+			break out
+		}
+	}
+
+	t.wg.Done()
 }
 
 func (lw *LightWalletController) IsSynced() (bool, int64, error) {

@@ -478,7 +478,7 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 		// In the case that we do have a match, we'll fetch the block
 		// from the network so we can find the positional data required
 		// to send the proper response.
-		transactions, err := b.chainConn.GetFilterBlock(blockHash)
+		block, err := b.chainConn.GetBlock(blockHash)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get block from network: %v", err)
 		}
@@ -486,7 +486,7 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 		// For every transaction in the block, check which one matches
 		// our request. If we find one that does, we can dispatch its
 		// confirmation details.
-		for i, tx := range transactions {
+		for i, tx := range block.Transactions {
 			if !confRequest.MatchesTx(tx) {
 				continue
 			}
@@ -566,16 +566,12 @@ func (b *LightWalletNotifier) handleBlockConnected(block chainntnfs.BlockEpoch) 
 	// First, we'll fetch the raw block as we'll need to gather all the
 	// transactions to determine whether any are relevant to our registered
 	// clients.
-	filterBlock, err := b.chainConn.GetFilterBlock(block.Hash)
+	rawBlock, err := b.chainConn.GetBlock(block.Hash)
 	if err != nil {
 		return fmt.Errorf("unable to get block transactions: %v", err)
 	}
 
-	var rawBlock wire.MsgBlock
-
-	rawBlock.Transactions = filterBlock
-
-	txns := btcutil.NewBlock(&rawBlock).Transactions()
+	txns := btcutil.NewBlock(rawBlock).Transactions()
 
 	// We'll then extend the txNotifier's height with the information of
 	// this new block, which will handle all of the notification logic for

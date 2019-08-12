@@ -25,7 +25,7 @@ const (
 
 	// CoinTypeStakenet specifies the BIP44 coin type for Stakenet key
 	// derivation.
-	CoinTypeStakenet = 3
+	CoinTypeStakenet = 384
 )
 
 var (
