@@ -245,17 +245,20 @@ func (c *LWFilteredChainView) chainFilterer() {
 			log.Tracef("Updating chain filter with new UTXO's: %v",
 				update.newUtxos)
 
+			var outpoints []wire.OutPoint
 			c.filterMtx.Lock()
 			for _, newOp := range update.newUtxos {
 				c.chainFilter[newOp.OutPoint] = newOp.FundingPkScript
+				outpoints = append(outpoints, newOp.OutPoint)
 			}
 			c.filterMtx.Unlock()
+
 
 			// Apply the new TX filter to the chain client, which
 			// will cause all following notifications from and
 			// calls to it return blocks filtered with the new
 			// filter.
-			err := c.chainClient.LoadTxFilter(false, update.newUtxos)
+			err := c.chainClient.LoadTxFilter(false, outpoints)
 			if err != nil {
 				log.Errorf("Unable to update filter: %v", err)
 				continue
