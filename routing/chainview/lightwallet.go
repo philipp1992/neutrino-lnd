@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcutil/gcs/builder"
 	"sync"
 	"sync/atomic"
 
@@ -108,23 +109,14 @@ func (c *LWFilteredChainView) Start() error {
 		return err
 	}
 
-	// First, we'll obtain the latest block height of the p2p node. We'll
-	// start the auto-rescan from this point. Once a caller actually wishes
-	// to register a chain view, the rescan state will be rewound
-	// accordingly.
-	startingPoint, _, err := c.chainClient.GetBestBlock()
+	_, bestHeight, err := c.chainClient.GetBestBlock()
 	if err != nil {
 		return err
 	}
 
-	fmt.Print(startingPoint.String())
-
-	// Finally, we'll create our rescan struct, start it, and launch all
-	// the goroutines we need to operate this FilteredChainView instance.
-
-	//c.chainClient.Rescan(startingPoint.String())
-	//c.rescanErrChan = c.chainView.Start()
-
+	c.bestHeightMtx.Lock()
+	c.bestHeight = uint32(bestHeight)
+	c.bestHeightMtx.Unlock()
 	c.blockQueue.Start()
 
 	c.wg.Add(1)
@@ -158,17 +150,17 @@ func (c *LWFilteredChainView) onFilteredBlockConnected(height int32,
 	header *wire.BlockHeader, txns []*btcutil.Tx) {
 
 	mtxs := make([]*wire.MsgTx, len(txns))
+	c.filterMtx.Lock()
 	for i, tx := range txns {
 		mtx := tx.MsgTx()
 		mtxs[i] = mtx
 
 		for _, txIn := range mtx.TxIn {
-			c.filterMtx.Lock()
 			delete(c.chainFilter, txIn.PreviousOutPoint)
-			c.filterMtx.Unlock()
 		}
 
 	}
+	c.filterMtx.Unlock()
 
 	// We record the height of the last connected block added to the
 	// blockQueue such that we can scan up to this height in case of
@@ -378,7 +370,63 @@ func (c *LWFilteredChainView) FilterBlock(blockHash *chainhash.Hash) (*FilteredB
 		return filteredBlock, nil
 	}
 
-	c.chainClient.GetCFilter(blockHash)
+	filter, err := c.chainClient.GetCFilter(blockHash)
+	if err != nil {
+		return nil, err
+	}
+
+	if filter == nil {
+		return nil, fmt.Errorf("Unable to fetch filter")
+	}
+
+	// With our relevant points constructed, we can finally match against
+	// the retrieved filter.
+	matched, err := filter.MatchAny(builder.DeriveKey(blockHash),
+		relevantPoints)
+
+	if err != nil {
+		return nil, err
+	}
+
+	// If there wasn't a match, then we'll return the filtered block as is
+	// (void of any transactions).
+	if !matched {
+		return filteredBlock, nil
+	}
+
+	// If we reach this point, then there was a match, so we'll need to
+	// fetch the block itself so we can scan it for any actual matches (as
+	// there's a fp rate).
+	block, err := c.chainClient.GetBlock(blockHash)
+	if err != nil {
+		return nil, err
+	}
+
+	// Finally, we'll step through the block, input by input, to see if any
+	// transactions spend any outputs from our watched sub-set of the UTXO
+	// set.
+	for _, tx := range block.Transactions {
+		for _, txIn := range tx.TxIn {
+			prevOp := txIn.PreviousOutPoint
+
+			c.filterMtx.RLock()
+			_, ok := c.chainFilter[prevOp]
+			c.filterMtx.RUnlock()
+
+			if ok {
+				filteredBlock.Transactions = append(
+					filteredBlock.Transactions,
+					tx,
+				)
+
+				c.filterMtx.Lock()
+				delete(c.chainFilter, prevOp)
+				c.filterMtx.Unlock()
+
+				break
+			}
+		}
+	}
 
 	return filteredBlock, nil
 }
