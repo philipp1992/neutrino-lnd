@@ -56,8 +56,7 @@ func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.T
 }
 
 func (lw *LightWalletController) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
-	//panic("implement me")
-	return 1000000, nil
+	return lw.client.ChainConn.RPCClient().GetConfirmedBalance(confs)
 }
 
 func (lw *LightWalletController) NewAddress(addrType lnwallet.AddressType, change bool) (btcutil.Address, error) {
