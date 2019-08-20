@@ -58,6 +58,11 @@ message SendPaymentRequest {
     maximum enforced.
     */
     int32 cltv_limit = 9;
+
+    /**
+    Optional route hints to reach the destination through private channels.
+    */
+    repeated lnrpc.RouteHint route_hints = 10 [json_name = "route_hints"];
 }
 
 message TrackPaymentRequest {
@@ -86,6 +91,17 @@ enum PaymentState {
     routes to the destination at all.
     */
     FAILED_NO_ROUTE = 3;
+
+    /**
+    A non-recoverable error has occured.
+    */
+    FAILED_ERROR = 4;
+
+    /**
+    Payment details incorrect (unknown hash, invalid amt or
+    invalid final cltv delta)
+    */
+    FAILED_INCORRECT_PAYMENT_DETAILS = 5;
 }
 
 
@@ -157,7 +173,7 @@ message Failure {
         */
         RESERVED = 0;
 
-        UNKNOWN_PAYMENT_HASH = 1;
+        INCORRECT_OR_UNKNOWN_PAYMENT_DETAILS = 1;
         INCORRECT_PAYMENT_AMOUNT = 2;
         FINAL_INCORRECT_CLTV_EXPIRY = 3;
         FINAL_INCORRECT_HTLC_AMOUNT = 4;
@@ -178,16 +194,23 @@ message Failure {
         TEMPORARY_NODE_FAILURE = 19;
         PERMANENT_NODE_FAILURE = 20;
         PERMANENT_CHANNEL_FAILURE = 21;
+
+        /**
+        The error source is known, but the failure itself couldn't be decoded.
+        */
+        UNKNOWN_FAILURE = 998;
+
+        /**
+        An unreadable failure result is returned if the received failure message
+        cannot be decrypted. In that case the error source is unknown.
+        */
+        UNREADABLE_FAILURE = 999;
     }
 
     /// Failure code as defined in the Lightning spec
     FailureCode code = 1;
 
-    /**
-    The node pubkey of the intermediate or final node that generated the failure
-    message.
-    **/
-    bytes failure_source_pubkey = 2;
+    reserved 2;
 
     /// An optional channel update message.
     ChannelUpdate channel_update = 3;
@@ -203,6 +226,12 @@ message Failure {
 
     /// A failure type-dependent flags value.
     uint32 flags = 7;
+
+    /**
+    The position in the path of the intermediate or final node that generated
+    the failure message. Position zero is the sender node.
+    **/
+    uint32 failure_source_index = 8;
 }
 
 
@@ -294,9 +323,13 @@ message ResetMissionControlResponse{}
 
 message QueryMissionControlRequest {}
 
-/// QueryMissionControlResponse contains mission control state per node.
+/// QueryMissionControlResponse contains mission control state.
 message QueryMissionControlResponse {
+    /// Node-level mission control state.
     repeated NodeHistory nodes = 1;
+
+    /// Node pair-level mission control state.
+    repeated PairHistory pairs = 2;
 }
 
 /// NodeHistory contains the mission control state for a particular node.
@@ -307,26 +340,31 @@ message NodeHistory {
     /// Time stamp of last failure. Set to zero if no failure happened yet.
     int64 last_fail_time = 2 [json_name = "last_fail_time"];
 
-    /// Estimation of success probability for channels not in the channel array.
-    float other_chan_success_prob = 3 [json_name = "other_chan_success_prob"];
+    /**
+    Estimation of success probability of forwarding towards peers of this node
+    for which no specific history is available.
+    **/
+    float other_success_prob = 3 [json_name = "other_success_prob"];
 
-    /// Historical information of particular channels.
-    repeated ChannelHistory channels = 4 [json_name = "channels"];
+    reserved 4;
 }
 
-/// NodeHistory contains the mission control state for a particular channel.
-message ChannelHistory {
-    /// Short channel id
-    uint64 channel_id = 1 [json_name = "channel_id"];
+/// PairHistory contains the mission control state for a particular node pair.
+message PairHistory {
+    /// The source node pubkey of the pair.
+    bytes node_from = 1 [json_name="node_from"];
+    
+    /// The destination node pubkey of the pair.
+    bytes node_to = 2 [json_name="node_to"];
     
     /// Time stamp of last failure.
-    int64 last_fail_time = 2 [json_name = "last_fail_time"];
+    int64 last_fail_time = 3 [json_name = "last_fail_time"];
 
     /// Minimum penalization amount.
-    int64 min_penalize_amt_sat = 3 [json_name = "min_penalize_amt_sat"];
+    int64 min_penalize_amt_sat = 4 [json_name = "min_penalize_amt_sat"];
 
-    /// Estimation of success probability for this channel.
-    float success_prob = 4 [json_name = "success_prob"];
+    /// Estimation of success probability for this pair.
+    float success_prob = 5 [json_name = "success_prob"];
 }
 
 service Router {

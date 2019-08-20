@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
+
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
@@ -40,7 +42,7 @@ type RouterBackend struct {
 		amt lnwire.MilliSatoshi, restrictions *routing.RestrictParams,
 		finalExpiry ...uint16) (*route.Route, error)
 
-	MissionControl *routing.MissionControl
+	MissionControl MissionControl
 
 	// ActiveNetParams are the network parameters of the primary network
 	// that the route is operating on. This is necessary so we can ensure
@@ -51,6 +53,22 @@ type RouterBackend struct {
 	// Tower is the ControlTower instance that is used to track pending
 	// payments.
 	Tower routing.ControlTower
+}
+
+// MissionControl defines the mission control dependencies of routerrpc.
+type MissionControl interface {
+	// GetProbability is expected to return the success probability of a
+	// payment from fromNode to toNode.
+	GetProbability(fromNode, toNode route.Vertex,
+		amt lnwire.MilliSatoshi) float64
+
+	// ResetHistory resets the history of MissionControl returning it to a
+	// state as if no payment attempts have been made.
+	ResetHistory() error
+
+	// GetHistorySnapshot takes a snapshot from the current mission control
+	// state and actual probability estimates.
+	GetHistorySnapshot() *routing.MissionControlSnapshot
 }
 
 // QueryRoutes attempts to query the daemons' Channel Router for a possible
@@ -71,15 +89,7 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 			return route.Vertex{}, err
 		}
 
-		if len(pubKeyBytes) != 33 {
-			return route.Vertex{},
-				errors.New("invalid key length")
-		}
-
-		var v route.Vertex
-		copy(v[:], pubKeyBytes)
-
-		return v, nil
+		return route.NewVertexFromBytes(pubKeyBytes)
 	}
 
 	// Parse the hex-encoded source and target public keys into full public
@@ -116,42 +126,68 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 
 	ignoredNodes := make(map[route.Vertex]struct{})
 	for _, ignorePubKey := range in.IgnoredNodes {
-		if len(ignorePubKey) != 33 {
-			return nil, fmt.Errorf("invalid ignore node pubkey")
+		ignoreVertex, err := route.NewVertexFromBytes(ignorePubKey)
+		if err != nil {
+			return nil, err
 		}
-		var ignoreVertex route.Vertex
-		copy(ignoreVertex[:], ignorePubKey)
 		ignoredNodes[ignoreVertex] = struct{}{}
 	}
 
-	ignoredEdges := make(map[routing.EdgeLocator]struct{})
+	ignoredPairs := make(map[routing.DirectedNodePair]struct{})
+
+	// Convert deprecated ignoredEdges to pairs.
 	for _, ignoredEdge := range in.IgnoredEdges {
-		locator := routing.EdgeLocator{
-			ChannelID: ignoredEdge.ChannelId,
+		pair, err := r.rpcEdgeToPair(ignoredEdge)
+		if err != nil {
+			log.Warnf("Ignore channel %v skipped: %v",
+				ignoredEdge.ChannelId, err)
+
+			continue
 		}
-		if ignoredEdge.DirectionReverse {
-			locator.Direction = 1
+		ignoredPairs[pair] = struct{}{}
+	}
+
+	// Add ignored pairs to set.
+	for _, ignorePair := range in.IgnoredPairs {
+		from, err := route.NewVertexFromBytes(ignorePair.From)
+		if err != nil {
+			return nil, err
 		}
-		ignoredEdges[locator] = struct{}{}
+
+		to, err := route.NewVertexFromBytes(ignorePair.To)
+		if err != nil {
+			return nil, err
+		}
+
+		pair := routing.NewDirectedNodePair(from, to)
+		ignoredPairs[pair] = struct{}{}
 	}
 
 	restrictions := &routing.RestrictParams{
 		FeeLimit: feeLimit,
-		ProbabilitySource: func(node route.Vertex,
-			edge routing.EdgeLocator,
+		ProbabilitySource: func(fromNode, toNode route.Vertex,
 			amt lnwire.MilliSatoshi) float64 {
 
-			if _, ok := ignoredNodes[node]; ok {
+			if _, ok := ignoredNodes[fromNode]; ok {
 				return 0
 			}
 
-			if _, ok := ignoredEdges[edge]; ok {
+			pair := routing.DirectedNodePair{
+				From: fromNode,
+				To:   toNode,
+			}
+			if _, ok := ignoredPairs[pair]; ok {
 				return 0
 			}
 
-			return 1
+			if !in.UseMissionControl {
+				return 1
+			}
+
+			return r.MissionControl.GetProbability(
+				fromNode, toNode, amt,
+			)
 		},
-		PaymentAttemptPenalty: routing.DefaultPaymentAttemptPenalty,
 	}
 
 	// Query the channel router for a possible path to the destination that
@@ -186,6 +222,26 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 	}
 
 	return routeResp, nil
+}
+
+// rpcEdgeToPair looks up the provided channel and returns the channel endpoints
+// as a directed pair.
+func (r *RouterBackend) rpcEdgeToPair(e *lnrpc.EdgeLocator) (
+	routing.DirectedNodePair, error) {
+
+	a, b, err := r.FetchChannelEndpoints(e.ChannelId)
+	if err != nil {
+		return routing.DirectedNodePair{}, err
+	}
+
+	var pair routing.DirectedNodePair
+	if e.DirectionReverse {
+		pair.From, pair.To = b, a
+	} else {
+		pair.From, pair.To = a, b
+	}
+
+	return pair, nil
 }
 
 // calculateFeeLimit returns the fee limit in millisatoshis. If a percentage
@@ -382,6 +438,15 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 	payIntent.PayAttemptTimeout = time.Second *
 		time.Duration(rpcPayReq.TimeoutSeconds)
 
+	// Route hints.
+	routeHints, err := unmarshallRouteHints(
+		rpcPayReq.RouteHints,
+	)
+	if err != nil {
+		return nil, err
+	}
+	payIntent.RouteHints = routeHints
+
 	// If the payment request field isn't blank, then the details of the
 	// invoice are encoded entirely within the encoded payReq.  So we'll
 	// attempt to decode it, populating the payment accordingly.
@@ -443,19 +508,20 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		copy(payIntent.Target[:], destKey)
 
 		payIntent.FinalCLTVDelta = uint16(payReq.MinFinalCLTVExpiry())
-		payIntent.RouteHints = payReq.RouteHints
+		payIntent.RouteHints = append(
+			payIntent.RouteHints, payReq.RouteHints...,
+		)
 	} else {
 		// Otherwise, If the payment request field was not specified
 		// (and a custom route wasn't specified), construct the payment
 		// from the other fields.
 
 		// Payment destination.
-		if len(rpcPayReq.Dest) != 33 {
-			return nil, errors.New("invalid key length")
-
+		target, err := route.NewVertexFromBytes(rpcPayReq.Dest)
+		if err != nil {
+			return nil, err
 		}
-		pubBytes := rpcPayReq.Dest
-		copy(payIntent.Target[:], pubBytes)
+		payIntent.Target = target
 
 		// Final payment CLTV delta.
 		if rpcPayReq.FinalCltvDelta != 0 {
@@ -491,6 +557,50 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 	}
 
 	return payIntent, nil
+}
+
+// unmarshallRouteHints unmarshalls a list of route hints.
+func unmarshallRouteHints(rpcRouteHints []*lnrpc.RouteHint) (
+	[][]zpay32.HopHint, error) {
+
+	routeHints := make([][]zpay32.HopHint, 0, len(rpcRouteHints))
+	for _, rpcRouteHint := range rpcRouteHints {
+		routeHint := make(
+			[]zpay32.HopHint, 0, len(rpcRouteHint.HopHints),
+		)
+		for _, rpcHint := range rpcRouteHint.HopHints {
+			hint, err := unmarshallHopHint(rpcHint)
+			if err != nil {
+				return nil, err
+			}
+
+			routeHint = append(routeHint, hint)
+		}
+		routeHints = append(routeHints, routeHint)
+	}
+
+	return routeHints, nil
+}
+
+// unmarshallHopHint unmarshalls a single hop hint.
+func unmarshallHopHint(rpcHint *lnrpc.HopHint) (zpay32.HopHint, error) {
+	pubBytes, err := hex.DecodeString(rpcHint.NodeId)
+	if err != nil {
+		return zpay32.HopHint{}, err
+	}
+
+	pubkey, err := btcec.ParsePubKey(pubBytes, btcec.S256())
+	if err != nil {
+		return zpay32.HopHint{}, err
+	}
+
+	return zpay32.HopHint{
+		NodeID:                    pubkey,
+		ChannelID:                 rpcHint.ChanId,
+		FeeBaseMSat:               rpcHint.FeeBaseMsat,
+		FeeProportionalMillionths: rpcHint.FeeProportionalMillionths,
+		CLTVExpiryDelta:           uint16(rpcHint.CltvExpiryDelta),
+	}, nil
 }
 
 // ValidatePayReqExpiry checks if the passed payment request has expired. In

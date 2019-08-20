@@ -26,6 +26,7 @@ import (
 	"github.com/lightningnetwork/lnd/chanbackup"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/discovery"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/htlcswitch/hodl"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
@@ -33,7 +34,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/tor"
-	"github.com/lightningnetwork/lnd/watchtower"
 )
 
 const (
@@ -278,7 +278,6 @@ type config struct {
 
 	Profile string `long:"profile" description:"Enable HTTP profiling on given port -- NOTE port must be between 1024 and 65535"`
 
-	DebugHTLC          bool   `long:"debughtlc" description:"Activate the debug htlc mode. With the debug HTLC mode, all payments sent use a pre-determined R-Hash. Additionally, all HTLCs sent to a node with the debug HTLC R-Hash are immediately settled in the next available state transition."`
 	UnsafeDisconnect   bool   `long:"unsafe-disconnect" description:"Allows the rpcserver to intentionally disconnect from peers with open channels. USED FOR TESTING ONLY."`
 	UnsafeReplay       bool   `long:"unsafe-replay" description:"Causes a link to replay the adds on its commitment txn after starting up, this enables testing of the sphinx replay logic."`
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
@@ -321,9 +320,13 @@ type config struct {
 	NumGraphSyncPeers      int           `long:"numgraphsyncpeers" description:"The number of peers that we should receive new graph updates from. This option can be tuned to save bandwidth for light clients or routing nodes."`
 	HistoricalSyncInterval time.Duration `long:"historicalsyncinterval" description:"The polling interval between historical graph sync attempts. Each historical graph sync attempt ensures we reconcile with the remote peer's graph from the genesis block."`
 
+	IgnoreHistoricalGossipFilters bool `long:"ignore-historical-gossip-filters" description:"If true, will not reply with historical data that matches the range specified by a remote peer's gossip_timestamp_filter. Doing so will result in lower memory and bandwidth requirements."`
+
 	RejectPush bool `long:"rejectpush" description:"If true, lnd will not accept channel opening requests with non-zero push amounts. This should prevent accidental pushes to merchant nodes."`
 
 	StaggerInitialReconnect bool `long:"stagger-initial-reconnect" description:"If true, will apply a randomized staggering between 0s and 30s when reconnecting to persistent peers on startup. The first 10 reconnections will be attempted instantly, regardless of the flag's value"`
+
+	MaxOutgoingCltvExpiry uint32 `long:"max-cltv-expiry" description:"The maximum number of blocks funds could be locked up for when forwarding payments."`
 
 	net tor.Net
 
@@ -420,6 +423,7 @@ func loadConfig() (*config, error) {
 			Allocation:     0.6,
 			MinChannelSize: int64(minChanFundingSize),
 			MaxChannelSize: int64(MaxFundingAmount),
+			MinConfs:       1,
 			ConfTarget:     autopilot.DefaultConfTarget,
 			Heuristic: map[string]float64{
 				"preferential": 1.0,
@@ -453,6 +457,7 @@ func loadConfig() (*config, error) {
 		Watchtower: &lncfg.Watchtower{
 			TowerDir: defaultTowerDir,
 		},
+		MaxOutgoingCltvExpiry: htlcswitch.DefaultMaxOutgoingCltvExpiry,
 	}
 
 	// Pre-parse the command line options to pick up an alternative config
@@ -744,13 +749,6 @@ func loadConfig() (*config, error) {
 			return nil, err
 		}
 
-		if cfg.Litecoin.MainNet && cfg.DebugHTLC {
-			str := "%s: debug-htlc mode cannot be used " +
-				"on litecoin mainnet"
-			err := fmt.Errorf(str, funcName)
-			return nil, err
-		}
-
 		// The litecoin chain is the current active chain. However
 		// throughout the codebase we required chaincfg.Params. So as a
 		// temporary hack, we'll mutate the default net params for
@@ -851,13 +849,6 @@ func loadConfig() (*config, error) {
 			str := "%s: either --bitcoin.mainnet, or " +
 				"bitcoin.testnet, bitcoin.simnet, or bitcoin.regtest " +
 				"must be specified"
-			err := fmt.Errorf(str, funcName)
-			return nil, err
-		}
-
-		if cfg.Bitcoin.MainNet && cfg.DebugHTLC {
-			str := "%s: debug-htlc mode cannot be used " +
-				"on bitcoin mainnet"
 			err := fmt.Errorf(str, funcName)
 			return nil, err
 		}
@@ -1233,17 +1224,6 @@ func loadConfig() (*config, error) {
 	)
 	if err != nil {
 		return nil, err
-	}
-
-	// If the user provided private watchtower addresses, parse them to
-	// obtain the LN addresses.
-	if cfg.WtClient.IsActive() {
-		err := cfg.WtClient.ParsePrivateTowers(
-			watchtower.DefaultPeerPort, cfg.net.ResolveTCPAddr,
-		)
-		if err != nil {
-			return nil, err
-		}
 	}
 
 	// Finally, ensure that the user's color is correctly formatted,

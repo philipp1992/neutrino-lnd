@@ -11,7 +11,6 @@ import (
 	"net"
 	"reflect"
 	"runtime"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -232,10 +231,10 @@ func TestChannelLinkSingleHopPayment(t *testing.T) {
 		t.Fatalf("unable to make the payment: %v", err)
 	}
 
-	// Wait for Bob to receive the revocation.
+	// Wait for Alice to receive the revocation.
 	//
 	// TODO(roasbeef); replace with select over returned err chan
-	time.Sleep(100 * time.Millisecond)
+	time.Sleep(2 * time.Second)
 
 	// Check that alice invoice was settled and bandwidth of HTLC
 	// links was changed.
@@ -494,8 +493,8 @@ func testChannelLinkMultiHopPayment(t *testing.T,
 		t.Fatalf("unable to send payment: %v", err)
 	}
 
-	// Wait for Bob to receive the revocation.
-	time.Sleep(100 * time.Millisecond)
+	// Wait for Alice and Bob's second link to receive the revocation.
+	time.Sleep(2 * time.Second)
 
 	// Check that Carol invoice was settled and bandwidth of HTLC
 	// links were changed.
@@ -623,12 +622,8 @@ func TestExitNodeAmountPayloadMismatch(t *testing.T) {
 	).Wait(30 * time.Second)
 	if err == nil {
 		t.Fatalf("payment should have failed but didn't")
-	} else if !strings.Contains(err.Error(), lnwire.CodeUnknownPaymentHash.String()) {
-		// TODO(roasbeef): use proper error after error propagation is
-		// in
-		t.Fatalf("expected %v got %v", err,
-			lnwire.CodeUnknownPaymentHash)
 	}
+	assertFailureCode(t, err, lnwire.CodeFinalIncorrectHtlcAmount)
 }
 
 // TestLinkForwardTimelockPolicyMismatch tests that if a node is an
@@ -1025,9 +1020,8 @@ func TestChannelLinkMultiHopInsufficientPayment(t *testing.T) {
 	).Wait(30 * time.Second)
 	if err == nil {
 		t.Fatal("error haven't been received")
-	} else if !strings.Contains(err.Error(), "insufficient capacity") {
-		t.Fatalf("wrong error has been received: %v", err)
 	}
+	assertFailureCode(t, err, lnwire.CodeTemporaryChannelFailure)
 
 	// Wait for Alice to receive the revocation.
 	//
@@ -1136,10 +1130,9 @@ func TestChannelLinkMultiHopUnknownPaymentHash(t *testing.T) {
 		t.Fatalf("no result arrive")
 	}
 
-	fErr := result.Error
-	if !strings.Contains(fErr.Error(), lnwire.CodeUnknownPaymentHash.String()) {
-		t.Fatalf("expected %v got %v", lnwire.CodeUnknownPaymentHash, fErr)
-	}
+	assertFailureCode(
+		t, result.Error, lnwire.CodeIncorrectOrUnknownPaymentDetails,
+	)
 
 	// Wait for Alice to receive the revocation.
 	time.Sleep(100 * time.Millisecond)
@@ -1420,10 +1413,10 @@ func TestChannelLinkExpiryTooSoonExitNode(t *testing.T) {
 	}
 
 	switch ferr.FailureMessage.(type) {
-	case *lnwire.FailFinalExpiryTooSoon:
+	case *lnwire.FailIncorrectDetails:
 	default:
-		t.Fatalf("incorrect error, expected final time lock too "+
-			"early, instead have: %v", err)
+		t.Fatalf("expected incorrect_or_unknown_payment_details, "+
+			"instead have: %v", err)
 	}
 }
 
@@ -1689,9 +1682,10 @@ func newSingleLinkTestHarness(chanAmt, chanReserve btcutil.Amount) (
 		FwdPkgGCTicker: ticker.NewForce(15 * time.Second),
 		// Make the BatchSize and Min/MaxFeeUpdateTimeout large enough
 		// to not trigger commit updates automatically during tests.
-		BatchSize:           10000,
-		MinFeeUpdateTimeout: 30 * time.Minute,
-		MaxFeeUpdateTimeout: 40 * time.Minute,
+		BatchSize:             10000,
+		MinFeeUpdateTimeout:   30 * time.Minute,
+		MaxFeeUpdateTimeout:   40 * time.Minute,
+		MaxOutgoingCltvExpiry: DefaultMaxOutgoingCltvExpiry,
 	}
 
 	const startingHeight = 100
@@ -1914,7 +1908,6 @@ func TestChannelLinkBandwidthConsistency(t *testing.T) {
 	// We put Alice into hodl.ExitSettle mode, such that she won't settle
 	// incoming HTLCs automatically.
 	coreLink.cfg.HodlMask = hodl.MaskFromFlags(hodl.ExitSettle)
-	coreLink.cfg.DebugHTLC = true
 
 	estimator := lnwallet.NewStaticFeeEstimator(6000, 0)
 	feePerKw, err := estimator.EstimateFeePerKW(1)
@@ -2863,7 +2856,6 @@ func TestChannelLinkTrimCircuitsNoCommit(t *testing.T) {
 	// outgoing ADDs are opened, but the changes are not committed in the
 	// channel state.
 	alice.coreLink.cfg.HodlMask = hodl.Commit.Mask()
-	alice.coreLink.cfg.DebugHTLC = true
 
 	// Compute the static fees that will be used to determine the
 	// correctness of Alice's bandwidth when forwarding HTLCs.
@@ -3977,7 +3969,8 @@ func TestChannelLinkAcceptOverpay(t *testing.T) {
 		t.Fatalf("unable to send payment: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
+	// Wait for Alice and Bob's second link to receive the revocation.
+	time.Sleep(2 * time.Second)
 
 	// Even though we sent 2x what was asked for, Carol should still have
 	// accepted the payment and marked it as settled.
@@ -4237,8 +4230,8 @@ func (h *persistentLinkHarness) restartLink(
 		MinFeeUpdateTimeout: 30 * time.Minute,
 		MaxFeeUpdateTimeout: 40 * time.Minute,
 		// Set any hodl flags requested for the new link.
-		HodlMask:  hodl.MaskFromFlags(hodlFlags...),
-		DebugHTLC: len(hodlFlags) > 0,
+		HodlMask:              hodl.MaskFromFlags(hodlFlags...),
+		MaxOutgoingCltvExpiry: DefaultMaxOutgoingCltvExpiry,
 	}
 
 	const startingHeight = 100
@@ -4938,7 +4931,6 @@ func TestChannelLinkCleanupSpuriousResponses(t *testing.T) {
 	// Settle Alice in hodl ExitSettle mode so that she won't respond
 	// immediately to the htlc's meant for her. This allows us to control
 	// the responses she gives back to Bob.
-	coreLink.cfg.DebugHTLC = true
 	coreLink.cfg.HodlMask = hodl.ExitSettle.Mask()
 
 	// Add two HTLCs to Alice's registry, that Bob can pay.
@@ -5558,6 +5550,7 @@ func TestHtlcSatisfyPolicy(t *testing.T) {
 				BaseFee:       10,
 			},
 			FetchLastChannelUpdate: fetchLastChannelUpdate,
+			MaxOutgoingCltvExpiry:  DefaultMaxOutgoingCltvExpiry,
 		},
 	}
 
@@ -5673,7 +5666,7 @@ func TestChannelLinkCanceledInvoice(t *testing.T) {
 	if !ok {
 		t.Fatalf("expected ForwardingError, but got %v", err)
 	}
-	_, ok = fErr.FailureMessage.(*lnwire.FailUnknownPaymentHash)
+	_, ok = fErr.FailureMessage.(*lnwire.FailIncorrectDetails)
 	if !ok {
 		t.Fatalf("expected unknown payment hash, but got %v", err)
 	}
@@ -5801,7 +5794,12 @@ func TestChannelLinkHoldInvoiceSettle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Wait for Bob to receive the revocation.
+	// Wait for Alice to receive the revocation. This is needed
+	// because the settles are pipelined to the switch and otherwise
+	// the bandwidth won't be updated by the time Alice receives a
+	// response here.
+	time.Sleep(2 * time.Second)
+
 	if ctx.startBandwidthAlice-ctx.amount !=
 		ctx.n.aliceChannelLink.Bandwidth() {
 
@@ -5837,11 +5835,7 @@ func TestChannelLinkHoldInvoiceCancel(t *testing.T) {
 
 	// Wait for payment to succeed.
 	err = <-ctx.errChan
-	if !strings.Contains(err.Error(),
-		lnwire.CodeUnknownPaymentHash.String()) {
-
-		t.Fatal("expected unknown payment hash")
-	}
+	assertFailureCode(t, err, lnwire.CodeIncorrectOrUnknownPaymentDetails)
 }
 
 // TestChannelLinkHoldInvoiceRestart asserts hodl htlcs are held after blocks
@@ -6070,5 +6064,19 @@ func TestChannelLinkRevocationWindowHodl(t *testing.T) {
 	case msg := <-aliceMsgs:
 		t.Fatalf("did not expect message %T", msg)
 	default:
+	}
+}
+
+// assertFailureCode asserts that an error is of type ForwardingError and that
+// the failure code is as expected.
+func assertFailureCode(t *testing.T, err error, code lnwire.FailCode) {
+	fErr, ok := err.(*ForwardingError)
+	if !ok {
+		t.Fatalf("expected ForwardingError but got %T", err)
+	}
+
+	if fErr.FailureMessage.Code() != code {
+		t.Fatalf("expected %v but got %v",
+			code, fErr.FailureMessage.Code())
 	}
 }

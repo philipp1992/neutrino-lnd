@@ -44,6 +44,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/nat"
 	"github.com/lightningnetwork/lnd/netann"
+	"github.com/lightningnetwork/lnd/peernotifier"
 	"github.com/lightningnetwork/lnd/pool"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/route"
@@ -187,6 +188,8 @@ type server struct {
 	invoices *invoices.InvoiceRegistry
 
 	channelNotifier *channelnotifier.ChannelNotifier
+
+	peerNotifier *peernotifier.PeerNotifier
 
 	witnessBeacon contractcourt.WitnessBeacon
 
@@ -393,24 +396,13 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		subscribers: make(map[uint64]*preimageSubscriber),
 	}
 
-	// If the debug HTLC flag is on, then we invoice a "master debug"
-	// invoice which all outgoing payments will be sent and all incoming
-	// HTLCs with the debug R-Hash immediately settled.
-	if cfg.DebugHTLC {
-		kiloCoin := btcutil.Amount(btcutil.SatoshiPerBitcoin * 1000)
-		s.invoices.AddDebugInvoice(kiloCoin, invoices.DebugPre)
-		srvrLog.Debugf("Debug HTLC invoice inserted, preimage=%x, hash=%x",
-			invoices.DebugPre[:], invoices.DebugHash[:])
-	}
-
 	_, currentHeight, err := s.cc.chainIO.GetBestBlock()
 	if err != nil {
 		return nil, err
 	}
 
 	s.htlcSwitch, err = htlcswitch.New(htlcswitch.Config{
-		DB:      chanDB,
-		SelfKey: s.identityPriv.PubKey(),
+		DB: chanDB,
 		LocalChannelClose: func(pubKey []byte,
 			request *htlcswitch.ChanClose) {
 
@@ -438,12 +430,11 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		ExtractErrorEncrypter:  s.sphinx.ExtractErrorEncrypter,
 		FetchLastChannelUpdate: s.fetchLastChanUpdate(),
 		Notifier:               s.cc.chainNotifier,
-		FwdEventTicker: ticker.New(
-			htlcswitch.DefaultFwdEventInterval),
-		LogEventTicker: ticker.New(
-			htlcswitch.DefaultLogInterval),
-		NotifyActiveChannel:   s.channelNotifier.NotifyActiveChannelEvent,
-		NotifyInactiveChannel: s.channelNotifier.NotifyInactiveChannelEvent,
+		FwdEventTicker:         ticker.New(htlcswitch.DefaultFwdEventInterval),
+		LogEventTicker:         ticker.New(htlcswitch.DefaultLogInterval),
+		AckEventTicker:         ticker.New(htlcswitch.DefaultAckInterval),
+		NotifyActiveChannel:    s.channelNotifier.NotifyActiveChannelEvent,
+		NotifyInactiveChannel:  s.channelNotifier.NotifyInactiveChannelEvent,
 	}, uint32(currentHeight))
 	if err != nil {
 		return nil, err
@@ -653,10 +644,39 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	//
 	// TODO(joostjager): When we are further in the process of moving to sub
 	// servers, the mission control instance itself can be moved there too.
-	s.missionControl = routing.NewMissionControl(
-		chanGraph, selfNode, queryBandwidth,
-		routerrpc.GetMissionControlConfig(cfg.SubRPCServers.RouterRPC),
+	routingConfig := routerrpc.GetRoutingConfig(cfg.SubRPCServers.RouterRPC)
+
+	s.missionControl, err = routing.NewMissionControl(
+		chanDB.DB,
+		&routing.MissionControlConfig{
+			AprioriHopProbability: routingConfig.AprioriHopProbability,
+			PenaltyHalfLife:       routingConfig.PenaltyHalfLife,
+			MaxMcHistory:          routingConfig.MaxMcHistory,
+		},
 	)
+	if err != nil {
+		return nil, fmt.Errorf("can't create mission control: %v", err)
+	}
+
+	srvrLog.Debugf("Instantiating payment session source with config: "+
+		"PaymentAttemptPenalty=%v, MinRouteProbability=%v",
+		int64(routingConfig.AttemptCost),
+		routingConfig.MinRouteProbability)
+
+	pathFindingConfig := routing.PathFindingConfig{
+		PaymentAttemptPenalty: lnwire.NewMSatFromSatoshis(
+			routingConfig.AttemptCost,
+		),
+		MinProbability: routingConfig.MinRouteProbability,
+	}
+
+	paymentSessionSource := &routing.SessionSource{
+		Graph:             chanGraph,
+		MissionControl:    s.missionControl,
+		QueryBandwidth:    queryBandwidth,
+		SelfNode:          selfNode,
+		PathFindingConfig: pathFindingConfig,
+	}
 
 	paymentControl := channeldb.NewPaymentControl(chanDB)
 
@@ -669,11 +689,13 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		Payer:              s.htlcSwitch,
 		Control:            s.controlTower,
 		MissionControl:     s.missionControl,
+		SessionSource:      paymentSessionSource,
 		ChannelPruneExpiry: routing.DefaultChannelPruneExpiry,
 		GraphPruneInterval: time.Duration(time.Hour),
 		QueryBandwidth:     queryBandwidth,
 		AssumeChannelValid: cfg.Routing.UseAssumeChannelValid(),
 		NextPaymentID:      sequencer.NextID,
+		PathFindingConfig:  pathFindingConfig,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("can't create router: %v", err)
@@ -690,24 +712,25 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	}
 
 	s.authGossiper = discovery.New(discovery.Config{
-		Router:               s.chanRouter,
-		Notifier:             s.cc.chainNotifier,
-		ChainHash:            *activeNetParams.GenesisHash,
-		Broadcast:            s.BroadcastMessage,
-		ChanSeries:           chanSeries,
-		NotifyWhenOnline:     s.NotifyWhenOnline,
-		NotifyWhenOffline:    s.NotifyWhenOffline,
-		ProofMatureDelta:     0,
-		TrickleDelay:         time.Millisecond * time.Duration(cfg.TrickleDelay),
-		RetransmitDelay:      time.Minute * 30,
-		WaitingProofStore:    waitingProofStore,
-		MessageStore:         gossipMessageStore,
-		AnnSigner:            s.nodeSigner,
-		RotateTicker:         ticker.New(discovery.DefaultSyncerRotationInterval),
-		HistoricalSyncTicker: ticker.New(cfg.HistoricalSyncInterval),
-		NumActiveSyncers:     cfg.NumGraphSyncPeers,
-		MinimumBatchSize:     10,
-		SubBatchDelay:        time.Second * 5,
+		Router:                  s.chanRouter,
+		Notifier:                s.cc.chainNotifier,
+		ChainHash:               *activeNetParams.GenesisHash,
+		Broadcast:               s.BroadcastMessage,
+		ChanSeries:              chanSeries,
+		NotifyWhenOnline:        s.NotifyWhenOnline,
+		NotifyWhenOffline:       s.NotifyWhenOffline,
+		ProofMatureDelta:        0,
+		TrickleDelay:            time.Millisecond * time.Duration(cfg.TrickleDelay),
+		RetransmitDelay:         time.Minute * 30,
+		WaitingProofStore:       waitingProofStore,
+		MessageStore:            gossipMessageStore,
+		AnnSigner:               s.nodeSigner,
+		RotateTicker:            ticker.New(discovery.DefaultSyncerRotationInterval),
+		HistoricalSyncTicker:    ticker.New(cfg.HistoricalSyncInterval),
+		NumActiveSyncers:        cfg.NumGraphSyncPeers,
+		MinimumBatchSize:        10,
+		SubBatchDelay:           time.Second * 5,
+		IgnoreHistoricalFilters: cfg.IgnoreHistoricalGossipFilters,
 	},
 		s.identityPriv.PubKey(),
 	)
@@ -1038,6 +1061,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		ZombieSweeperInterval:  1 * time.Minute,
 		ReservationTimeout:     10 * time.Minute,
 		MinChanSize:            btcutil.Amount(cfg.MinChanSize),
+		MaxPendingChannels:     cfg.MaxPendingChannels,
+		RejectPush:             cfg.RejectPush,
 		NotifyOpenChannelEvent: s.channelNotifier.NotifyOpenChannelEvent,
 	})
 	if err != nil {
@@ -1062,7 +1087,11 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		return nil, err
 	}
 
-	if cfg.WtClient.IsActive() {
+	// Assemble a peer notifier which will provide clients with subscriptions
+	// to peer online and offline events.
+	s.peerNotifier = peernotifier.New()
+
+	if cfg.WtClient.Active {
 		policy := wtpolicy.DefaultPolicy()
 
 		if cfg.WtClient.SweepFeeRate != 0 {
@@ -1085,8 +1114,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			Dial:           cfg.net.Dial,
 			AuthDial:       wtclient.AuthDial,
 			DB:             towerClientDB,
-			Policy:         wtpolicy.DefaultPolicy(),
-			PrivateTower:   cfg.WtClient.PrivateTowers[0],
+			Policy:         policy,
 			ChainHash:      *activeNetParams.GenesisHash,
 			MinBackoff:     10 * time.Second,
 			MaxBackoff:     5 * time.Minute,
@@ -1162,6 +1190,10 @@ func (s *server) Start() error {
 			return
 		}
 		if err := s.channelNotifier.Start(); err != nil {
+			startErr = err
+			return
+		}
+		if err := s.peerNotifier.Start(); err != nil {
 			startErr = err
 			return
 		}
@@ -1323,6 +1355,7 @@ func (s *server) Stop() error {
 		s.chainArb.Stop()
 		s.sweeper.Stop()
 		s.channelNotifier.Stop()
+		s.peerNotifier.Stop()
 		s.cc.wallet.Shutdown()
 		s.cc.chainView.Stop()
 		s.connMgr.Stop()
@@ -1605,7 +1638,6 @@ func (s *server) peerBootstrapper(numTargetPeers uint32,
 	//
 	// We'll use a 15 second backoff, and double the time every time an
 	// epoch fails up to a ceiling.
-	const backOffCeiling = time.Minute * 5
 	backOff := time.Second * 15
 
 	// We'll create a new ticker to wake us up every 15 seconds so we can
@@ -1648,8 +1680,8 @@ func (s *server) peerBootstrapper(numTargetPeers uint32,
 				sampleTicker.Stop()
 
 				backOff *= 2
-				if backOff > backOffCeiling {
-					backOff = backOffCeiling
+				if backOff > bootstrapBackOffCeiling {
+					backOff = bootstrapBackOffCeiling
 				}
 
 				srvrLog.Debugf("Backing off peer bootstrapper to "+
@@ -1718,15 +1750,27 @@ func (s *server) peerBootstrapper(numTargetPeers uint32,
 	}
 }
 
+// bootstrapBackOffCeiling is the maximum amount of time we'll wait between
+// failed attempts to locate a set of bootstrap peers. We'll slowly double our
+// query back off each time we encounter a failure.
+const bootstrapBackOffCeiling = time.Minute * 5
+
 // initialPeerBootstrap attempts to continuously connect to peers on startup
 // until the target number of peers has been reached. This ensures that nodes
 // receive an up to date network view as soon as possible.
 func (s *server) initialPeerBootstrap(ignore map[autopilot.NodeID]struct{},
 	numTargetPeers uint32, bootstrappers []discovery.NetworkPeerBootstrapper) {
 
-	var wg sync.WaitGroup
+	// We'll start off by waiting 2 seconds between failed attempts, then
+	// double each time we fail until we hit the bootstrapBackOffCeiling.
+	var delaySignal <-chan time.Time
+	delayTime := time.Second * 2
 
-	for {
+	// As want to be more aggressive, we'll use a lower back off celling
+	// then the main peer bootstrap logic.
+	backOffCeiling := bootstrapBackOffCeiling / 5
+
+	for attempts := 0; ; attempts++ {
 		// Check if the server has been requested to shut down in order
 		// to prevent blocking.
 		if s.Stopped() {
@@ -1743,8 +1787,31 @@ func (s *server) initialPeerBootstrap(ignore map[autopilot.NodeID]struct{},
 			return
 		}
 
-		// Otherwise, we'll request for the remaining number of peers in
-		// order to reach our target.
+		if attempts > 0 {
+			srvrLog.Debugf("Waiting %v before trying to locate "+
+				"bootstrap peers (attempt #%v)", delayTime,
+				attempts)
+
+			// We've completed at least one iterating and haven't
+			// finished, so we'll start to insert a delay period
+			// between each attempt.
+			delaySignal = time.After(delayTime)
+			select {
+			case <-delaySignal:
+			case <-s.quit:
+				return
+			}
+
+			// After our delay, we'll double the time we wait up to
+			// the max back off period.
+			delayTime *= 2
+			if delayTime > backOffCeiling {
+				delayTime = backOffCeiling
+			}
+		}
+
+		// Otherwise, we'll request for the remaining number of peers
+		// in order to reach our target.
 		peersNeeded := numTargetPeers - numActivePeers
 		bootstrapAddrs, err := discovery.MultiSourceBootstrap(
 			ignore, peersNeeded, bootstrappers...,
@@ -1757,6 +1824,7 @@ func (s *server) initialPeerBootstrap(ignore map[autopilot.NodeID]struct{},
 
 		// Then, we'll attempt to establish a connection to the
 		// different peer addresses retrieved by our bootstrappers.
+		var wg sync.WaitGroup
 		for _, bootstrapAddr := range bootstrapAddrs {
 			wg.Add(1)
 			go func(addr *lnwire.NetAddress) {
@@ -2660,7 +2728,8 @@ func (s *server) addPeer(p *peer) {
 	// TODO(roasbeef): pipe all requests through to the
 	// queryHandler/peerManager
 
-	pubStr := string(p.addr.IdentityKey.SerializeCompressed())
+	pubSer := p.addr.IdentityKey.SerializeCompressed()
+	pubStr := string(pubSer)
 
 	s.peersByPub[pubStr] = p
 
@@ -2669,6 +2738,13 @@ func (s *server) addPeer(p *peer) {
 	} else {
 		s.outboundPeers[pubStr] = p
 	}
+
+	// Inform the peer notifier of a peer online event so that it can be reported
+	// to clients listening for peer events.
+	var pubKey [33]byte
+	copy(pubKey[:], pubSer)
+
+	s.peerNotifier.NotifyPeerOnline(pubKey)
 }
 
 // peerInitializer asynchronously starts a newly connected peer after it has
@@ -2910,7 +2986,8 @@ func (s *server) removePeer(p *peer) {
 		return
 	}
 
-	pubStr := string(p.addr.IdentityKey.SerializeCompressed())
+	pubSer := p.addr.IdentityKey.SerializeCompressed()
+	pubStr := string(pubSer)
 
 	delete(s.peersByPub, pubStr)
 
@@ -2919,6 +2996,13 @@ func (s *server) removePeer(p *peer) {
 	} else {
 		delete(s.outboundPeers, pubStr)
 	}
+
+	// Inform the peer notifier of a peer offline event so that it can be
+	// reported to clients listening for peer events.
+	var pubKey [33]byte
+	copy(pubKey[:], pubSer)
+
+	s.peerNotifier.NotifyPeerOffline(pubKey)
 }
 
 // openChanReq is a message sent to the server in order to request the
@@ -2929,8 +3013,8 @@ type openChanReq struct {
 
 	chainHash chainhash.Hash
 
-	localFundingAmt  btcutil.Amount
-	remoteFundingAmt btcutil.Amount
+	subtractFees    bool
+	localFundingAmt btcutil.Amount
 
 	pushAmt lnwire.MilliSatoshi
 

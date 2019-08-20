@@ -18,6 +18,10 @@ const (
 	// CSessionActive indicates that the ClientSession is active and can be
 	// used for backups.
 	CSessionActive CSessionStatus = 0
+
+	// CSessionInactive indicates that the ClientSession is inactive and
+	// cannot be used for backups.
+	CSessionInactive CSessionStatus = 1
 )
 
 // ClientSession encapsulates a SessionInfo returned from a successful
@@ -162,8 +166,8 @@ func (b *BackupID) Decode(r io.Reader) error {
 }
 
 // String returns a human-readable encoding of a BackupID.
-func (b *BackupID) String() string {
-	return fmt.Sprintf("backup(%x, %d)", b.ChanID, b.CommitHeight)
+func (b BackupID) String() string {
+	return fmt.Sprintf("backup(%v, %d)", b.ChanID, b.CommitHeight)
 }
 
 // CommittedUpdate holds a state update sent by a client along with its

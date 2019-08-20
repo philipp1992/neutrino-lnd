@@ -17,6 +17,7 @@ import (
 
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/watchtower"
 
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/btcec"
@@ -28,7 +29,7 @@ import (
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/grpc-ecosystem/go-grpc-middleware"
+	grpc_middleware "github.com/grpc-ecosystem/go-grpc-middleware"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
@@ -167,9 +168,12 @@ var (
 			Action: "write",
 		},
 	}
+)
 
-	// permissions maps RPC calls to the permissions they require.
-	permissions = map[string][]bakery.Op{
+// mainRPCServerPermissions returns a mapping of the main RPC server calls to
+// the permissions they require.
+func mainRPCServerPermissions() map[string][]bakery.Op {
+	return map[string][]bakery.Op{
 		"/lnrpc.Lightning/SendCoins": {{
 			Entity: "onchain",
 			Action: "write",
@@ -380,7 +384,7 @@ var (
 			Action: "read",
 		}},
 	}
-)
+}
 
 // rpcServer is a gRPC, RPC front end to the lnd daemon.
 // TODO(roasbeef): pagination support for the list-style calls
@@ -440,7 +444,7 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	subServerCgs *subRPCServerConfigs, serverOpts []grpc.ServerOption,
 	restDialOpts []grpc.DialOption, restProxyDest string,
 	atpl *autopilot.Manager, invoiceRegistry *invoices.InvoiceRegistry,
-	tlsCfg *tls.Config) (*rpcServer, error) {
+	tower *watchtower.Standalone, tlsCfg *tls.Config) (*rpcServer, error) {
 
 	// Set up router rpc backend.
 	channelGraph := s.chanDB.ChannelGraph()
@@ -493,7 +497,8 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	err = subServerCgs.PopulateDependencies(
 		s.cc, networkDir, macService, atpl, invoiceRegistry,
 		s.htlcSwitch, activeNetParams.Params, s.chanRouter,
-		routerBackend, s.nodeSigner, s.chanDB, s.sweeper,
+		routerBackend, s.nodeSigner, s.chanDB, s.sweeper, tower,
+		s.towerClient, cfg.net.ResolveTCPAddr,
 	)
 	if err != nil {
 		return nil, err
@@ -518,6 +523,7 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	// Next, we need to merge the set of sub server macaroon permissions
 	// with the main RPC server permissions so we can unite them under a
 	// single set of interceptors.
+	permissions := mainRPCServerPermissions()
 	for _, subServerPerm := range subServerPerms {
 		for method, ops := range subServerPerm {
 			// For each new method:ops combo, we also ensure that
@@ -553,6 +559,15 @@ func newRPCServer(s *server, macService *macaroons.Service,
 	// Concatenate the slices of unary and stream interceptors respectively.
 	unaryInterceptors := append(macUnaryInterceptors, promUnaryInterceptors...)
 	strmInterceptors := append(macStrmInterceptors, promStrmInterceptors...)
+
+	// We'll also add our logging interceptors as well, so we can
+	// automatically log all errors that happen during RPC calls.
+	unaryInterceptors = append(
+		unaryInterceptors, errorLogUnaryServerInterceptor(rpcsLog),
+	)
+	strmInterceptors = append(
+		strmInterceptors, errorLogStreamServerInterceptor(rpcsLog),
+	)
 
 	// If any interceptors have been set up, add them to the server options.
 	if len(unaryInterceptors) != 0 && len(strmInterceptors) != 0 {
@@ -1674,6 +1689,12 @@ func (r *rpcServer) CloseChannel(in *lnrpc.CloseChannelRequest,
 		return fmt.Errorf("must specify channel point in close channel")
 	}
 
+	// If force closing a channel, the fee set in the commitment transaction
+	// is used.
+	if in.Force && (in.SatPerByte != 0 || in.TargetConf != 0) {
+		return fmt.Errorf("force closing a channel uses a pre-defined fee")
+	}
+
 	force := in.Force
 	index := in.ChannelPoint.OutputIndex
 	txid, err := GetChanPointFundingTxid(in.GetChannelPoint())
@@ -2017,6 +2038,8 @@ func (r *rpcServer) GetInfo(ctx context.Context,
 		uris[i] = fmt.Sprintf("%s@%s", encodedIDPub, addr.String())
 	}
 
+	isGraphSynced := r.server.authGossiper.SyncManager().IsGraphSynced()
+
 	// TODO(roasbeef): add synced height n stuff
 	return &lnrpc.GetInfoResponse{
 		IdentityPubkey:      encodedIDPub,
@@ -2034,6 +2057,7 @@ func (r *rpcServer) GetInfo(ctx context.Context,
 		Color:               routing.EncodeHexColor(nodeAnn.RGBColor),
 		BestHeaderTimestamp: int64(bestHeaderTimestamp),
 		Version:             build.Version(),
+		SyncedToGraph:       isGraphSynced,
 	}, nil
 }
 
@@ -2220,11 +2244,13 @@ func (r *rpcServer) PendingChannels(ctx context.Context,
 
 		resp.PendingOpenChannels[i] = &lnrpc.PendingChannelsResponse_PendingOpenChannel{
 			Channel: &lnrpc.PendingChannelsResponse_PendingChannel{
-				RemoteNodePub: hex.EncodeToString(pub),
-				ChannelPoint:  pendingChan.FundingOutpoint.String(),
-				Capacity:      int64(pendingChan.Capacity),
-				LocalBalance:  int64(localCommitment.LocalBalance.ToSatoshis()),
-				RemoteBalance: int64(localCommitment.RemoteBalance.ToSatoshis()),
+				RemoteNodePub:        hex.EncodeToString(pub),
+				ChannelPoint:         pendingChan.FundingOutpoint.String(),
+				Capacity:             int64(pendingChan.Capacity),
+				LocalBalance:         int64(localCommitment.LocalBalance.ToSatoshis()),
+				RemoteBalance:        int64(localCommitment.RemoteBalance.ToSatoshis()),
+				LocalChanReserveSat:  int64(pendingChan.LocalChanCfg.ChanReserve),
+				RemoteChanReserveSat: int64(pendingChan.RemoteChanCfg.ChanReserve),
 			},
 			CommitWeight: commitWeight,
 			CommitFee:    int64(localCommitment.CommitFee),
@@ -2635,6 +2661,8 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 		CsvDelay:              uint32(dbChannel.LocalChanCfg.CsvDelay),
 		Initiator:             dbChannel.IsInitiator,
 		ChanStatusFlags:       dbChannel.ChanStatus().String(),
+		LocalChanReserveSat:   int64(dbChannel.LocalChanCfg.ChanReserve),
+		RemoteChanReserveSat:  int64(dbChannel.RemoteChanCfg.ChanReserve),
 	}
 
 	for i, htlc := range localCommit.Htlcs {
@@ -3039,14 +3067,6 @@ func extractPaymentIntent(rpcPayReq *rpcPaymentRequest) (rpcPaymentIntent, error
 
 		copy(payIntent.rHash[:], paymentHash)
 
-	// If we're in debug HTLC mode, then all outgoing HTLCs will pay to the
-	// same debug rHash. Otherwise, we pay to the rHash specified within
-	// the RPC request.
-	case cfg.DebugHTLC &&
-		bytes.Equal(payIntent.rHash[:], lntypes.ZeroHash[:]):
-
-		copy(payIntent.rHash[:], invoices.DebugHash[:])
-
 	default:
 		copy(payIntent.rHash[:], rpcPayReq.PaymentHash)
 	}
@@ -3119,6 +3139,8 @@ func (r *rpcServer) dispatchPaymentIntent(
 	// If the route failed, then we'll return a nil save err, but a non-nil
 	// routing err.
 	if routerErr != nil {
+		rpcsLog.Warnf("Unable to send payment: %v", routerErr)
+
 		return &paymentIntentResponse{
 			Err: routerErr,
 		}, nil
@@ -3569,6 +3591,10 @@ func (r *rpcServer) SubscribeTransactions(req *lnrpc.GetTransactionsRequest,
 	for {
 		select {
 		case tx := <-txClient.ConfirmedTransactions():
+			destAddresses := make([]string, 0, len(tx.DestAddresses))
+			for _, destAddress := range tx.DestAddresses {
+				destAddresses = append(destAddresses, destAddress.EncodeAddress())
+			}
 			detail := &lnrpc.Transaction{
 				TxHash:           tx.Hash.String(),
 				Amount:           int64(tx.Value),
@@ -3576,6 +3602,7 @@ func (r *rpcServer) SubscribeTransactions(req *lnrpc.GetTransactionsRequest,
 				BlockHash:        tx.BlockHash.String(),
 				TimeStamp:        tx.Timestamp,
 				TotalFees:        tx.TotalFees,
+				DestAddresses:    destAddresses,
 				RawTxHex:         hex.EncodeToString(tx.RawTx),
 			}
 			if err := updateStream.Send(detail); err != nil {
@@ -3583,12 +3610,17 @@ func (r *rpcServer) SubscribeTransactions(req *lnrpc.GetTransactionsRequest,
 			}
 
 		case tx := <-txClient.UnconfirmedTransactions():
+			var destAddresses []string
+			for _, destAddress := range tx.DestAddresses {
+				destAddresses = append(destAddresses, destAddress.EncodeAddress())
+			}
 			detail := &lnrpc.Transaction{
-				TxHash:    tx.Hash.String(),
-				Amount:    int64(tx.Value),
-				TimeStamp: tx.Timestamp,
-				TotalFees: tx.TotalFees,
-				RawTxHex:  hex.EncodeToString(tx.RawTx),
+				TxHash:        tx.Hash.String(),
+				Amount:        int64(tx.Value),
+				TimeStamp:     tx.Timestamp,
+				TotalFees:     tx.TotalFees,
+				DestAddresses: destAddresses,
+				RawTxHex:      hex.EncodeToString(tx.RawTx),
 			}
 			if err := updateStream.Send(detail); err != nil {
 				return err
@@ -3745,6 +3777,7 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 			FeeBaseMsat:      int64(c1.FeeBaseMSat),
 			FeeRateMilliMsat: int64(c1.FeeProportionalMillionths),
 			Disabled:         c1.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
+			LastUpdate:       uint32(c1.LastUpdate.Unix()),
 		}
 	}
 
@@ -3756,6 +3789,7 @@ func marshalDbEdge(edgeInfo *channeldb.ChannelEdgeInfo,
 			FeeBaseMsat:      int64(c2.FeeBaseMSat),
 			FeeRateMilliMsat: int64(c2.FeeProportionalMillionths),
 			Disabled:         c2.ChannelFlags&lnwire.ChanUpdateDisabled != 0,
+			LastUpdate:       uint32(c2.LastUpdate.Unix()),
 		}
 	}
 
@@ -3972,6 +4006,12 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 		return nil, err
 	}
 
+	// Query the graph for the current number of zombie channels.
+	numZombies, err := graph.NumZombies()
+	if err != nil {
+		return nil, err
+	}
+
 	// Find the median.
 	medianChanSize = autopilot.Median(allChans)
 
@@ -3995,6 +4035,7 @@ func (r *rpcServer) GetNetworkInfo(ctx context.Context,
 		MinChannelSize:       int64(minChannelSize),
 		MaxChannelSize:       int64(maxChannelSize),
 		MedianChannelSizeSat: int64(medianChanSize),
+		NumZombieChans:       numZombies,
 	}
 
 	// Similarly, if we don't have any channels, then we'll also set the
@@ -4196,6 +4237,8 @@ func (r *rpcServer) ListPayments(ctx context.Context,
 			CreationDate:    payment.Info.CreationDate.Unix(),
 			Path:            path,
 			Fee:             int64(route.TotalFees().ToSatoshis()),
+			FeeSat:          int64(route.TotalFees().ToSatoshis()),
+			FeeMsat:         int64(route.TotalFees()),
 			PaymentPreimage: hex.EncodeToString(preimage[:]),
 			PaymentRequest:  string(payment.Info.PaymentRequest),
 			Status:          status,
@@ -4601,14 +4644,19 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 		numEvents uint32
 	)
 
-	// If the start and end time were not set, then we'll just return the
-	// records over the past 24 hours.
-	if req.StartTime == 0 && req.EndTime == 0 {
+	// If the start time wasn't specified, we'll default to 24 hours ago.
+	if req.StartTime == 0 {
 		now := time.Now()
 		startTime = now.Add(-time.Hour * 24)
-		endTime = now
 	} else {
 		startTime = time.Unix(int64(req.StartTime), 0)
+	}
+
+	// If the end time wasn't specified, assume a default end time of now.
+	if req.EndTime == 0 {
+		now := time.Now()
+		endTime = now
+	} else {
 		endTime = time.Unix(int64(req.EndTime), 0)
 	}
 
@@ -4619,7 +4667,7 @@ func (r *rpcServer) ForwardingHistory(ctx context.Context,
 		numEvents = 100
 	}
 
-	// Next, we'll map the proto request into a format the is understood by
+	// Next, we'll map the proto request into a format that is understood by
 	// the forwarding log.
 	eventQuery := channeldb.ForwardingEventQuery{
 		StartTime:    startTime,
