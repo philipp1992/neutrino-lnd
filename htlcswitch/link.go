@@ -1061,7 +1061,7 @@ out:
 
 			if resolution.failed {
 				log.Errorf("resolution: Received failure from hash resolver")
-				failure := lnwire.FailUnknownPaymentHash{}
+				failure := &lnwire.FailUnknownNextPeer{}
 				l.sendHTLCError(
 					resolution.pd.HtlcIndex, failure, resolution.obfuscator, resolution.pd.SourceRef,
 				)

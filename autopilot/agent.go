@@ -470,9 +470,10 @@ func (a *Agent) controller() {
 			log.Debugf("Node updates received, assessing " +
 				"need for more channels")
 
-		case <-time.After(10 * time.Minute):
+		case <-time.After(5 * time.Minute):
 			log.Debugf("10 minutes passed, checking " +
 				"need for more channels")
+			updateBalance()
 
 		// The agent has been signalled to exit, so we'll bail out
 		// immediately.
