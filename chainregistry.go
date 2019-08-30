@@ -67,6 +67,7 @@ const (
 	// btcToLtcConversionRate is a fixed ratio used in order to scale up
 	// payments when running on the Litecoin chain.
 	btcToLtcConversionRate = 60
+	btcToXsnConversionRate = 100000
 )
 
 // defaultBtcChannelConstraints is the default set of channel constraints that are
@@ -290,7 +291,6 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			lightWalletMode.RPCUser, lightWalletMode.RPCPass,
 			lightWalletMode.ZMQPubRawHeader, 100*time.Millisecond,
 		)
-
 		if err != nil {
 			return nil, err
 		}

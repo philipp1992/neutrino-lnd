@@ -67,6 +67,9 @@ const (
 	// permitted.
 	maxLtcPaymentMSat = lnwire.MilliSatoshi(math.MaxUint32) *
 		btcToLtcConversionRate
+
+	maxXsnPaymentMSat = lnwire.MilliSatoshi(math.MaxUint32) *
+		btcToXsnConversionRate
 )
 
 var (

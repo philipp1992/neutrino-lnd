@@ -52,7 +52,7 @@ const (
 	defaultLogFilename        = "lnd.log"
 	defaultRPCPort            = 10009
 	defaultRESTPort           = 8080
-	defaultPeerPort           = 9735
+	defaultPeerPort           = 8384
 	defaultRPCHost            = "localhost"
 
 	// DefaultMaxPendingChannels is the default maximum number of incoming
@@ -925,7 +925,11 @@ func loadConfig() (*config, error) {
 		// while we're at it.
 		numNets := 0
 		var xsnParams xsncoinNetParams
-		if cfg.Xsncoin.MainNet {
+		if cfg.Xsncoin.MainNet && cfg.Xsncoin.Node == "lightwallet" {
+			numNets++
+			xsnParams = xsnLightWalletParams
+		}
+		if cfg.Xsncoin.MainNet && cfg.Xsncoin.Node != "lightwallet"{
 			numNets++
 			xsnParams = xsnMainNetParams
 		}
@@ -933,7 +937,11 @@ func loadConfig() (*config, error) {
 			numNets++
 			xsnParams = xsnTestNetParams
 		}
-		if cfg.Xsncoin.RegTest {
+		if cfg.Xsncoin.RegTest && cfg.Xsncoin.Node == "lightwallet" {
+			numNets++
+			xsnParams = xsnLightWalletRegtestParams
+		}
+		if cfg.Xsncoin.RegTest && cfg.Xsncoin.Node != "lightwallet"{
 			numNets++
 			xsnParams = xsnRegTestNetParams
 		}
@@ -983,8 +991,23 @@ func loadConfig() (*config, error) {
 				return nil, err
 			}
 
+		case "lightwallet":
+			if !cfg.Xsncoin.MainNet && !cfg.Xsncoin.RegTest {
+				return nil, fmt.Errorf("%s: only xsncoin mainnet and regtest "+
+					"currently supports lightWallet mode", funcName)
+			}
+
+			err := parseRPCParams(
+				cfg.Xsncoin, cfg.LightWalletMode, xsncoinChain, funcName,
+			)
+			if err != nil {
+				err := fmt.Errorf("unable to load RPC "+
+					"credentials for xsncoin lw mode: %v", err)
+				return nil, err
+			}
+
 		default:
-			str := "%s: only xsnd mode " +
+			str := "%s: only xsnd and lightwallet mode " +
 				"supported for xsncoin at this time"
 			return nil, fmt.Errorf(str, funcName)
 		}
@@ -996,6 +1019,8 @@ func loadConfig() (*config, error) {
 		// Finally we'll register the bitcoin chain as our current
 		// primary chain.
 		registeredChains.RegisterPrimaryChain(xsncoinChain)
+		MaxFundingAmount = maxXsnFundingAmount
+		MaxPaymentMSat = maxXsnPaymentMSat
 	}
 
 	// Ensure that the user didn't attempt to specify negative values for
