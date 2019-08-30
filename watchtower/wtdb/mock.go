@@ -6,19 +6,20 @@ import (
 	"sync"
 
 	"github.com/lightningnetwork/lnd/chainntnfs"
+	"github.com/lightningnetwork/lnd/watchtower/blob"
 )
 
 type MockDB struct {
 	mu        sync.Mutex
 	lastEpoch *chainntnfs.BlockEpoch
 	sessions  map[SessionID]*SessionInfo
-	blobs     map[BreachHint]map[SessionID]*SessionStateUpdate
+	blobs     map[blob.BreachHint]map[SessionID]*SessionStateUpdate
 }
 
 func NewMockDB() *MockDB {
 	return &MockDB{
 		sessions: make(map[SessionID]*SessionInfo),
-		blobs:    make(map[BreachHint]map[SessionID]*SessionStateUpdate),
+		blobs:    make(map[blob.BreachHint]map[SessionID]*SessionStateUpdate),
 	}
 }
 
@@ -104,7 +105,7 @@ func (db *MockDB) GetLookoutTip() (*chainntnfs.BlockEpoch, error) {
 	return db.lastEpoch, nil
 }
 
-func (db *MockDB) QueryMatches(breachHints []BreachHint) ([]Match, error) {
+func (db *MockDB) QueryMatches(breachHints []blob.BreachHint) ([]Match, error) {
 	db.mu.Lock()
 	defer db.mu.Unlock()
 

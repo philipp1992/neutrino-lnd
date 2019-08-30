@@ -3,7 +3,6 @@ package lightwalletnotify
 import (
 	"errors"
 	"fmt"
-	"github.com/btcsuite/btcutil/gcs/builder"
 	"sync"
 	"sync/atomic"
 
@@ -447,33 +446,37 @@ func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfR
 				scanHeight, err)
 		}
 
-		regFilter, err := b.chainConn.GetCFilter(blockHash)
-
-		if err != nil {
-			return nil, fmt.Errorf("unable to retrieve regular filter for "+
-				"height=%v: %v", scanHeight, err)
-		}
+		//regFilter, err := b.chainConn.GetCFilter(blockHash)
+		//
+		//bytes, _ := regFilter.Bytes()
+		//fmt.Printf("\nRegFilter %d\n", bytes)
+		//
+		//if err != nil {
+		//	return nil, fmt.Errorf("unable to retrieve regular filter for "+
+		//		"height=%v: %v", scanHeight, err)
+		//}
 
 		// If the block has no transactions other than the Coinbase
 		// transaction, then the filter may be nil, so we'll continue
 		// forward int that case.
-		if regFilter == nil {
-			continue
-		}
-
-		// In the case that the filter exists, we'll attempt to see if
-		// any element in it matches our target public key script.
-		key := builder.DeriveKey(blockHash)
-		match, err := regFilter.Match(key, confRequest.PkScript.Script())
-		if err != nil {
-			return nil, fmt.Errorf("unable to query filter: %v", err)
-		}
-
-		// If there's no match, then we can continue forward to the
-		// next block.
-		if !match {
-			continue
-		}
+		//if regFilter == nil {
+		//	continue
+		//}
+		//
+		//// In the case that the filter exists, we'll attempt to see if
+		//// any element in it matches our target public key script.
+		//key := builder.DeriveKey(blockHash)
+		//match, err := regFilter.Match(key, confRequest.PkScript.Script())
+		//if err != nil {
+		//	return nil, fmt.Errorf("unable to query filter: %v", err)
+		//}
+		//
+		//// If there's no match, then we can continue forward to the
+		//// next block.
+		//if !match {
+		//	fmt.Printf("\n***************Filter Matched**************\n")
+		//	continue
+		//}
 
 		// In the case that we do have a match, we'll fetch the block
 		// from the network so we can find the positional data required

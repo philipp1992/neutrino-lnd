@@ -284,7 +284,7 @@ func NewLightWalletBackend(t *testing.T, minerAddr string,
 
 	host := fmt.Sprintf("127.0.0.1:%d", rpcPort)
 	chainConn, err := chain.NewLightWalletConn(
-		&chaincfg.LightWalletRegTestParams, host, "weks",
+		&chaincfg.BitcoinLWRegTestParams, host, "weks",
 		"weks", zmqHeaderHost,
 		100*time.Millisecond,
 	)
