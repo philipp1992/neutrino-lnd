@@ -427,6 +427,24 @@ out:
 func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequest,
 	startHeight, endHeight uint32) (*chainntnfs.TxConfirmation, error) {
 
+	fmt.Printf("Requested historicalConfDetails for txid=%v, startHeight=%v, endHeight=%v\n",
+		confRequest.TxID.String(), startHeight, endHeight)
+
+	txConf, blockHash, blockHeight, err := b.chainConn.GetRawTransactionVerbose(&confRequest.TxID)
+
+	if err == nil {
+
+		if confRequest.MatchesTx(txConf.MsgTx()) {
+			return &chainntnfs.TxConfirmation{
+				BlockHeight: blockHeight,
+				BlockHash: blockHash,
+				TxIndex: uint32(txConf.Index()),
+				Tx: txConf.MsgTx(),
+			}, nil
+		}
+
+	}
+
 	// Starting from the height hint, we'll walk forwards in the chain to
 	// see if this transaction/output script has already been confirmed.
 	for scanHeight := endHeight; scanHeight >= startHeight && scanHeight >0; scanHeight-- {
