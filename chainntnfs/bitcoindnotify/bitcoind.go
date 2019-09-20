@@ -860,6 +860,12 @@ func (b *BitcoindNotifier) RegisterConfirmationsNtfn(txid *chainhash.Hash,
 		return ntfn.Event, nil
 	}
 
+	txids := []chainhash.Hash{*txid}
+
+	if err := b.chainConn.NotifyTx(txids); err != nil {
+		return nil, err
+	}
+
 	select {
 	case b.notificationRegistry <- dispatch:
 		return ntfn.Event, nil

@@ -38,9 +38,12 @@ type txSubscriptionClient struct {
 
 func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
 	utxo, err := lw.client.GetUnspentOutput(&prevOut.Hash, prevOut.Index)
-
 	if err != nil {
 		return nil, err
+	}
+
+	if utxo == nil {
+		return nil, nil
 	}
 
 	pkScript, err := hex.DecodeString(utxo.ScriptPubKeyHex)

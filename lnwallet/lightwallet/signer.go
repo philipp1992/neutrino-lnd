@@ -53,7 +53,7 @@ func (lw *LightWalletController) privateKeyForScript(pkScript []byte, signDesc *
 		}
 	}
 
-		_, addresses, _, _ := txscript.ExtractPkScriptAddrs(pkScript, lw.config.NetParams)
+	_, addresses, _, _ := txscript.ExtractPkScriptAddrs(pkScript, lw.config.NetParams)
 
 	fmt.Printf("Requesting priv key for address: %v\n", addresses)
 
@@ -71,12 +71,12 @@ func (lw *LightWalletController) privateKeyForScript(pkScript []byte, signDesc *
 func (lw *LightWalletController) SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, error) {
 	witnessScript := signDesc.WitnessScript
 
-	privKey, err := lw.privateKeyForScript(signDesc.Output.PkScript, signDesc)
 
+	privKey, err := lw.keychain.DerivePrivKey(signDesc.KeyDesc)
 	if err != nil {
 		return nil, err
 	}
-
+	
 	// If a tweak (single or double) is specified, then we'll need to use
 	// this tweak to derive the final private key to be used for signing
 	// this output.

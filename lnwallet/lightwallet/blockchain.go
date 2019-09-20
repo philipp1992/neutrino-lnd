@@ -20,20 +20,24 @@ func (lw *LightWalletController) GetUtxo(op *wire.OutPoint, pkScript []byte, hei
 	cancel <-chan struct{}) (*wire.TxOut, error) {
 
 	utxo, err := lw.client.GetUnspentOutput(&op.Hash, op.Index)
-
 	if err != nil {
 		return nil, err
 	}
 
-	parsed, err := hex.DecodeString(utxo.ScriptPubKeyHex)
+	// if pkscript empty, output is spent
+	if utxo == nil {
+		return nil, nil
+	}
 
+	// otherwise decode usnpent output
+	parsedScript, err := hex.DecodeString(utxo.ScriptPubKeyHex)
 	if err != nil {
 		return nil, err
 	}
 
 	return &wire.TxOut{
 		Value: utxo.Amount,
-		PkScript: parsed,
+		PkScript: parsedScript,
 
 	}, nil
 }

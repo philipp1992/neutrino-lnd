@@ -746,7 +746,7 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	// index (if enabled) to determine if we have a better rescan starting
 	// height. We can do this as the GetRawTransaction call will return the
 	// hash of the block it was included in within the chain.
-	tx, err := b.chainConn.GetRawTransaction(&spendRequest.OutPoint.Hash)
+	tx, _, blockHeight, err := b.chainConn.GetRawTransactionVerbose(&spendRequest.OutPoint.Hash)
 	if err != nil {
 		// Avoid returning an error if the transaction was not found to
 		// proceed with fallback methods.
@@ -765,15 +765,6 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		// on-chain, then there's no need to perform a rescan.
 		if tx.Hash().String() == "" {
 			return ntfn.Event, nil
-		}
-
-		blockHash, err := chainhash.NewHashFromStr(tx.Hash().String())
-		if err != nil {
-			return nil, err
-		}
-		blockHeight, err := b.chainConn.GetBlockHeight(blockHash)
-		if err != nil {
-			return nil, err
 		}
 
 		if uint32(blockHeight) > historicalDispatch.StartHeight {
