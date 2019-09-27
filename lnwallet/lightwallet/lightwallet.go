@@ -148,7 +148,6 @@ func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
 
 	txid, err := lw.client.SendRawTransaction(tx, true)
 	if err != nil {
-		fmt.Printf("\n\n\nFailed to send raw tx, err %s", err.Error())
 		return err
 	}
 

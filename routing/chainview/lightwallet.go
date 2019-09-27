@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil/gcs/builder"
+	"github.com/btcsuite/btcwallet/chain"
+	"github.com/btcsuite/btcwallet/wtxmgr"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"sync"
 	"sync/atomic"
-
-	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/chain"
-	"github.com/lightningnetwork/lnd/channeldb"
 )
 
 type lwFilterUpdate struct {
@@ -109,6 +108,11 @@ func (c *LWFilteredChainView) Start() error {
 		return err
 	}
 
+	err = c.chainClient.NotifyBlocks()
+	if err != nil {
+		return err
+	}
+
 	_, bestHeight, err := c.chainClient.GetBestBlock()
 	if err != nil {
 		return err
@@ -146,37 +150,42 @@ func (c *LWFilteredChainView) Stop() error {
 // onFilteredBlockConnected is called for each block that's connected to the
 // end of the main chain. Based on our current chain filter, the block may or
 // may not include any relevant transactions.
-func (c *LWFilteredChainView) onFilteredBlockConnected(height int32,
-	header *wire.BlockHeader, txns []*btcutil.Tx) {
+func (b *LWFilteredChainView) onFilteredBlockConnected(height int32,
+	hash chainhash.Hash, txns []*wtxmgr.TxRecord) {
 
 	mtxs := make([]*wire.MsgTx, len(txns))
-	c.filterMtx.Lock()
+	b.filterMtx.Lock()
 	for i, tx := range txns {
-		mtx := tx.MsgTx()
-		mtxs[i] = mtx
+		mtxs[i] = &tx.MsgTx
 
-		for _, txIn := range mtx.TxIn {
-			delete(c.chainFilter, txIn.PreviousOutPoint)
+		for _, txIn := range mtxs[i].TxIn {
+			// We can delete this outpoint from the chainFilter, as
+			// we just received a block where it was spent. In case
+			// of a reorg, this outpoint might get "un-spent", but
+			// that's okay since it would never be wise to consider
+			// the channel open again (since a spending transaction
+			// exists on the network).
+			delete(b.chainFilter, txIn.PreviousOutPoint)
 		}
 
 	}
-	c.filterMtx.Unlock()
+	b.filterMtx.Unlock()
 
 	// We record the height of the last connected block added to the
 	// blockQueue such that we can scan up to this height in case of
 	// a rescan. It must be protected by a mutex since a filter update
 	// might be trying to read it concurrently.
-	c.bestHeightMtx.Lock()
-	c.bestHeight = uint32(height)
-	c.bestHeightMtx.Unlock()
+	b.bestHeightMtx.Lock()
+	b.bestHeight = uint32(height)
+	b.bestHeightMtx.Unlock()
 
 	block := &FilteredBlock{
-		Hash:         header.BlockHash(),
+		Hash:         hash,
 		Height:       uint32(height),
 		Transactions: mtxs,
 	}
 
-	c.blockQueue.Add(&blockEvent{
+	b.blockQueue.Add(&blockEvent{
 		eventType: connected,
 		block:     block,
 	})
@@ -184,18 +193,18 @@ func (c *LWFilteredChainView) onFilteredBlockConnected(height int32,
 
 // onFilteredBlockDisconnected is a callback which is executed once a block is
 // disconnected from the end of the main chain.
-func (c *LWFilteredChainView) onFilteredBlockDisconnected(height int32,
-	header *wire.BlockHeader) {
+func (b *LWFilteredChainView) onFilteredBlockDisconnected(height int32,
+	hash chainhash.Hash) {
 
 	log.Debugf("got disconnected block at height %d: %v", height,
-		header.BlockHash())
+		hash)
 
 	filteredBlock := &FilteredBlock{
-		Hash:   header.BlockHash(),
+		Hash:   hash,
 		Height: uint32(height),
 	}
 
-	c.blockQueue.Add(&blockEvent{
+	b.blockQueue.Add(&blockEvent{
 		eventType: disconnected,
 		block:     filteredBlock,
 	})
@@ -205,7 +214,6 @@ func (c *LWFilteredChainView) onFilteredBlockDisconnected(height int32,
 // CfFilteredChainView. This goroutine handles errors from the running rescan.
 func (c *LWFilteredChainView) chainFilterer() {
 	defer c.wg.Done()
-
 
 	decodeJSONBlock := func(block *btcjson.RescannedBlock,
 		height uint32) (*FilteredBlock, error) {
@@ -329,9 +337,19 @@ func (c *LWFilteredChainView) chainFilterer() {
 				})
 			}
 
-			// We've received a new request to manually filter a block.
 		case err := <-c.rescanErrChan:
 			log.Errorf("Error encountered during rescan: %v", err)
+
+		// We've received a new event from the chain client.
+		case event := <-c.chainClient.Notifications():
+			switch e := event.(type) {
+			case chain.FilteredBlockConnected:
+				c.onFilteredBlockConnected(
+					e.Block.Height, e.Block.Hash, e.RelevantTxs,
+					)
+			case chain.BlockDisconnected:
+				c.onFilteredBlockDisconnected(e.Height, e.Hash)
+			}
 		case <-c.quit:
 			return
 		}

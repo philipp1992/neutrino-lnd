@@ -398,7 +398,6 @@ func (a *Agent) controller() {
 		a.totalBalance = newBalance
 	}
 
-	// TODO(roasbeef): add 10-minute wake up timer
 	for {
 		select {
 		// A new external signal has arrived. We'll use this to update
@@ -471,7 +470,7 @@ func (a *Agent) controller() {
 				"need for more channels")
 
 		case <-time.After(5 * time.Minute):
-			log.Debugf("10 minutes passed, checking " +
+			log.Debugf("5 minutes passed, checking " +
 				"need for more channels")
 			updateBalance()
 
