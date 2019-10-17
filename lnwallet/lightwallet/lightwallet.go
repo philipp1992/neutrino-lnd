@@ -22,6 +22,7 @@ type LightWalletController struct{
 	client *chain.LightWalletClient
 	config btcwallet.Config
 	keychain *keychain.LightWalletKeyRing
+	lockedOutpoints map[wire.OutPoint]struct{}
 }
 
 type txSubscriptionClient struct {
@@ -125,6 +126,11 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 			},
 		}
 
+		// Locked unspent outputs are skipped.
+		if lw.LockedOutpoint(tmp.OutPoint) {
+			continue
+		}
+
 		utxos = append(utxos, tmp)
 	}
 
@@ -132,16 +138,26 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 }
 
 func (lw *LightWalletController) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
-	//panic("implement me")
+	panic("implement list")
 	return nil, nil
 }
 
+// LockedOutpoint returns whether an outpoint has been marked as locked and
+// should not be used as an input for created transactions.
+func (lw *LightWalletController) LockedOutpoint(o wire.OutPoint) bool {
+	_, locked := lw.lockedOutpoints[o]
+	fmt.Printf("\nChecking %s \n Returning %f\n", o.Hash.String(), locked)
+	return locked
+}
+
 func (lw *LightWalletController) LockOutpoint(o wire.OutPoint) {
-	//panic("implement me")
+	lw.lockedOutpoints[o] = struct{}{}
+	fmt.Printf("\nLocking %s\n", o.Hash.String())
+
 }
 
 func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
-	//panic("implement me")
+	delete(lw.lockedOutpoints, o)
 }
 
 func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
@@ -317,5 +333,6 @@ func New(cfg btcwallet.Config, 	client *chain.LightWalletClient, keychain *keych
 		config: cfg,
 		client: client,
 		keychain: keychain,
+		lockedOutpoints: map[wire.OutPoint]struct{}{},
 	}, nil
 }
