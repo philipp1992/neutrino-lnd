@@ -708,6 +708,8 @@ func (r *ChannelRouter) syncGraphWithChain() error {
 		default:
 		}
 
+		log.Debugf("Syncing height %d", nextHeight)
+
 		// Using the next height, request a manual block pruning from
 		// the chainview for the particular block hash.
 		nextHash, err := r.cfg.Chain.GetBlockHash(int64(nextHeight))
