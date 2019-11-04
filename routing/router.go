@@ -1251,6 +1251,10 @@ func (r *ChannelRouter) processUpdate(msg interface{}) error {
 				"for chan_id=%v, chan_point=%v: %v",
 				msg.ChannelID, fundingPoint, err)
 		}
+		if chanUtxo == nil {
+			log.Tracef("Output %v is already spent", fundingPoint)
+			return nil
+		}
 
 		// By checking the equality of witness pkscripts we checks that
 		// funding witness script is multisignature lock which contains
