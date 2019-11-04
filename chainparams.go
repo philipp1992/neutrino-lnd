@@ -62,6 +62,20 @@ var bitcoinSimNetParams = bitcoinNetParams{
 }
 
 // bitcoinLightWalletParams contains parameters specific to the LW connection
+var ltcLightWalletParams = litecoinNetParams{
+	Params:   &litecoinCfg.LitecoinLWParams,
+	rpcPort:  "12347",
+	CoinType: keychain.CoinTypeLitecoin,
+}
+
+// bitcoinLightWalletParams contains parameters specific to the LW connection
+var ltcLightWalletRegtestParams = litecoinNetParams{
+	Params:   &litecoinCfg.LitecoinLWRegTestParams,
+	rpcPort:  "12347",
+	CoinType: keychain.CoinTypeLitecoin,
+}
+
+// bitcoinLightWalletParams contains parameters specific to the LW connection
 var btcLightWalletParams = bitcoinNetParams{
 	Params:   &bitcoinCfg.BitcoinLWParams,
 	rpcPort:  "12347",
@@ -74,7 +88,6 @@ var btcLightWalletRegtestParams = bitcoinNetParams{
 	rpcPort:  "12347",
 	CoinType: keychain.CoinTypeBitcoin,
 }
-
 
 // xsnLightWalletParams contains parameters specific to the LW connection
 var xsnLightWalletParams = xsncoinNetParams {
