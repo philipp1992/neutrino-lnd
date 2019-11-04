@@ -282,6 +282,9 @@ type BlockChainIO interface {
 	// GetBlock returns the block in the main chain identified by the given
 	// hash.
 	GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error)
+
+	// LoadCache loads second layer headers cache on response
+	LoadCache(startHeight uint32) (bool, error)
 }
 
 // MessageSigner represents an abstract object capable of signing arbitrary

@@ -694,6 +694,14 @@ func (r *ChannelRouter) syncGraphWithChain() error {
 	log.Infof("Syncing channel graph from height=%v (hash=%v) to height=%v "+
 		"(hash=%v)", pruneHeight, pruneHash, bestHeight, bestHash)
 
+	// check if we need to request access to second layer cache
+	if (uint32(bestHeight) - pruneHeight) > 10000 { // 10000 size of main cache in light wallet
+		_, err := r.cfg.Chain.LoadCache(pruneHeight)
+		if err != nil {
+			log.Errorf("unable to load second layer cache: %v", err)
+		}
+	}
+
 	// If we're not yet caught up, then we'll walk forward in the chain
 	// pruning the channel graph with each new block that hasn't yet been
 	// consumed by the channel graph.
