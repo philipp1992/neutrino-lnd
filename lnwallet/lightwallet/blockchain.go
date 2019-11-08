@@ -53,3 +53,8 @@ func (lw *LightWalletController) GetBlock(blockHash *chainhash.Hash) (*wire.MsgB
 func (lw *LightWalletController) LoadCache(startHeight uint32) (bool, error) {
 	return lw.client.LoadSecondLayerCache(startHeight)
 }
+
+func (lw *LightWalletController) FreeCache() error {
+	return lw.client.FreeSecondLayerCache()
+}
+

@@ -228,6 +228,11 @@ func (m *mockChainIO) LoadCache(startHeight uint32) (bool, error) {
 	return true, nil
 }
 
+// FreeCache releases second layer headers cache on response
+func (m *mockChainIO) FreeCache() error {
+	return nil
+}
+
 // mockWalletController is used by the LightningWallet, and let us mock the
 // interaction with the bitcoin network.
 type mockWalletController struct {

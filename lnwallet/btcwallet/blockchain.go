@@ -160,9 +160,15 @@ func (b *BtcWallet) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) 
 func (b *BtcWallet) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
 	return b.chain.GetBlockHash(blockHeight)
 }
+
 // no cache for btcwallet
 func (b *BtcWallet) LoadCache(startHeight uint32) (bool, error) {
 	return true, nil
+}
+
+// no cache for btcwallet
+func (b *BtcWallet) FreeCache() error {
+	return nil
 }
 
 // A compile time check to ensure that BtcWallet implements the BlockChainIO

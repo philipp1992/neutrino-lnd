@@ -285,6 +285,9 @@ type BlockChainIO interface {
 
 	// LoadCache loads second layer headers cache on response
 	LoadCache(startHeight uint32) (bool, error)
+
+	// FreeCache releases second layer headers cache on response
+	FreeCache() error
 }
 
 // MessageSigner represents an abstract object capable of signing arbitrary
