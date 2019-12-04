@@ -3,6 +3,7 @@ package lnd
 import (
 	"context"
 	"fmt"
+	"github.com/lightningnetwork/lnd/dualfunding"
 	"io"
 	"os"
 	"path/filepath"
@@ -94,6 +95,7 @@ var (
 	promLog = build.NewSubLogger("PROM", backendLog.Logger)
 	wtclLog = build.NewSubLogger("WTCL", backendLog.Logger)
 	prnfLog = build.NewSubLogger("PRNF", backendLog.Logger)
+	dchnLog = build.NewSubLogger("DCHN", backendLog.Logger)
 )
 
 // Initialize package-global logger variables.
@@ -107,6 +109,7 @@ func init() {
 	routing.UseLogger(crtrLog)
 	neutrino.UseLogger(btcnLog)
 	autopilot.UseLogger(atplLog)
+	dualfunding.UseLogger(dchnLog)
 	contractcourt.UseLogger(cnctLog)
 	sphinx.UseLogger(sphxLog)
 	signal.UseLogger(ltndLog)

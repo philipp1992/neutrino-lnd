@@ -14,7 +14,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/pem"
 	"fmt"
-	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
+	"github.com/lightningnetwork/lnd/dualfunding"
 	"strconv"
 
 	"io/ioutil"
@@ -51,6 +51,7 @@ import (
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/walletunlocker"
@@ -543,6 +544,30 @@ func Main() error {
 		return err
 	}
 	defer server.Stop()
+
+	// Dual Channels Funding Manager
+	//if cfg.DualFunding.Active {
+
+		dfConfig, err := initDualFunding(server)
+		if err != nil {
+			err := fmt.Errorf("Unable to initialize dual channel manager: %v", err)
+			ltndLog.Error(err)
+			return err
+		}
+
+		dualChanManager, err := dualfunding.NewDualChannelManager(dfConfig)
+		if err != nil {
+			err := fmt.Errorf("Unable to create dualChannel manager: %v", err)
+			ltndLog.Error(err)
+			return err
+		}
+		if err := dualChanManager.Start(); err != nil {
+			err := fmt.Errorf("Unable to start dualchannel manager: %v", err)
+			ltndLog.Error(err)
+			return err
+		}
+		defer dualChanManager.Stop()
+	//}
 
 	// Now that the server has started, if the autopilot mode is currently
 	// active, then we'll start the autopilot agent immediately. It will be

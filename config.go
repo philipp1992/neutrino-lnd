@@ -222,6 +222,10 @@ type autoPilotConfig struct {
 	ConfTarget     uint32             `long:"conftarget" description:"The confirmation target (in blocks) for channels opened by autopilot."`
 }
 
+type dualFundingConfig struct {
+	Active         bool               `long:"active" description:"If the dual channel funding should be active or not."`
+}
+
 type torConfig struct {
 	Active          bool   `long:"active" description:"Allow outbound and inbound connections to be routed through Tor"`
 	SOCKS           string `long:"socks" description:"The host:port that Tor's exposed SOCKS5 proxy is listening on"`
@@ -297,6 +301,7 @@ type config struct {
 	XsndMode 	 *bitcoindConfig `group:"xsnd" namespace:"xsnd"`
 
 	Autopilot *autoPilotConfig `group:"Autopilot" namespace:"autopilot"`
+	DualFunding *dualFundingConfig `group:"DualFunding" namespace:"dualfunding"`
 
 	Tor *torConfig `group:"Tor" namespace:"tor"`
 
@@ -428,6 +433,9 @@ func loadConfig() (*config, error) {
 			Heuristic: map[string]float64{
 				"preferential": 1.0,
 			},
+		},
+		DualFunding: &dualFundingConfig{
+			Active: false,
 		},
 		TrickleDelay:             defaultTrickleDelay,
 		ChanStatusSampleInterval: defaultChanStatusSampleInterval,
