@@ -49,21 +49,29 @@ type DualChannelConfig struct {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+type DualChannel struct {
+	theirOutpoint wire.OutPoint
+	ourOutpoint wire.OutPoint
+}
+
 type dualChannelManager struct {
 	started sync.Once
 	stopped sync.Once
 	db *bbolt.DB
-	chanState    channelState
 	cfg *DualChannelConfig
 	dualFundingRequests chan interface{}
 	quit chan struct{}
 	wg   sync.WaitGroup
 
+	// chanState tracks the current set of open channels for given peer
+	chanState    map[NodeID]DualChannel
+	chanStateMtx sync.Mutex
+
 	// pendingOpens tracks the channels that we've requested to be
 	// initiated, but haven't yet been confirmed as being fully opened.
 	// This state is required as otherwise, we may go over our allotted
 	// channel limit, or open multiple channels to the same node.
-	pendingOpens map[NodeID]Channel
+	pendingOpens map[NodeID]DualChannel
 	pendingMtx   sync.Mutex
 }
 
@@ -135,7 +143,7 @@ func openDualFundingDb(dbPath string) (*bbolt.DB, error) {
 func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) {
 	chManager :=  &dualChannelManager {
 		cfg: 			    		cfg,
-		chanState:          		make(map[uint64]Channel),
+		chanState:          		make(map[NodeID]DualChannel),
 		dualFundingRequests:        make(chan interface{}, msgBufferSize),
 		quit: 						make(chan struct{}),
 	}
@@ -148,13 +156,9 @@ func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) 
 		return nil, err
 	}
 
-	for _, c := range cfg.Channels {
-		chManager.chanState[c.ShortChannelID.ToUint64()] = Channel{
-			ChanID: c.ShortChannelID.ToUint64(),
-			Capacity: c.Capacity,
-			Node: NewNodeID(c.IdentityPub),
-		}
-	}
+	//for _, c := range cfg.Channels {
+	//	chManager.chanState[NewNodeID(c.IdentityPub)] = DualChannel{}c.FundingOutpoint
+	//}
 
 	return chManager, nil
 }
@@ -227,11 +231,12 @@ func (dc *dualChannelManager) start() error {
 					// channels that we've created
 					// ourselves.
 
-					//if !edgeUpdate.AdvertisingNode.IsEqual(m.cfg.Self) {
-					//	continue
-					//}
+					if edgeUpdate.ConnectingNode.IsEqual(dc.cfg.Self) {
+						dc.handleNewDualChannelRequest(edgeUpdate)
+						continue
+					} else if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
 
-					dc.handleOpenRequest(edgeUpdate)
+					}
 				}
 
 				// For each closed channel, we'll obtain
@@ -276,52 +281,50 @@ func (dc *dualChannelManager) stop() error {
 	return nil
 }
 
-func (dc *dualChannelManager) handleOpenRequest(edgeUpdate *routing.ChannelEdgeUpdate) {
+func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.ChannelEdgeUpdate) {
 
 	log.Infof("List of existing chans ", dc.chanState)
-
-	if _, ok := dc.chanState[edgeUpdate.ChanID]; ok {
-		log.Infof("Such id exist in db ", dc.chanState[edgeUpdate.ChanID])
-		return
-	}
 
 	if edgeUpdate.Disabled == true {
 		return
 	}
 
-	dc.chanState[edgeUpdate.ChanID] = Channel{
-		ChanID: edgeUpdate.ChanID,
-		Capacity: edgeUpdate.Capacity,
-		Node: NewNodeID(edgeUpdate.ConnectingNode),
+	dc.chanStateMtx.Lock()
+	if _, ok := dc.chanState[edgeUpdate.ChanID]; ok {
+		log.Infof("Such id exist in db ", dc.chanState[edgeUpdate.ChanID])
+		dc.chanStateMtx.Unlock()
+		return
 	}
-
+	dc.chanStateMtx.Unlock()
 
 	nodeID := NewNodeID(edgeUpdate.AdvertisingNode)
 
-	log.Infof("Opening channel back to %s", nodeID)
-
-
-	// If we were successful, we'll track this peer in our set of pending
-	// opens. We do this here to ensure we don't stall on selecting new
-	// peers if the connection attempt happens to take too long.
-	dc.pendingMtx.Unlock()
-	dc.pendingOpens[nodeID] = Channel{
-		Capacity: edgeUpdate.Capacity,
-		Node:     nodeID,
-	}
-	dc.pendingMtx.Unlock()
-
-	if edgeUpdate.AdvertisingNode == dc.cfg.Self ||
-		edgeUpdate.ConnectingNode != dc.cfg.Self {
+	dc.pendingMtx.Lock()
+	if _, ok := dc.pendingOpens[nodeID]; ok {
+		log.Infof("Already have a pending channel to peer: %v", nodeID)
+		dc.pendingMtx.Unlock()
 		return
 	}
+	dc.pendingMtx.Unlock()
 
-	shortChanId, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
+
+	pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
 	if err == nil {
 		return
 	}
 
-	err := dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, )
+	// If we were successful, we'll track this peer in our set of pending
+	// opens. We do this here to ensure we don't stall on selecting new
+	// peers if the connection attempt happens to take too long.
+	dc.pendingMtx.Lock()
+	dc.pendingOpens[nodeID] = DualChannel{
+		ourOutpoint: *pendingOutpoint,
+		theirOutpoint: edgeUpdate.ChanPoint,
+	}
+	dc.pendingMtx.Unlock()
+	log.Infof("Opening channel back to %s", nodeID)
+
+	err = dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, *pendingOutpoint)
 	if err != nil {
 			log.Warnf("Unable to write info into db for %v %v",
 				nodeID, err)
