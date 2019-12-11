@@ -3,10 +3,6 @@ package lightwalletnotify
 import (
 	"errors"
 	"fmt"
-	"sync"
-	"sync/atomic"
-
-	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
@@ -14,6 +10,8 @@ import (
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/queue"
+	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -739,39 +737,6 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		return ntfn.Event, nil
 	}
 
-	// Since the outpoint was spent, as it no longer exists within the UTXO
-	// set, we'll determine when it happened by scanning the chain.
-	//
-	// As a minimal optimization, we'll query the backend's transaction
-	// index (if enabled) to determine if we have a better rescan starting
-	// height. We can do this as the GetRawTransaction call will return the
-	// hash of the block it was included in within the chain.
-	tx, _, blockHeight, err := b.chainConn.GetRawTransactionVerbose(&spendRequest.OutPoint.Hash)
-	if err != nil {
-		// Avoid returning an error if the transaction was not found to
-		// proceed with fallback methods.
-		jsonErr, ok := err.(*btcjson.RPCError)
-		if !ok || jsonErr.Code != btcjson.ErrRPCNoTxInfo {
-			return nil, fmt.Errorf("unable to query for txid %v: %v",
-				spendRequest.OutPoint.Hash, err)
-		}
-	}
-
-	// If the transaction index was enabled, we'll use the block's hash to
-	// retrieve its height and check whether it provides a better starting
-	// point for our rescan.
-	if tx != nil {
-		// If the transaction containing the outpoint hasn't confirmed
-		// on-chain, then there's no need to perform a rescan.
-		if tx.Hash().String() == "" {
-			return ntfn.Event, nil
-		}
-
-		if uint32(blockHeight) > historicalDispatch.StartHeight {
-			historicalDispatch.StartHeight = uint32(blockHeight)
-		}
-	}
-
 	// Now that we've determined the starting point of our rescan, we can
 	// dispatch it and return.
 	select {
@@ -808,6 +773,7 @@ func (b *LightWalletNotifier) historicalSpendDetails(
 			return nil, fmt.Errorf("unable to retrieve hash for "+
 				"block with height %d: %v", height, err)
 		}
+
 		block, err := b.chainConn.GetBlock(blockHash)
 		if err != nil {
 			return nil, fmt.Errorf("unable to retrieve block "+
