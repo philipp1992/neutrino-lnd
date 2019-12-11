@@ -9,9 +9,9 @@ import (
 	"github.com/btcsuite/btcutil"
 	//"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
-	//"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	//"github.com/lightningnetwork/lnd/lnwallet"
-	//"github.com/lightningnetwork/lnd/sweep"
+	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/dualfunding"
 
 )
@@ -79,45 +79,47 @@ func (c *chanManager) OpenChannel(target *btcec.PublicKey,
 
 func (c *chanManager) CloseChannel(chanPoint *wire.OutPoint) error {
 
-//	var (
-//		updateChan chan interface{}
-//		errChan    chan error
-//	)
-//
-//	satPerKw := defaultBitcoinStaticFeePerKW
-//	feeRate, err := sweep.DetermineFeePerKw(
-//		c.server.cc.feeEstimator, sweep.FeePreference{
-//			ConfTarget: 6,
-//			FeeRate:    satPerKw,
-//		},
-//	)
-//	if err != nil {
-//		return err
-//	}
-//
-//	rpcsLog.Debugf("Target sat/kw for closing transaction: %v",
-//		int64(feeRate))
-//
-//	// Otherwise, the caller has requested a regular interactive
-//	// cooperative channel closure. So we'll forward the request to
-//	// the htlc switch which will handle the negotiation and
-//	// broadcast details.
-//	updateChan, errChan = c.server.htlcSwitch.CloseLink(
-//		chanPoint, htlcswitch.CloseRegular, feeRate,
-//	)
-//
-//out:
-//	for {
-//		select {
-//		case err := <-errChan:
-//			rpcsLog.Errorf("[closechannel] unable to close "+
-//				"ChannelPoint(%v): %v", chanPoint, err)
-//			return err
-//		case closingUpdate := <-updateChan:
-//
-//		}
-//	}
-//
+	var (
+		updateChan chan interface{}
+		errChan    chan error
+	)
+
+	satPerKw := defaultBitcoinStaticFeePerKW
+	feeRate, err := sweep.DetermineFeePerKw(
+		c.server.cc.feeEstimator, sweep.FeePreference{
+			ConfTarget: 6,
+			FeeRate:    satPerKw,
+		},
+	)
+	if err != nil {
+		return err
+	}
+
+	dchnLog.Debugf("Target sat/kw for closing transaction: %v",
+		int64(feeRate))
+
+	// Otherwise, the caller has requested a regular interactive
+	// cooperative channel closure. So we'll forward the request to
+	// the htlc switch which will handle the negotiation and
+	// broadcast details.
+	updateChan, errChan = c.server.htlcSwitch.CloseLink(
+		chanPoint, htlcswitch.CloseRegular, feeRate,
+	)
+
+out:
+	for {
+		select {
+		case err := <-errChan:
+			dchnLog.Errorf("[closechannel] unable to close "+
+				"ChannelPoint(%v): %v", chanPoint, err)
+			return err
+		case closingUpdate := <-updateChan:
+			dchnLog.Infof("Closing update", closingUpdate)
+			break out
+
+		}
+	}
+
 	return nil
 
 }
