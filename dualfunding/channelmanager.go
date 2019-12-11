@@ -146,15 +146,16 @@ func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) 
 		chanState:          		make(map[NodeID]DualChannel),
 		dualFundingRequests:        make(chan interface{}, msgBufferSize),
 		quit: 						make(chan struct{}),
+		pendingOpens:				make(map[NodeID]DualChannel),
 	}
 
-	var err error
+	//var err error
 
-	chManager.db, err = openDualFundingDb(cfg.dbPath)
+	//chManager.db, err = openDualFundingDb(cfg.dbPath)
 
-	if err != nil {
-		return nil, err
-	}
+	//if err != nil {
+	//	return nil, err
+	//}
 
 	//for _, c := range cfg.Channels {
 	//	chManager.chanState[NewNodeID(c.IdentityPub)] = DualChannel{}c.FundingOutpoint
@@ -320,11 +321,11 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.Ch
 		dc.pendingMtx.Unlock()
 		log.Infof("Opening channel back to %s", nodeID)
 
-		err = dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, *pendingOutpoint)
-		if err != nil {
-			log.Warnf("Unable to write info into db for %v %v",
-				nodeID, err)
-		}
+		//err = dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, *pendingOutpoint)
+		//if err != nil {
+		//	log.Warnf("Unable to write info into db for %v %v",
+		//		nodeID, err)
+		//}
 
 	} else {
 		log.Warnf("Unable to open channel to %x of %v: %v",
