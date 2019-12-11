@@ -26,7 +26,7 @@ type chanManager struct {
 // specified amount. This function should un-block immediately after the
 // funding transaction that marks the channel open has been broadcast.
 func (c *chanManager) OpenChannel(target *btcec.PublicKey,
-	amt btcutil.Amount) (*lnwire.ChannelID, error) {
+	amt btcutil.Amount) (*wire.OutPoint, error) {
 
 	// With the connection established, we'll now establish our connection
 	// to the target peer, waiting for the first update before we exit.
@@ -70,8 +70,7 @@ func (c *chanManager) OpenChannel(target *btcec.PublicKey,
 
 		}
 
-		chanID := lnwire.NewChanIDFromOutPoint(&chanPoint)
-		return &chanID, nil
+		return &chanPoint, nil
 
 	case <-c.server.quit:
 		return nil, nil
