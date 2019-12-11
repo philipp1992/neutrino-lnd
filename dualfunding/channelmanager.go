@@ -235,7 +235,8 @@ func (dc *dualChannelManager) start() error {
 						dc.handleNewDualChannelRequest(edgeUpdate)
 						continue
 					} else if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
-
+						// means state one of our channels has changed
+						dc.handleOurChannelOpened(edgeUpdate)
 					}
 				}
 
@@ -243,11 +244,7 @@ func (dc *dualChannelManager) start() error {
 				// the chanID of the closed channel and send it
 				// to the pilot.
 				for _, chanClose := range topChange.ClosedChannels {
-					chanID := lnwire.NewShortChanIDFromInt(
-						chanClose.ChanID,
-					)
-
-					dc.handleCloseRequest(chanID)
+					dc.handleDualChannelCloseRequest(chanClose)
 				}
 
 			case <-dc.quit:
@@ -289,15 +286,16 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.Ch
 		return
 	}
 
+	nodeID := NewNodeID(edgeUpdate.AdvertisingNode)
+
 	dc.chanStateMtx.Lock()
-	if _, ok := dc.chanState[edgeUpdate.ChanID]; ok {
-		log.Infof("Such id exist in db ", dc.chanState[edgeUpdate.ChanID])
+	if _, ok := dc.chanState[nodeID]; ok {
+		log.Infof("Such id exist in db %v", nodeID)
 		dc.chanStateMtx.Unlock()
 		return
 	}
 	dc.chanStateMtx.Unlock()
 
-	nodeID := NewNodeID(edgeUpdate.AdvertisingNode)
 
 	dc.pendingMtx.Lock()
 	if _, ok := dc.pendingOpens[nodeID]; ok {
@@ -309,44 +307,94 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.Ch
 
 
 	pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
+
 	if err == nil {
+		// If we were successful, we'll track this peer in our set of pending
+		// opens. We do this here to ensure we don't stall on selecting new
+		// peers if the connection attempt happens to take too long.
+		dc.pendingMtx.Lock()
+		dc.pendingOpens[nodeID] = DualChannel{
+			ourOutpoint: *pendingOutpoint,
+			theirOutpoint: edgeUpdate.ChanPoint,
+		}
+		dc.pendingMtx.Unlock()
+		log.Infof("Opening channel back to %s", nodeID)
+
+		err = dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, *pendingOutpoint)
+		if err != nil {
+			log.Warnf("Unable to write info into db for %v %v",
+				nodeID, err)
+		}
+
+	} else {
+		log.Warnf("Unable to open channel to %x of %v: %v",
+			nodeID, edgeUpdate.Capacity, err)
+
+	}
+}
+
+func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.ClosedChanSummary) {
+
+	var (
+		nodeID NodeID
+		ok bool
+	)
+
+	dc.chanStateMtx.Lock()
+	// mark it as opened channel
+
+	nodeID, ok = func() (NodeID, bool) {
+		for nodeID, dualChannel := range dc.chanState {
+			if dualChannel.theirOutpoint == summary.ChanPoint {
+				return nodeID, true
+			}
+		}
+
+		return NodeID{}, false
+	}()
+
+	delete(dc.chanState, nodeID)
+	dc.chanStateMtx.Unlock()
+
+	if !ok {
 		return
 	}
 
-	// If we were successful, we'll track this peer in our set of pending
-	// opens. We do this here to ensure we don't stall on selecting new
-	// peers if the connection attempt happens to take too long.
-	dc.pendingMtx.Lock()
-	dc.pendingOpens[nodeID] = DualChannel{
-		ourOutpoint: *pendingOutpoint,
-		theirOutpoint: edgeUpdate.ChanPoint,
-	}
-	dc.pendingMtx.Unlock()
-	log.Infof("Opening channel back to %s", nodeID)
+	log.Infof("Closing channel back with node %v %v", nodeID, summary.ChanPoint.String())
 
-	err = dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, *pendingOutpoint)
+	err := dc.cfg.ChanController.CloseChannel(&summary.ChanPoint)
+
 	if err != nil {
-			log.Warnf("Unable to write info into db for %v %v",
-				nodeID, err)
+		log.Infof("Failed to close channel with node %v %v", nodeID, summary.ChanPoint.String(), err)
+	} else {
+		log.Infof("Made closing channel request with node %v %v", nodeID, summary.ChanPoint.String())
 	}
+}
 
-	log.Warnf("Unable to open channel to %x of %v: %v",
-		nodeID, edgeUpdate.Capacity, err)
+func (dc *dualChannelManager) handleOurChannelOpened(update *routing.ChannelEdgeUpdate) {
+	log.Infof("Our channel changed state %d %v", update.ChanPoint.String())
 
-	// As the attempt failed, we'll clear the peer from the set of
-	// pending opens and mark them as failed so we don't attempt to
-	// open a channel to them again.
+	nodeID := NewNodeID(update.ConnectingNode)
+
+	var (
+		oldPendingChannel DualChannel
+		ok				  bool
+	)
+
 	dc.pendingMtx.Lock()
+	if oldPendingChannel, ok = dc.pendingOpens[nodeID]; !ok {
+		// means that our channel is not pending as dual funded,
+		// we don't know anything about it
+		dc.pendingMtx.Unlock()
+		return
+	}
 	delete(dc.pendingOpens, nodeID)
 	dc.pendingMtx.Unlock()
 
-	// Trigger the agent to re-evaluate everything and possibly
-	// retry with a different node.
-	//a.OnChannelOpenFailure()
-}
-
-func (dc *dualChannelManager) handleCloseRequest(id lnwire.ShortChannelID) {
-	log.Infof("Closing channel back with id %d", id)
+	dc.chanStateMtx.Lock()
+	// mark it as opened channel
+	dc.chanState[nodeID] = oldPendingChannel
+	dc.chanStateMtx.Unlock()
 }
 
 ///////////////////////////////////////////////////////////////////////////////
