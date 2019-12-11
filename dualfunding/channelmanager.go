@@ -1,6 +1,13 @@
 package dualfunding
 
 import (
+	"bytes"
+	"encoding/binary"
+	"fmt"
+	"github.com/btcsuite/btcd/wire"
+	"github.com/coreos/bbolt"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -11,9 +18,20 @@ import (
 
 ///////////////////////////////////////////////////////////////////////////////
 
+const (
+	dbName           = "dualfunding.db"
+	dbFilePermission = 0600
+)
+
+var (
+	openDualChannelsBucket = []byte("open-dual-chan")
+	byteOrder = binary.BigEndian
+)
+
 type DualChannelConfig struct {
 
 	Self *btcec.PublicKey
+	dbPath string
 
 	// ChannelState is a function closure that returns the current set of
 	// channels managed by this node.
@@ -34,16 +52,81 @@ type DualChannelConfig struct {
 type dualChannelManager struct {
 	started sync.Once
 	stopped sync.Once
-
+	db *bbolt.DB
 	chanState    channelState
-
 	cfg *DualChannelConfig
-
 	dualFundingRequests chan interface{}
-
 	quit chan struct{}
-
 	wg   sync.WaitGroup
+
+	// pendingOpens tracks the channels that we've requested to be
+	// initiated, but haven't yet been confirmed as being fully opened.
+	// This state is required as otherwise, we may go over our allotted
+	// channel limit, or open multiple channels to the same node.
+	pendingOpens map[NodeID]Channel
+	pendingMtx   sync.Mutex
+}
+
+// fileExists returns true if the file exists, and false otherwise.
+func fileExists(path string) bool {
+	if _, err := os.Stat(path); err != nil {
+		if os.IsNotExist(err) {
+			return false
+		}
+	}
+
+	return true
+}
+
+func createDualFundingDB(dbPath string) error {
+	if !fileExists(dbPath) {
+		if err := os.MkdirAll(dbPath, 0700); err != nil {
+			return err
+		}
+	}
+
+	path := filepath.Join(dbPath, dbName)
+	bdb, err := bbolt.Open(path, dbFilePermission, nil)
+	if err != nil {
+		return err
+	}
+
+
+	err = bdb.Update(func(tx *bbolt.Tx) error {
+		if _, err := tx.CreateBucket(openDualChannelsBucket); err != nil {
+			return err
+		}
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("unable to create new channeldb")
+	}
+
+	return bdb.Close()
+}
+
+func openDualFundingDb(dbPath string) (*bbolt.DB, error) {
+	path := filepath.Join(dbPath, dbName)
+
+	if !fileExists(path) {
+		if err := createDualFundingDB(dbPath); err != nil {
+			return nil, err
+		}
+	}
+
+	// Specify bbolt freelist options to reduce heap pressure in case the
+	// freelist grows to be very large.
+	options := &bbolt.Options{
+		NoFreelistSync: true,
+		FreelistType:   bbolt.FreelistMapType,
+	}
+
+	bdb, err := bbolt.Open(path, dbFilePermission, options)
+	if err != nil {
+		return nil, err
+	}
+
+	return bdb, nil
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -57,6 +140,14 @@ func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) 
 		quit: 						make(chan struct{}),
 	}
 
+	var err error
+
+	chManager.db, err = openDualFundingDb(cfg.dbPath)
+
+	if err != nil {
+		return nil, err
+	}
+
 	for _, c := range cfg.Channels {
 		chManager.chanState[c.ShortChannelID.ToUint64()] = Channel{
 			ChanID: c.ShortChannelID.ToUint64(),
@@ -66,6 +157,28 @@ func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) 
 	}
 
 	return chManager, nil
+}
+
+func putDualChannelInfo(nodeBucket *bbolt.Bucket, nodePub *btcec.PublicKey, theirOutpoint wire.OutPoint, ourOutpoint wire.OutPoint) error {
+	compressed := nodePub.SerializeCompressed()
+	var b bytes.Buffer
+
+	if err := lnwire.WriteElements(&b, theirOutpoint, ourOutpoint); err != nil {
+		return err
+	}
+
+	return nodeBucket.Put(compressed, b.Bytes())
+}
+
+func (dc *dualChannelManager) syncDualChannelInfo(nodePub *btcec.PublicKey, theirOutpoint wire.OutPoint, ourOutpoint wire.OutPoint) error {
+	return dc.db.Update(func(tx *bbolt.Tx) error {
+		dualChannelsBucket, err := tx.CreateBucketIfNotExists(openDualChannelsBucket)
+		if err != nil {
+			return err
+		}
+
+		return putDualChannelInfo(dualChannelsBucket, nodePub, theirOutpoint, ourOutpoint)
+	})
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -183,47 +296,50 @@ func (dc *dualChannelManager) handleOpenRequest(edgeUpdate *routing.ChannelEdgeU
 	}
 
 
-	log.Infof("Opening channel back to %s", edgeUpdate.AdvertisingNode)
+	nodeID := NewNodeID(edgeUpdate.AdvertisingNode)
+
+	log.Infof("Opening channel back to %s", nodeID)
 
 
-	if edgeUpdate.AdvertisingNode != dc.cfg.Self {
-		outpoint, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
-		if err != nil {
-			log.Errorf("Error %v", err)
-			return
-		}
+	// If we were successful, we'll track this peer in our set of pending
+	// opens. We do this here to ensure we don't stall on selecting new
+	// peers if the connection attempt happens to take too long.
+	dc.pendingMtx.Unlock()
+	dc.pendingOpens[nodeID] = Channel{
+		Capacity: edgeUpdate.Capacity,
+		Node:     nodeID,
+	}
+	dc.pendingMtx.Unlock()
 
-		log.Infof("outpoint received ", outpoint.String())
+	if edgeUpdate.AdvertisingNode == dc.cfg.Self ||
+		edgeUpdate.ConnectingNode != dc.cfg.Self {
+		return
 	}
 
-	//	log.Warnf("Unable to open channel to %x of %v: %v",
-	//		pub.SerializeCompressed(), directive.ChanAmt, err)
-	//
-	//	// As the attempt failed, we'll clear the peer from the set of
-	//	// pending opens and mark them as failed so we don't attempt to
-	//	// open a channel to them again.
-	//	a.pendingMtx.Lock()
-	//	delete(a.pendingOpens, nodeID)
-	//	a.failedNodes[nodeID] = struct{}{}
-	//	a.pendingMtx.Unlock()
-	//
-	//	// Trigger the agent to re-evaluate everything and possibly
-	//	// retry with a different node.
-	//	a.OnChannelOpenFailure()
-	//
-	//	// Finally, we should also disconnect the peer if we weren't
-	//	// already connected to them beforehand by an external
-	//	// subsystem.
-	//	if alreadyConnected {
-	//		return
-	//	}
-	//
-	//	err = a.cfg.DisconnectPeer(pub)
-	//	if err != nil {
-	//		log.Warnf("Unable to disconnect peer %x: %v",
-	//			pub.SerializeCompressed(), err)
-	//}
+	shortChanId, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
+	if err == nil {
+		return
+	}
 
+	err := dc.syncDualChannelInfo(edgeUpdate.AdvertisingNode, edgeUpdate.ChanPoint, )
+	if err != nil {
+			log.Warnf("Unable to write info into db for %v %v",
+				nodeID, err)
+	}
+
+	log.Warnf("Unable to open channel to %x of %v: %v",
+		nodeID, edgeUpdate.Capacity, err)
+
+	// As the attempt failed, we'll clear the peer from the set of
+	// pending opens and mark them as failed so we don't attempt to
+	// open a channel to them again.
+	dc.pendingMtx.Lock()
+	delete(dc.pendingOpens, nodeID)
+	dc.pendingMtx.Unlock()
+
+	// Trigger the agent to re-evaluate everything and possibly
+	// retry with a different node.
+	//a.OnChannelOpenFailure()
 }
 
 func (dc *dualChannelManager) handleCloseRequest(id lnwire.ShortChannelID) {
