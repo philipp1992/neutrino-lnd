@@ -165,19 +165,35 @@ func (dc *dualChannelManager) stop() error {
 
 func (dc *dualChannelManager) handleOpenRequest(edgeUpdate *routing.ChannelEdgeUpdate) {
 
+	log.Infof("List of existing chans ", dc.chanState)
+
 	if _, ok := dc.chanState[edgeUpdate.ChanID]; ok {
+		log.Infof("Such id exist in db ", dc.chanState[edgeUpdate.ChanID])
 		return
 	}
+
+	if edgeUpdate.Disabled == true {
+		return
+	}
+
+	dc.chanState[edgeUpdate.ChanID] = Channel{
+		ChanID: edgeUpdate.ChanID,
+		Capacity: edgeUpdate.Capacity,
+		Node: NewNodeID(edgeUpdate.ConnectingNode),
+	}
+
 
 	log.Infof("Opening channel back to %s", edgeUpdate.AdvertisingNode)
 
 
 	if edgeUpdate.AdvertisingNode != dc.cfg.Self {
-		err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
+		outpoint, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
 		if err != nil {
 			log.Errorf("Error %v", err)
 			return
 		}
+
+		log.Infof("outpoint received ", outpoint.String())
 	}
 
 	//	log.Warnf("Unable to open channel to %x of %v: %v",
@@ -210,8 +226,8 @@ func (dc *dualChannelManager) handleOpenRequest(edgeUpdate *routing.ChannelEdgeU
 
 }
 
-func (dc *dualChannelManager) handleCloseRequest(id lnwire.ShortChannelID) {log.Infof("Closing channel back with id %d", id)
-
+func (dc *dualChannelManager) handleCloseRequest(id lnwire.ShortChannelID) {
+	log.Infof("Closing channel back with id %d", id)
 }
 
 ///////////////////////////////////////////////////////////////////////////////

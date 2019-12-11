@@ -1,17 +1,19 @@
 package lnd
 
 import (
-	//"errors"
 	"fmt"
-	//"net"
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/autopilot"
+	//"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
-	//"github.com/lightningnetwork/lnd/tor"
+	//"github.com/lightningnetwork/lnd/htlcswitch"
+	//"github.com/lightningnetwork/lnd/lnwallet"
+	//"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/dualfunding"
+
 )
 
 // chanController is an implementation of the autopilot.ChannelController
@@ -24,7 +26,7 @@ type chanManager struct {
 // specified amount. This function should un-block immediately after the
 // funding transaction that marks the channel open has been broadcast.
 func (c *chanManager) OpenChannel(target *btcec.PublicKey,
-	amt btcutil.Amount) error {
+	amt btcutil.Amount) (*lnwire.ChannelID, error) {
 
 	// With the connection established, we'll now establish our connection
 	// to the target peer, waiting for the first update before we exit.
@@ -32,7 +34,7 @@ func (c *chanManager) OpenChannel(target *btcec.PublicKey,
 		6,
 	)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	// TODO(halseth): make configurable?
@@ -56,26 +58,69 @@ func (c *chanManager) OpenChannel(target *btcec.PublicKey,
 	updateStream, errChan := c.server.OpenChannel(req)
 	select {
 	case err := <-errChan:
-		return err
-	case <-updateStream:
-		return nil
-	case <-c.server.quit:
-		return nil
-	}
+		return nil, err
+	case update := <-updateStream:
 
-	return nil
+		pendingChan := update.GetChanPending()
+		txHash, _ := chainhash.NewHash(pendingChan.Txid)
+
+		chanPoint := wire.OutPoint{
+			Hash: *txHash,
+			Index: pendingChan.OutputIndex,
+
+		}
+
+		chanID := lnwire.NewChanIDFromOutPoint(&chanPoint)
+		return &chanID, nil
+
+	case <-c.server.quit:
+		return nil, nil
+	}
 }
 
 func (c *chanManager) CloseChannel(chanPoint *wire.OutPoint) error {
+
+//	var (
+//		updateChan chan interface{}
+//		errChan    chan error
+//	)
+//
+//	satPerKw := defaultBitcoinStaticFeePerKW
+//	feeRate, err := sweep.DetermineFeePerKw(
+//		c.server.cc.feeEstimator, sweep.FeePreference{
+//			ConfTarget: 6,
+//			FeeRate:    satPerKw,
+//		},
+//	)
+//	if err != nil {
+//		return err
+//	}
+//
+//	rpcsLog.Debugf("Target sat/kw for closing transaction: %v",
+//		int64(feeRate))
+//
+//	// Otherwise, the caller has requested a regular interactive
+//	// cooperative channel closure. So we'll forward the request to
+//	// the htlc switch which will handle the negotiation and
+//	// broadcast details.
+//	updateChan, errChan = c.server.htlcSwitch.CloseLink(
+//		chanPoint, htlcswitch.CloseRegular, feeRate,
+//	)
+//
+//out:
+//	for {
+//		select {
+//		case err := <-errChan:
+//			rpcsLog.Errorf("[closechannel] unable to close "+
+//				"ChannelPoint(%v): %v", chanPoint, err)
+//			return err
+//		case closingUpdate := <-updateChan:
+//
+//		}
+//	}
+//
 	return nil
-}
-func (c *chanManager) SpliceIn(chanPoint *wire.OutPoint,
-	amt btcutil.Amount) (*autopilot.Channel, error) {
-	return nil, nil
-}
-func (c *chanManager) SpliceOut(chanPoint *wire.OutPoint,
-	amt btcutil.Amount) (*autopilot.Channel, error) {
-	return nil, nil
+
 }
 
 // A compile time assertion to ensure chanController meets the
@@ -103,7 +148,7 @@ func initDualFunding(svr *server) (*dualfunding.DualChannelConfig, error) {
 	return &dualfunding.DualChannelConfig {
 		Self: self,
 		Channels: activeChannels,
-		ChanController: &chanController{
+		ChanController: &chanManager{
 			server:     svr,
 		},
 		SubscribeTopology: svr.chanRouter.SubscribeTopology,
