@@ -4,7 +4,6 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/lnwire"
 )
 
 // channelState is a type that represents the set of active channels of the
@@ -55,7 +54,7 @@ type ChannelManager interface {
 	// slightly less to account for fees. This function should un-block
 	// immediately after the funding transaction that marks the channel
 	// open has been broadcast.
-	OpenChannel(target *btcec.PublicKey, amt btcutil.Amount) (*lnwire.ChannelID, error)
+	OpenChannel(target *btcec.PublicKey, amt btcutil.Amount) (*wire.OutPoint, error)
 
 	// CloseChannel attempts to close out the target channel.
 	CloseChannel(chanPoint *wire.OutPoint) error
