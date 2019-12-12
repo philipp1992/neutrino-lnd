@@ -142,33 +142,6 @@ func openDualFundingDb(dbPath string) (*bbolt.DB, error) {
 	return bdb, nil
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// newDualChannelManager creates and initializes a new instance of the
-// dualChannelManager.
-func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) {
-	chManager :=  &dualChannelManager {
-		cfg:                 cfg,
-		chanState:           make(map[NodeID]DualChannel),
-		dualFundingRequests: make(chan interface{}, msgBufferSize),
-		quit:                make(chan struct{}),
-		pendingOpenCloses:   make(map[NodeID]PendingDualChannel),
-	}
-
-	var err error
-
-	chManager.db, err = openDualFundingDb(cfg.DbPath)
-
-	if err != nil {
-		return nil, err
-	}
-
-	//for _, c := range cfg.Channels {
-	//	chManager.chanState[NewNodeID(c.IdentityPub)] = DualChannel{}c.FundingOutpoint
-	//}
-
-	return chManager, nil
-}
-
 func putDualChannelInfo(nodeBucket *bbolt.Bucket, nodeID NodeID, theirOutpoint wire.OutPoint, ourOutpoint wire.OutPoint) error {
 	var b bytes.Buffer
 
@@ -196,6 +169,97 @@ func (dc *dualChannelManager) syncDualChannelInfo(nodeID NodeID, theirOutpoint w
 		return putDualChannelInfo(dualChannelsBucket, nodeID, theirOutpoint, ourOutpoint)
 	})
 }
+
+func (dc *dualChannelManager) fetchDualChannelInfo() map[NodeID]DualChannel {
+	var channels map[NodeID]DualChannel
+	err := dc.db.View(func(tx *bbolt.Tx) error {
+		return tx.Bucket(openDualChannelsBucket).ForEach(func(k, v []byte) error {
+			var dualChannel DualChannel
+			err := lnwire.ReadElements(bytes.NewReader(v), dualChannel.theirOutpoint, dualChannel.ourOutpoint)
+			if err != nil {
+				return err
+			}
+
+			var n NodeID
+			copy(n[:], k)
+			channels[n] = dualChannel
+
+			return nil
+		})
+	})
+
+	if err != nil {
+		return channels
+	}
+
+	return channels
+}
+
+///////////////////////////////////////////////////////////////////////////////
+// newDualChannelManager creates and initializes a new instance of the
+// dualChannelManager.
+func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) {
+	chManager :=  &dualChannelManager {
+		cfg:                 cfg,
+		chanState:           make(map[NodeID]DualChannel),
+		dualFundingRequests: make(chan interface{}, msgBufferSize),
+		quit:                make(chan struct{}),
+		pendingOpenCloses:   make(map[NodeID]PendingDualChannel),
+	}
+
+	var err error
+
+	chManager.db, err = openDualFundingDb(cfg.DbPath)
+
+	if err != nil {
+		return nil, err
+	}
+
+	fetchedChannels := chManager.fetchDualChannelInfo()
+
+	for _, c := range cfg.Channels {
+		nodeID := NewNodeID(c.IdentityPub)
+		var dc DualChannel
+		var ok bool
+		if dc, ok = fetchedChannels[nodeID]; !ok {
+			continue
+		}
+
+		if c.IsPending {
+			if dc.ourOutpoint == c.FundingOutpoint {
+				// it has to be our pending opening channel
+				chManager.pendingOpenCloses[nodeID] = PendingDualChannel{
+					dc,
+					true,
+				}
+			}
+		} else {
+			if dc.ourOutpoint == c.FundingOutpoint {
+				ok := func() bool {
+					for _, ch := range cfg.Channels {
+						if ch.FundingOutpoint == dc.theirOutpoint && !ch.IsPending {
+							// here we are sure that both channels were found
+							chManager.chanState[nodeID] = dc
+							return true
+						}
+					}
+					return false
+				}()
+
+				if !ok {
+					// means we didn't find their channel, which is bad
+					// TODO(yuraolex): maybe handle this case
+					log.Errorf("Didn't find open channel for our dual channel: %v %v",
+						dc.theirOutpoint, dc.ourOutpoint)
+				}
+			}
+		}
+	}
+
+	return chManager, nil
+}
+
+
 
 ///////////////////////////////////////////////////////////////////////////////
 // Start launches all helper goroutines required for handling requests sent
