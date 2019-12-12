@@ -548,7 +548,7 @@ func Main() error {
 	// Dual Channels Funding Manager
 	//if cfg.DualFunding.Active {
 
-		dfConfig, err := initDualFunding(server)
+		dfConfig, err := initDualFunding(server, graphDir)
 		if err != nil {
 			err := fmt.Errorf("Unable to initialize dual channel manager: %v", err)
 			ltndLog.Error(err)

@@ -132,7 +132,7 @@ var _ dualfunding.ChannelManager = (*chanManager)(nil)
 // autopilot.Agent instance based on the passed configuration struct. The agent
 // and all interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
-func initDualFunding(svr *server) (*dualfunding.DualChannelConfig, error) {
+func initDualFunding(svr *server, graphDir string) (*dualfunding.DualChannelConfig, error) {
 
 	// With the heuristic itself created, we can now populate the remainder
 	// of the items that the autopilot agent needs to perform its duties.
@@ -153,6 +153,7 @@ func initDualFunding(svr *server) (*dualfunding.DualChannelConfig, error) {
 			server:     svr,
 		},
 		SubscribeTopology: svr.chanRouter.SubscribeTopology,
+		DbPath: graphDir,
 	}, nil
 
 	//Graph:       autopilot.ChannelGraphFromDatabase(svr.chanDB.ChannelGraph()),
