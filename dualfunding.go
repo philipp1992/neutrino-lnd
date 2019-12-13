@@ -84,11 +84,9 @@ func (c *chanManager) CloseChannel(chanPoint *wire.OutPoint) error {
 		errChan    chan error
 	)
 
-	satPerKw := defaultBitcoinStaticFeePerKW
 	feeRate, err := sweep.DetermineFeePerKw(
 		c.server.cc.feeEstimator, sweep.FeePreference{
 			ConfTarget: 6,
-			FeeRate:    satPerKw,
 		},
 	)
 	if err != nil {

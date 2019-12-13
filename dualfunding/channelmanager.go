@@ -171,11 +171,11 @@ func (dc *dualChannelManager) syncDualChannelInfo(nodeID NodeID, theirOutpoint w
 }
 
 func (dc *dualChannelManager) fetchDualChannelInfo() map[NodeID]DualChannel {
-	var channels map[NodeID]DualChannel
+	channels := make(map[NodeID]DualChannel)
 	err := dc.db.View(func(tx *bbolt.Tx) error {
 		return tx.Bucket(openDualChannelsBucket).ForEach(func(k, v []byte) error {
 			var dualChannel DualChannel
-			err := lnwire.ReadElements(bytes.NewReader(v), dualChannel.theirOutpoint, dualChannel.ourOutpoint)
+			err := lnwire.ReadElements(bytes.NewReader(v), &dualChannel.theirOutpoint, &dualChannel.ourOutpoint)
 			if err != nil {
 				return err
 			}
@@ -422,12 +422,12 @@ func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.Clo
 	)
 
 	dc.chanStateMtx.Lock()
+	
 	// mark it as opened channel
-
 	nodeID, ok = func() (NodeID, bool) {
-		for nodeID, dc := range dc.chanState {
-			if dc.theirOutpoint == summary.ChanPoint {
-				dualChannel = dc
+		for nodeID, dcn := range dc.chanState {
+			if dcn.theirOutpoint == summary.ChanPoint {
+				dualChannel = dcn
 				return nodeID, true
 			}
 		}
@@ -481,6 +481,13 @@ func (dc *dualChannelManager) handleOurChannelOpened(update *routing.ChannelEdge
 		dc.pendingMtx.Unlock()
 		return
 	}
+
+	// means that update is regarding closing channel, so just skip this
+	if pendingChannel.opening == false {
+		dc.pendingMtx.Unlock()
+		return
+	}
+
 	delete(dc.pendingOpenCloses, nodeID)
 	dc.pendingMtx.Unlock()
 
@@ -498,12 +505,11 @@ func (dc *dualChannelManager) handleOurChannelClosed(summary *routing.ClosedChan
 	)
 
 	dc.pendingMtx.Lock()
-	// mark it as opened channel
 
 	nodeID, ok = func() (NodeID, bool) {
-		for nodeID, dc := range dc.pendingOpenCloses {
-			if !dc.opening && dc.ourOutpoint == summary.ChanPoint {
-				dualChannel = dc.DualChannel
+		for nodeID, dcn := range dc.pendingOpenCloses {
+			if !dcn.opening && dcn.ourOutpoint == summary.ChanPoint {
+				dualChannel = dcn.DualChannel
 				return nodeID, true
 			}
 		}
@@ -511,16 +517,16 @@ func (dc *dualChannelManager) handleOurChannelClosed(summary *routing.ClosedChan
 		return NodeID{}, false
 	}()
 
-	delete(dc.pendingOpenCloses, nodeID)
-	dc.pendingMtx.Unlock()
-
 	if !ok {
+		dc.pendingMtx.Unlock()
 		return
 	}
 
-	// it means that our channel was closed, at this point we can safely delete everything regarding
-	// this peer
+	delete(dc.pendingOpenCloses, nodeID)
+	dc.pendingMtx.Unlock()
 
+	// it means that our channel was closed, at this point we can
+	// safely delete everything regarding this peer
 	if err := dc.deleteDualChannelInfo(nodeID); err != nil {
 		log.Errorf("Failed to remove info from db for dual channel with node %v %v", nodeID, err)
 	}
