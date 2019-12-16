@@ -28,7 +28,7 @@ var (
 		Port: 9000}
 	testAddrs = []net.Addr{testAddr}
 
-	testFeatures = lnwire.NewFeatureVector(nil, lnwire.GlobalFeatures)
+	testFeatures = lnwire.NewFeatureVector(nil, lnwire.Features)
 
 	testHash = [32]byte{
 		0xb7, 0x94, 0x38, 0x5f, 0x2d, 0x1e, 0xf7, 0xab,
@@ -125,7 +125,6 @@ type mockChain struct {
 	utxos map[wire.OutPoint]wire.TxOut
 
 	bestHeight int32
-	bestHash   *chainhash.Hash
 
 	sync.RWMutex
 }
@@ -713,7 +712,7 @@ func TestNodeUpdateNotification(t *testing.T) {
 	}
 }
 
-// TestNotificationCancellation tests that notifications are properly cancelled
+// TestNotificationCancellation tests that notifications are properly canceled
 // when the client wishes to exit.
 func TestNotificationCancellation(t *testing.T) {
 	t.Parallel()
@@ -801,7 +800,7 @@ func TestNotificationCancellation(t *testing.T) {
 		t.Fatal("notification sent but shouldn't have been")
 
 	case <-time.After(time.Second * 5):
-		t.Fatal("notification client never cancelled")
+		t.Fatal("notification client never canceled")
 	}
 }
 

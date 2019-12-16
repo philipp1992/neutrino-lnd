@@ -5,6 +5,7 @@ package walletrpc
 import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/sweep"
 )
@@ -30,7 +31,7 @@ type Config struct {
 
 	// FeeEstimator is an instance of the primary fee estimator instance
 	// the WalletKit will use to respond to fee estimation requests.
-	FeeEstimator lnwallet.FeeEstimator
+	FeeEstimator chainfee.Estimator
 
 	// Wallet is the primary wallet that the WalletKit will use to proxy
 	// any relevant requests to.
@@ -43,4 +44,8 @@ type Config struct {
 	// Sweeper is the central batching engine of lnd. It is responsible for
 	// sweeping inputs in batches back into the wallet.
 	Sweeper *sweep.UtxoSweeper
+
+	// Chain is an interface that the WalletKit will use to determine state
+	// about the backing chain of the wallet.
+	Chain lnwallet.BlockChainIO
 }

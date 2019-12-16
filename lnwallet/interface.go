@@ -10,6 +10,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 // AddressType is an enum-like type which denotes the possible address types
@@ -59,8 +60,6 @@ type Utxo struct {
 	Value         btcutil.Amount
 	Confirmations int64
 	PkScript      []byte
-	RedeemScript  []byte
-	WitnessScript []byte
 	wire.OutPoint
 }
 
@@ -137,7 +136,7 @@ type WalletController interface {
 	// passed outpoint. If the base wallet determines this output is under
 	// its control, then the original txout should be returned.  Otherwise,
 	// a non-nil error value of ErrNotMine should be returned instead.
-	FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error)
+	FetchInputInfo(prevOut *wire.OutPoint) (*Utxo, error)
 
 	// ConfirmedBalance returns the sum of all the wallet's unspent outputs
 	// that have at least confs confirmations. If confs is set to zero,
@@ -174,7 +173,7 @@ type WalletController interface {
 	// This method also takes the target fee expressed in sat/kw that should
 	// be used when crafting the transaction.
 	SendOutputs(outputs []*wire.TxOut,
-		feeRate SatPerKWeight) (*wire.MsgTx, error)
+		feeRate chainfee.SatPerKWeight) (*wire.MsgTx, error)
 
 	// CreateSimpleTx creates a Bitcoin transaction paying to the specified
 	// outputs. The transaction is not broadcasted to the network. In the
@@ -186,7 +185,7 @@ type WalletController interface {
 	// NOTE: The dryRun argument can be set true to create a tx that
 	// doesn't alter the database. A tx created with this set to true
 	// SHOULD NOT be broadcasted.
-	CreateSimpleTx(outputs []*wire.TxOut, feeRate SatPerKWeight,
+	CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
 		dryRun bool) (*txauthor.AuthoredTx, error)
 
 	// ListUnspentWitness returns all unspent outputs which are version 0

@@ -2,9 +2,12 @@ package contractcourt
 
 import (
 	"bytes"
+	"io"
+	"io/ioutil"
 	"testing"
 
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/htlcswitch/hop"
 	"github.com/lightningnetwork/lnd/invoices"
 	"github.com/lightningnetwork/lnd/lnwallet"
 
@@ -18,8 +21,10 @@ const (
 )
 
 var (
-	testResPreimage = lntypes.Preimage{1, 2, 3}
-	testResHash     = testResPreimage.Hash()
+	testResPreimage   = lntypes.Preimage{1, 2, 3}
+	testResHash       = testResPreimage.Hash()
+	testResCircuitKey = channeldb.CircuitKey{}
+	testOnionBlob     = []byte{4, 5, 6}
 )
 
 // TestHtlcIncomingResolverFwdPreimageKnown tests resolution of a forwarded htlc
@@ -92,8 +97,8 @@ func TestHtlcIncomingResolverExitSettle(t *testing.T) {
 
 	ctx := newIncomingResolverTestContext(t)
 	ctx.registry.notifyEvent = &invoices.HodlEvent{
-		Hash:     testResHash,
-		Preimage: &testResPreimage,
+		CircuitKey: testResCircuitKey,
+		Preimage:   &testResPreimage,
 	}
 	ctx.resolve()
 
@@ -106,6 +111,12 @@ func TestHtlcIncomingResolverExitSettle(t *testing.T) {
 	}
 
 	ctx.waitForResult(true)
+
+	if !bytes.Equal(
+		ctx.onionProcessor.offeredOnionBlob, testOnionBlob,
+	) {
+		t.Fatal("unexpected onion blob")
+	}
 }
 
 // TestHtlcIncomingResolverExitCancel tests resolution of an exit hop htlc for
@@ -116,7 +127,7 @@ func TestHtlcIncomingResolverExitCancel(t *testing.T) {
 
 	ctx := newIncomingResolverTestContext(t)
 	ctx.registry.notifyEvent = &invoices.HodlEvent{
-		Hash: testResHash,
+		CircuitKey: testResCircuitKey,
 	}
 	ctx.resolve()
 	ctx.waitForResult(false)
@@ -133,8 +144,8 @@ func TestHtlcIncomingResolverExitSettleHodl(t *testing.T) {
 
 	notifyData := <-ctx.registry.notifyChan
 	notifyData.hodlChan <- invoices.HodlEvent{
-		Hash:     testResHash,
-		Preimage: &testResPreimage,
+		CircuitKey: testResCircuitKey,
+		Preimage:   &testResPreimage,
 	}
 
 	ctx.waitForResult(true)
@@ -162,19 +173,44 @@ func TestHtlcIncomingResolverExitCancelHodl(t *testing.T) {
 	ctx.resolve()
 	notifyData := <-ctx.registry.notifyChan
 	notifyData.hodlChan <- invoices.HodlEvent{
-		Hash: testResHash,
+		CircuitKey: testResCircuitKey,
 	}
 	ctx.waitForResult(false)
 }
 
+type mockHopIterator struct {
+	hop.Iterator
+}
+
+func (h *mockHopIterator) HopPayload() (*hop.Payload, error) {
+	return nil, nil
+}
+
+type mockOnionProcessor struct {
+	offeredOnionBlob []byte
+}
+
+func (o *mockOnionProcessor) ReconstructHopIterator(r io.Reader, rHash []byte) (
+	hop.Iterator, error) {
+
+	data, err := ioutil.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	o.offeredOnionBlob = data
+
+	return &mockHopIterator{}, nil
+}
+
 type incomingResolverTestContext struct {
-	registry      *mockRegistry
-	witnessBeacon *mockWitnessBeacon
-	resolver      *htlcIncomingContestResolver
-	notifier      *mockNotifier
-	resolveErr    chan error
-	nextResolver  ContractResolver
-	t             *testing.T
+	registry       *mockRegistry
+	witnessBeacon  *mockWitnessBeacon
+	resolver       *htlcIncomingContestResolver
+	notifier       *mockNotifier
+	onionProcessor *mockOnionProcessor
+	resolveErr     chan error
+	nextResolver   ContractResolver
+	t              *testing.T
 }
 
 func newIncomingResolverTestContext(t *testing.T) *incomingResolverTestContext {
@@ -188,37 +224,45 @@ func newIncomingResolverTestContext(t *testing.T) *incomingResolverTestContext {
 		notifyChan: make(chan notifyExitHopData, 1),
 	}
 
+	onionProcessor := &mockOnionProcessor{}
+
 	checkPointChan := make(chan struct{}, 1)
 
 	chainCfg := ChannelArbitratorConfig{
 		ChainArbitratorConfig: ChainArbitratorConfig{
-			Notifier:   notifier,
-			PreimageDB: witnessBeacon,
-			Registry:   registry,
+			Notifier:       notifier,
+			PreimageDB:     witnessBeacon,
+			Registry:       registry,
+			OnionProcessor: onionProcessor,
 		},
 	}
 
+	cfg := ResolverConfig{
+		ChannelArbitratorConfig: chainCfg,
+		Checkpoint: func(_ ContractResolver) error {
+			checkPointChan <- struct{}{}
+			return nil
+		},
+	}
 	resolver := &htlcIncomingContestResolver{
 		htlcSuccessResolver: htlcSuccessResolver{
-			ResolverKit: ResolverKit{
-				ChannelArbitratorConfig: chainCfg,
-				Checkpoint: func(_ ContractResolver) error {
-					checkPointChan <- struct{}{}
-					return nil
-				},
+			contractResolverKit: *newContractResolverKit(cfg),
+			htlcResolution:      lnwallet.IncomingHtlcResolution{},
+			htlc: channeldb.HTLC{
+				RHash:     testResHash,
+				OnionBlob: testOnionBlob,
 			},
-			htlcResolution: lnwallet.IncomingHtlcResolution{},
-			payHash:        testResHash,
 		},
 		htlcExpiry: testHtlcExpiry,
 	}
 
 	return &incomingResolverTestContext{
-		registry:      registry,
-		witnessBeacon: witnessBeacon,
-		resolver:      resolver,
-		notifier:      notifier,
-		t:             t,
+		registry:       registry,
+		witnessBeacon:  witnessBeacon,
+		resolver:       resolver,
+		notifier:       notifier,
+		onionProcessor: onionProcessor,
+		t:              t,
 	}
 }
 
@@ -250,7 +294,7 @@ func (i *incomingResolverTestContext) waitForResult(expectSuccessRes bool) {
 	}
 
 	if !expectSuccessRes {
-		if err != nil {
+		if i.nextResolver != nil {
 			i.t.Fatal("expected no next resolver")
 		}
 		return

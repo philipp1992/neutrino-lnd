@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/shachain"
@@ -89,10 +90,16 @@ var (
 	}
 )
 
+// noUpdate is a function which can be used as a parameter in createTestPeer to
+// call the setup code with no custom values on the channels set up.
+var noUpdate = func(a, b *channeldb.OpenChannel) {}
+
 // createTestPeer creates a channel between two nodes, and returns a peer for
-// one of the nodes, together with the channel seen from both nodes.
-func createTestPeer(notifier chainntnfs.ChainNotifier,
-	publTx chan *wire.MsgTx) (*peer, *lnwallet.LightningChannel,
+// one of the nodes, together with the channel seen from both nodes. It takes
+// an updateChan function which can be used to modify the default values on
+// the channel states for each peer.
+func createTestPeer(notifier chainntnfs.ChainNotifier, publTx chan *wire.MsgTx,
+	updateChan func(a, b *channeldb.OpenChannel)) (*peer, *lnwallet.LightningChannel,
 	*lnwallet.LightningChannel, func(), error) {
 
 	aliceKeyPriv, aliceKeyPub := btcec.PrivKeyFromBytes(btcec.S256(),
@@ -186,26 +193,35 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 	}
 	aliceCommitPoint := input.ComputeCommitmentPoint(aliceFirstRevoke[:])
 
-	aliceCommitTx, bobCommitTx, err := lnwallet.CreateCommitmentTxns(channelBal,
-		channelBal, &aliceCfg, &bobCfg, aliceCommitPoint, bobCommitPoint,
-		*fundingTxIn)
+	aliceCommitTx, bobCommitTx, err := lnwallet.CreateCommitmentTxns(
+		channelBal, channelBal, &aliceCfg, &bobCfg, aliceCommitPoint,
+		bobCommitPoint, *fundingTxIn, true,
+	)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	alicePath, err := ioutil.TempDir("", "alicedb")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
 	dbAlice, err := channeldb.Open(alicePath)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
 	bobPath, err := ioutil.TempDir("", "bobdb")
+	if err != nil {
+		return nil, nil, nil, nil, err
+	}
+
 	dbBob, err := channeldb.Open(bobPath)
 	if err != nil {
 		return nil, nil, nil, nil, err
 	}
 
-	estimator := lnwallet.NewStaticFeeEstimator(12500, 0)
+	estimator := chainfee.NewStaticEstimator(12500, 0)
 	feePerKw, err := estimator.EstimateFeePerKW(1)
 	if err != nil {
 		return nil, nil, nil, nil, err
@@ -246,7 +262,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		IdentityPub:             aliceKeyPub,
 		FundingOutpoint:         *prevOut,
 		ShortChannelID:          shortChanID,
-		ChanType:                channeldb.SingleFunder,
+		ChanType:                channeldb.SingleFunderTweaklessBit,
 		IsInitiator:             true,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: bobCommitPoint,
@@ -263,7 +279,7 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		RemoteChanCfg:           aliceCfg,
 		IdentityPub:             bobKeyPub,
 		FundingOutpoint:         *prevOut,
-		ChanType:                channeldb.SingleFunder,
+		ChanType:                channeldb.SingleFunderTweaklessBit,
 		IsInitiator:             false,
 		Capacity:                channelCapacity,
 		RemoteCurrentRevocation: aliceCommitPoint,
@@ -274,6 +290,9 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		Db:                      dbBob,
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 	}
+
+	// Set custom values on the channel states.
+	updateChan(aliceChannelState, bobChannelState)
 
 	aliceAddr := &net.TCPAddr{
 		IP:   net.ParseIP("127.0.0.1"),

@@ -10,10 +10,13 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/coreos/bbolt"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/tlv"
 )
 
 var (
@@ -98,9 +101,13 @@ const (
 	// payment.
 	FailureReasonError FailureReason = 2
 
-	// FailureReasonIncorrectPaymentDetails indicates that either the hash
-	// is unknown or the final cltv delta or amount is incorrect.
-	FailureReasonIncorrectPaymentDetails FailureReason = 3
+	// FailureReasonPaymentDetails indicates that either the hash is unknown
+	// or the final cltv delta or amount is incorrect.
+	FailureReasonPaymentDetails FailureReason = 3
+
+	// FailureReasonInsufficientBalance indicates that we didn't have enough
+	// balance to complete the payment.
+	FailureReasonInsufficientBalance FailureReason = 4
 
 	// TODO(halseth): cancel state.
 
@@ -117,8 +124,10 @@ func (r FailureReason) String() string {
 		return "no_route"
 	case FailureReasonError:
 		return "error"
-	case FailureReasonIncorrectPaymentDetails:
+	case FailureReasonPaymentDetails:
 		return "incorrect_payment_details"
+	case FailureReasonInsufficientBalance:
+		return "insufficient_balance"
 	}
 
 	return "unknown"
@@ -236,11 +245,11 @@ type Payment struct {
 	// NOTE: Can be nil if no attempt is yet made.
 	Attempt *PaymentAttemptInfo
 
-	// PaymentPreimage is the preimage of a successful payment. This serves
-	// as a proof of payment. It will only be non-nil for settled payments.
+	// Preimage is the preimage of a successful payment. This serves as a
+	// proof of payment. It will only be non-nil for settled payments.
 	//
 	// NOTE: Can be nil if payment is not settled.
-	PaymentPreimage *lntypes.Preimage
+	Preimage *lntypes.Preimage
 
 	// Failure is a failure reason code indicating the reason the payment
 	// failed. It is only non-nil for failed payments.
@@ -249,9 +258,70 @@ type Payment struct {
 	Failure *FailureReason
 }
 
+// ToMPPayment converts a legacy payment into an MPPayment.
+func (p *Payment) ToMPPayment() *MPPayment {
+	var (
+		htlcs   []HTLCAttempt
+		reason  *FailureReason
+		settle  *HTLCSettleInfo
+		failure *HTLCFailInfo
+	)
+
+	// Promote the payment failure to a proper fail struct, if it exists.
+	if p.Failure != nil {
+		// NOTE: FailTime is not set for legacy payments.
+		failure = &HTLCFailInfo{}
+		reason = p.Failure
+	}
+
+	// Promote the payment preimage to proper settle struct, if it exists.
+	if p.Preimage != nil {
+		// NOTE: SettleTime is not set for legacy payments.
+		settle = &HTLCSettleInfo{
+			Preimage: *p.Preimage,
+		}
+	}
+
+	// Either a settle or a failure may be set, but not both.
+	if settle != nil && failure != nil {
+		panic("htlc attempt has both settle and failure info")
+	}
+
+	// Populate a single HTLC on the MPPayment if an attempt exists on the
+	// legacy payment. If none exists we will leave the attempt info blank
+	// since we cannot recover it.
+	if p.Attempt != nil {
+		// NOTE: AttemptTime is not set for legacy payments.
+		htlcs = []HTLCAttempt{
+			{
+				PaymentID:  p.Attempt.PaymentID,
+				SessionKey: p.Attempt.SessionKey,
+				Route:      p.Attempt.Route,
+				Settle:     settle,
+				Failure:    failure,
+			},
+		}
+	}
+
+	return &MPPayment{
+		sequenceNum: p.sequenceNum,
+		Info: &MPPaymentCreationInfo{
+			PaymentHash:    p.Info.PaymentHash,
+			Value:          p.Info.Value,
+			CreationTime:   p.Info.CreationDate,
+			PaymentRequest: p.Info.PaymentRequest,
+		},
+		HTLCs:         htlcs,
+		FailureReason: reason,
+		Status:        p.Status,
+	}
+}
+
 // FetchPayments returns all sent payments found in the DB.
-func (db *DB) FetchPayments() ([]*Payment, error) {
-	var payments []*Payment
+//
+// nolint: dupl
+func (db *DB) FetchPayments() ([]*MPPayment, error) {
+	var payments []*MPPayment
 
 	err := db.View(func(tx *bbolt.Tx) error {
 		paymentsBucket := tx.Bucket(paymentsRootBucket)
@@ -315,7 +385,7 @@ func (db *DB) FetchPayments() ([]*Payment, error) {
 	return payments, nil
 }
 
-func fetchPayment(bucket *bbolt.Bucket) (*Payment, error) {
+func fetchPayment(bucket *bbolt.Bucket) (*MPPayment, error) {
 	var (
 		err error
 		p   = &Payment{}
@@ -360,7 +430,7 @@ func fetchPayment(bucket *bbolt.Bucket) (*Payment, error) {
 	if b != nil {
 		var preimg lntypes.Preimage
 		copy(preimg[:], b[:])
-		p.PaymentPreimage = &preimg
+		p.Preimage = &preimg
 	}
 
 	// Get failure reason if available.
@@ -370,7 +440,7 @@ func fetchPayment(bucket *bbolt.Bucket) (*Payment, error) {
 		p.Failure = &reason
 	}
 
-	return p, nil
+	return p.ToMPPayment(), nil
 }
 
 // DeletePayments deletes all completed and failed payments from the DB.
@@ -470,7 +540,7 @@ func deserializePaymentCreationInfo(r io.Reader) (*PaymentCreationInfo, error) {
 	reqLen := uint32(byteOrder.Uint32(scratch[:4]))
 	payReq := make([]byte, reqLen)
 	if reqLen > 0 {
-		if _, err := io.ReadFull(r, payReq[:]); err != nil {
+		if _, err := io.ReadFull(r, payReq); err != nil {
 			return nil, err
 		}
 	}
@@ -506,14 +576,78 @@ func deserializePaymentAttemptInfo(r io.Reader) (*PaymentAttemptInfo, error) {
 
 func serializeHop(w io.Writer, h *route.Hop) error {
 	if err := WriteElements(w,
-		h.PubKeyBytes[:], h.ChannelID, h.OutgoingTimeLock,
+		h.PubKeyBytes[:],
+		h.ChannelID,
+		h.OutgoingTimeLock,
 		h.AmtToForward,
 	); err != nil {
 		return err
 	}
 
+	if err := binary.Write(w, byteOrder, h.LegacyPayload); err != nil {
+		return err
+	}
+
+	// For legacy payloads, we don't need to write any TLV records, so
+	// we'll write a zero indicating the our serialized TLV map has no
+	// records.
+	if h.LegacyPayload {
+		return WriteElements(w, uint32(0))
+	}
+
+	// Gather all non-primitive TLV records so that they can be serialized
+	// as a single blob.
+	//
+	// TODO(conner): add migration to unify all fields in a single TLV
+	// blobs. The split approach will cause headaches down the road as more
+	// fields are added, which we can avoid by having a single TLV stream
+	// for all payload fields.
+	var records []tlv.Record
+	if h.MPP != nil {
+		records = append(records, h.MPP.Record())
+	}
+
+	// Final sanity check to absolutely rule out custom records that are not
+	// custom and write into the standard range.
+	if err := h.CustomRecords.Validate(); err != nil {
+		return err
+	}
+
+	// Convert custom records to tlv and add to the record list.
+	// MapToRecords sorts the list, so adding it here will keep the list
+	// canonical.
+	tlvRecords := tlv.MapToRecords(h.CustomRecords)
+	records = append(records, tlvRecords...)
+
+	// Otherwise, we'll transform our slice of records into a map of the
+	// raw bytes, then serialize them in-line with a length (number of
+	// elements) prefix.
+	mapRecords, err := tlv.RecordsToMap(records)
+	if err != nil {
+		return err
+	}
+
+	numRecords := uint32(len(mapRecords))
+	if err := WriteElements(w, numRecords); err != nil {
+		return err
+	}
+
+	for recordType, rawBytes := range mapRecords {
+		if err := WriteElements(w, recordType); err != nil {
+			return err
+		}
+
+		if err := wire.WriteVarBytes(w, 0, rawBytes); err != nil {
+			return err
+		}
+	}
+
 	return nil
 }
+
+// maxOnionPayloadSize is the largest Sphinx payload possible, so we don't need
+// to read/write a TLV stream larger than this.
+const maxOnionPayloadSize = 1300
 
 func deserializeHop(r io.Reader) (*route.Hop, error) {
 	h := &route.Hop{}
@@ -529,6 +663,65 @@ func deserializeHop(r io.Reader) (*route.Hop, error) {
 	); err != nil {
 		return nil, err
 	}
+
+	// TODO(roasbeef): change field to allow LegacyPayload false to be the
+	// legacy default?
+	err := binary.Read(r, byteOrder, &h.LegacyPayload)
+	if err != nil {
+		return nil, err
+	}
+
+	var numElements uint32
+	if err := ReadElements(r, &numElements); err != nil {
+		return nil, err
+	}
+
+	// If there're no elements, then we can return early.
+	if numElements == 0 {
+		return h, nil
+	}
+
+	tlvMap := make(map[uint64][]byte)
+	for i := uint32(0); i < numElements; i++ {
+		var tlvType uint64
+		if err := ReadElements(r, &tlvType); err != nil {
+			return nil, err
+		}
+
+		rawRecordBytes, err := wire.ReadVarBytes(
+			r, 0, maxOnionPayloadSize, "tlv",
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		tlvMap[tlvType] = rawRecordBytes
+	}
+
+	// If the MPP type is present, remove it from the generic TLV map and
+	// parse it back into a proper MPP struct.
+	//
+	// TODO(conner): add migration to unify all fields in a single TLV
+	// blobs. The split approach will cause headaches down the road as more
+	// fields are added, which we can avoid by having a single TLV stream
+	// for all payload fields.
+	mppType := uint64(record.MPPOnionType)
+	if mppBytes, ok := tlvMap[mppType]; ok {
+		delete(tlvMap, mppType)
+
+		var (
+			mpp    = &record.MPP{}
+			mppRec = mpp.Record()
+			r      = bytes.NewReader(mppBytes)
+		)
+		err := mppRec.Decode(r, uint64(len(mppBytes)))
+		if err != nil {
+			return nil, err
+		}
+		h.MPP = mpp
+	}
+
+	h.CustomRecords = tlvMap
 
 	return h, nil
 }

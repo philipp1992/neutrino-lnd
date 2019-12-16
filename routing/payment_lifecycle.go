@@ -161,6 +161,15 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 		log.Debugf("Payment %x succeeded with pid=%v",
 			p.payment.PaymentHash, p.attempt.PaymentID)
 
+		// Report success to mission control.
+		err = p.router.cfg.MissionControl.ReportPaymentSuccess(
+			p.attempt.PaymentID, &p.attempt.Route,
+		)
+		if err != nil {
+			log.Errorf("Error reporting payment success to mc: %v",
+				err)
+		}
+
 		// In case of success we atomically store the db payment and
 		// move the payment to the success state.
 		err = p.router.cfg.Control.Success(p.payment.PaymentHash, result.Preimage)
@@ -175,6 +184,22 @@ func (p *paymentLifecycle) resumePayment() ([32]byte, *route.Route, error) {
 		return result.Preimage, &p.attempt.Route, nil
 	}
 
+}
+
+// errorToPaymentFailure takes a path finding error and converts it into a
+// payment-level failure.
+func errorToPaymentFailure(err error) channeldb.FailureReason {
+	switch err {
+	case errNoTlvPayload, errNoPathFound, errMaxHopsExceeded,
+		errPrebuiltRouteTried:
+
+		return channeldb.FailureReasonNoRoute
+
+	case errInsufficientBalance:
+		return channeldb.FailureReasonInsufficientBalance
+	}
+
+	return channeldb.FailureReasonError
 }
 
 // createNewPaymentAttempt creates and stores a new payment attempt to the
@@ -221,11 +246,14 @@ func (p *paymentLifecycle) createNewPaymentAttempt() (lnwire.ShortChannelID,
 		log.Warnf("Failed to find route for payment %x: %v",
 			p.payment.PaymentHash, err)
 
+		// Convert error to payment-level failure.
+		failure := errorToPaymentFailure(err)
+
 		// If we're unable to successfully make a payment using
 		// any of the routes we've found, then mark the payment
 		// as permanently failed.
 		saveErr := p.router.cfg.Control.Fail(
-			p.payment.PaymentHash, channeldb.FailureReasonNoRoute,
+			p.payment.PaymentHash, failure,
 		)
 		if saveErr != nil {
 			return lnwire.ShortChannelID{}, nil, saveErr
@@ -332,8 +360,8 @@ func (p *paymentLifecycle) sendPaymentAttempt(firstHop lnwire.ShortChannelID,
 		return err
 	}
 
-	log.Debugf("Payment %x (pid=%v) successfully sent to switch",
-		p.payment.PaymentHash, p.attempt.PaymentID)
+	log.Debugf("Payment %x (pid=%v) successfully sent to switch, route: %v",
+		p.payment.PaymentHash, p.attempt.PaymentID, &p.attempt.Route)
 
 	return nil
 }
@@ -342,10 +370,10 @@ func (p *paymentLifecycle) sendPaymentAttempt(firstHop lnwire.ShortChannelID,
 // whether we should make another payment attempt.
 func (p *paymentLifecycle) handleSendError(sendErr error) error {
 
-	final, reason := p.router.processSendError(
+	reason := p.router.processSendError(
 		p.attempt.PaymentID, &p.attempt.Route, sendErr,
 	)
-	if !final {
+	if reason == nil {
 		// Save the forwarding error so it can be returned if
 		// this turns out to be the last attempt.
 		p.lastError = sendErr
@@ -354,14 +382,14 @@ func (p *paymentLifecycle) handleSendError(sendErr error) error {
 	}
 
 	log.Debugf("Payment %x failed: final_outcome=%v, raw_err=%v",
-		p.payment.PaymentHash, reason, sendErr)
+		p.payment.PaymentHash, *reason, sendErr)
 
 	// Mark the payment failed with no route.
 	//
 	// TODO(halseth): make payment codes for the actual reason we don't
 	// continue path finding.
 	err := p.router.cfg.Control.Fail(
-		p.payment.PaymentHash, reason,
+		p.payment.PaymentHash, *reason,
 	)
 	if err != nil {
 		return err

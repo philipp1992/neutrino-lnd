@@ -141,7 +141,7 @@ type ChainNotifier interface {
 
 	// Stops the concrete ChainNotifier. Once stopped, the ChainNotifier
 	// should disallow any future requests from potential clients.
-	// Additionally, all pending client notifications will be cancelled
+	// Additionally, all pending client notifications will be canceled
 	// by closing the related channels on the *Event's.
 	Stop() error
 }
@@ -239,6 +239,12 @@ type SpendDetail struct {
 	SpendingTx        *wire.MsgTx
 	SpenderInputIndex uint32
 	SpendingHeight    int32
+}
+
+// String returns a string representation of SpendDetail.
+func (s *SpendDetail) String() string {
+	return fmt.Sprintf("%v[%d] spending %v at height=%v", s.SpenderTxHash,
+		s.SpenderInputIndex, s.SpentOutPoint, s.SpendingHeight)
 }
 
 // SpendEvent encapsulates a spentness notification. Its only field 'Spend' will

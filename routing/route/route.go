@@ -1,22 +1,36 @@
 package route
 
 import (
+	"bytes"
 	"encoding/binary"
+	"encoding/hex"
+	"errors"
 	"fmt"
+	"io"
 	"strconv"
 	"strings"
 
 	"github.com/btcsuite/btcd/btcec"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/record"
+	"github.com/lightningnetwork/lnd/tlv"
 )
 
 // VertexSize is the size of the array to store a vertex.
 const VertexSize = 33
 
-// ErrNoRouteHopsProvided is returned when a caller attempts to construct a new
-// sphinx packet, but provides an empty set of hops for each route.
-var ErrNoRouteHopsProvided = fmt.Errorf("empty route hops provided")
+var (
+	// ErrNoRouteHopsProvided is returned when a caller attempts to
+	// construct a new sphinx packet, but provides an empty set of hops for
+	// each route.
+	ErrNoRouteHopsProvided = fmt.Errorf("empty route hops provided")
+
+	// ErrIntermediateMPPHop is returned when a hop tries to deliver an MPP
+	// record to an intermediate hop, only final hops can receive MPP
+	// records.
+	ErrIntermediateMPPHop = errors.New("cannot send MPP to intermediate")
+)
 
 // Vertex is a simple alias for the serialization of a compressed Bitcoin
 // public key.
@@ -41,6 +55,22 @@ func NewVertexFromBytes(b []byte) (Vertex, error) {
 	var v Vertex
 	copy(v[:], b)
 	return v, nil
+}
+
+// NewVertexFromStr returns a new Vertex given its hex-encoded string format.
+func NewVertexFromStr(v string) (Vertex, error) {
+	// Return error if hex string is of incorrect length.
+	if len(v) != VertexSize*2 {
+		return Vertex{}, fmt.Errorf("invalid vertex string length of "+
+			"%v, want %v", len(v), VertexSize*2)
+	}
+
+	vertex, err := hex.DecodeString(v)
+	if err != nil {
+		return Vertex{}, err
+	}
+
+	return NewVertexFromBytes(vertex)
 }
 
 // String returns a human readable version of the Vertex which is the
@@ -72,6 +102,82 @@ type Hop struct {
 	// hop. This value is less than the value that the incoming HTLC
 	// carries as a fee will be subtracted by the hop.
 	AmtToForward lnwire.MilliSatoshi
+
+	// MPP encapsulates the data required for option_mpp. This field should
+	// only be set for the final hop.
+	MPP *record.MPP
+
+	// CustomRecords if non-nil are a set of additional TLV records that
+	// should be included in the forwarding instructions for this node.
+	CustomRecords record.CustomSet
+
+	// LegacyPayload if true, then this signals that this node doesn't
+	// understand the new TLV payload, so we must instead use the legacy
+	// payload.
+	LegacyPayload bool
+}
+
+// PackHopPayload writes to the passed io.Writer, the series of byes that can
+// be placed directly into the per-hop payload (EOB) for this hop. This will
+// include the required routing fields, as well as serializing any of the
+// passed optional TLVRecords.  nextChanID is the unique channel ID that
+// references the _outgoing_ channel ID that follows this hop. This field
+// follows the same semantics as the NextAddress field in the onion: it should
+// be set to zero to indicate the terminal hop.
+func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
+	// If this is a legacy payload, then we'll exit here as this method
+	// shouldn't be called.
+	if h.LegacyPayload == true {
+		return fmt.Errorf("cannot pack hop payloads for legacy " +
+			"payloads")
+	}
+
+	// Otherwise, we'll need to make a new stream that includes our
+	// required routing fields, as well as these optional values.
+	var records []tlv.Record
+
+	// Every hop must have an amount to forward and CLTV expiry.
+	amt := uint64(h.AmtToForward)
+	records = append(records,
+		record.NewAmtToFwdRecord(&amt),
+		record.NewLockTimeRecord(&h.OutgoingTimeLock),
+	)
+
+	// BOLT 04 says the next_hop_id should be omitted for the final hop,
+	// but present for all others.
+	//
+	// TODO(conner): test using hop.Exit once available
+	if nextChanID != 0 {
+		records = append(records,
+			record.NewNextHopIDRecord(&nextChanID),
+		)
+	}
+
+	// If an MPP record is destined for this hop, ensure that we only ever
+	// attach it to the final hop. Otherwise the route was constructed
+	// incorrectly.
+	if h.MPP != nil {
+		if nextChanID == 0 {
+			records = append(records, h.MPP.Record())
+		} else {
+			return ErrIntermediateMPPHop
+		}
+	}
+
+	// Append any custom types destined for this hop.
+	tlvRecords := tlv.MapToRecords(h.CustomRecords)
+	records = append(records, tlvRecords...)
+
+	// To ensure we produce a canonical stream, we'll sort the records
+	// before encoding them as a stream in the hop payload.
+	tlv.SortRecords(records)
+
+	tlvStream, err := tlv.NewStream(records...)
+	if err != nil {
+		return err
+	}
+
+	return tlvStream.Encode(w)
 }
 
 // Route represents a path through the channel graph which runs over one or
@@ -156,7 +262,8 @@ func NewRouteFromHops(amtToSend lnwire.MilliSatoshi, timeLock uint32,
 
 // ToSphinxPath converts a complete route into a sphinx PaymentPath that
 // contains the per-hop paylods used to encoding the HTLC routing data for each
-// hop in the route.
+// hop in the route. This method also accepts an optional EOB payload for the
+// final hop.
 func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 	var path sphinx.PaymentPath
 
@@ -171,17 +278,6 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 			return nil, err
 		}
 
-		path[i] = sphinx.OnionHop{
-			NodePub: *pub,
-			HopData: sphinx.HopData{
-				// TODO(roasbeef): properly set realm, make
-				// sphinx type an enum actually?
-				Realm:         [1]byte{0},
-				ForwardAmount: uint64(hop.AmtToForward),
-				OutgoingCltv:  hop.OutgoingTimeLock,
-			},
-		}
-
 		// As a base case, the next hop is set to all zeroes in order
 		// to indicate that the "last hop" as no further hops after it.
 		nextHop := uint64(0)
@@ -192,9 +288,50 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 			nextHop = r.Hops[i+1].ChannelID
 		}
 
-		binary.BigEndian.PutUint64(
-			path[i].HopData.NextAddress[:], nextHop,
-		)
+		var payload sphinx.HopPayload
+
+		// If this is the legacy payload, then we can just include the
+		// hop data as normal.
+		if hop.LegacyPayload {
+			// Before we encode this value, we'll pack the next hop
+			// into the NextAddress field of the hop info to ensure
+			// we point to the right now.
+			hopData := sphinx.HopData{
+				ForwardAmount: uint64(hop.AmtToForward),
+				OutgoingCltv:  hop.OutgoingTimeLock,
+			}
+			binary.BigEndian.PutUint64(
+				hopData.NextAddress[:], nextHop,
+			)
+
+			payload, err = sphinx.NewHopPayload(&hopData, nil)
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// For non-legacy payloads, we'll need to pack the
+			// routing information, along with any extra TLV
+			// information into the new per-hop payload format.
+			// We'll also pass in the chan ID of the hop this
+			// channel should be forwarded to so we can construct a
+			// valid payload.
+			var b bytes.Buffer
+			err := hop.PackHopPayload(&b, nextHop)
+			if err != nil {
+				return nil, err
+			}
+
+			// TODO(roasbeef): make better API for NewHopPayload?
+			payload, err = sphinx.NewHopPayload(nil, b.Bytes())
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		path[i] = sphinx.OnionHop{
+			NodePub:    *pub,
+			HopPayload: payload,
+		}
 	}
 
 	return &path, nil
@@ -204,15 +341,19 @@ func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 func (r *Route) String() string {
 	var b strings.Builder
 
+	amt := r.TotalAmount
 	for i, hop := range r.Hops {
 		if i > 0 {
-			b.WriteString(",")
+			b.WriteString(" -> ")
 		}
-		b.WriteString(strconv.FormatUint(hop.ChannelID, 10))
+		b.WriteString(fmt.Sprintf("%v (%v)",
+			strconv.FormatUint(hop.ChannelID, 10),
+			amt,
+		))
+		amt = hop.AmtToForward
 	}
 
-	return fmt.Sprintf("amt=%v, fees=%v, tl=%v, chans=%v",
-		r.TotalAmount-r.TotalFees(), r.TotalFees(), r.TotalTimeLock,
-		b.String(),
+	return fmt.Sprintf("%v, cltv %v",
+		b.String(), r.TotalTimeLock,
 	)
 }

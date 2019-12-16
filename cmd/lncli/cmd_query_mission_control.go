@@ -31,44 +31,29 @@ func queryMissionControl(ctx *cli.Context) error {
 		return err
 	}
 
-	type displayNodeHistory struct {
-		Pubkey           string
-		LastFailTime     int64
-		OtherSuccessProb float32
-	}
-
 	type displayPairHistory struct {
-		NodeFrom, NodeTo  string
-		LastFailTime      int64
-		SuccessProb       float32
-		MinPenalizeAmtSat int64
+		NodeFrom, NodeTo              string
+		SuccessTime, FailTime         int64
+		FailAmtSat, FailAmtMsat       int64
+		SuccessAmtSat, SuccessAmtMsat int64
 	}
 
 	displayResp := struct {
-		Nodes []displayNodeHistory
 		Pairs []displayPairHistory
 	}{}
-
-	for _, n := range snapshot.Nodes {
-		displayResp.Nodes = append(
-			displayResp.Nodes,
-			displayNodeHistory{
-				Pubkey:           hex.EncodeToString(n.Pubkey),
-				LastFailTime:     n.LastFailTime,
-				OtherSuccessProb: n.OtherSuccessProb,
-			},
-		)
-	}
 
 	for _, n := range snapshot.Pairs {
 		displayResp.Pairs = append(
 			displayResp.Pairs,
 			displayPairHistory{
-				NodeFrom:          hex.EncodeToString(n.NodeFrom),
-				NodeTo:            hex.EncodeToString(n.NodeTo),
-				LastFailTime:      n.LastFailTime,
-				SuccessProb:       n.SuccessProb,
-				MinPenalizeAmtSat: n.MinPenalizeAmtSat,
+				NodeFrom:       hex.EncodeToString(n.NodeFrom),
+				NodeTo:         hex.EncodeToString(n.NodeTo),
+				FailTime:       n.History.FailTime,
+				SuccessTime:    n.History.SuccessTime,
+				FailAmtSat:     n.History.FailAmtSat,
+				FailAmtMsat:    n.History.FailAmtMsat,
+				SuccessAmtSat:  n.History.SuccessAmtSat,
+				SuccessAmtMsat: n.History.SuccessAmtMsat,
 			},
 		)
 	}

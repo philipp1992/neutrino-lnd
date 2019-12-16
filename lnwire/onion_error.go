@@ -11,6 +11,7 @@ import (
 
 	"github.com/davecgh/go-spew/spew"
 	"github.com/go-errors/errors"
+	"github.com/lightningnetwork/lnd/tlv"
 )
 
 // FailureMessage represents the onion failure object identified by its unique
@@ -46,7 +47,7 @@ const (
 	FlagUpdate FailCode = 0x1000
 )
 
-// FailCode specifies the precise reason that an upstream HTLC was cancelled.
+// FailCode specifies the precise reason that an upstream HTLC was canceled.
 // Each UpdateFailHTLC message carries a FailCode which is to be passed
 // backwards, encrypted at each step back to the source of the HTLC within the
 // route.
@@ -78,6 +79,7 @@ const (
 	CodeFinalIncorrectCltvExpiry         FailCode = 18
 	CodeFinalIncorrectHtlcAmount         FailCode = 19
 	CodeExpiryTooFar                     FailCode = 21
+	CodeInvalidOnionPayload                       = FlagPerm | 22
 )
 
 // String returns the string representation of the failure code.
@@ -148,6 +150,9 @@ func (c FailCode) String() string {
 
 	case CodeExpiryTooFar:
 		return "ExpiryTooFar"
+
+	case CodeInvalidOnionPayload:
+		return "InvalidOnionPayload"
 
 	default:
 		return "<unknown>"
@@ -333,19 +338,30 @@ func (f *FailIncorrectPaymentAmount) Error() string {
 type FailIncorrectDetails struct {
 	// amount is the value of the extended HTLC.
 	amount MilliSatoshi
+
+	// height is the block height when the htlc was received.
+	height uint32
 }
 
 // NewFailIncorrectDetails makes a new instance of the FailIncorrectDetails
-// error bound to the specified HTLC amount.
-func NewFailIncorrectDetails(amt MilliSatoshi) *FailIncorrectDetails {
+// error bound to the specified HTLC amount and acceptance height.
+func NewFailIncorrectDetails(amt MilliSatoshi,
+	height uint32) *FailIncorrectDetails {
+
 	return &FailIncorrectDetails{
 		amount: amt,
+		height: height,
 	}
 }
 
 // Amount is the value of the extended HTLC.
 func (f *FailIncorrectDetails) Amount() MilliSatoshi {
 	return f.amount
+}
+
+// Height is the block height when the htlc was received.
+func (f *FailIncorrectDetails) Height() uint32 {
+	return f.height
 }
 
 // Code returns the failure unique code.
@@ -360,7 +376,8 @@ func (f *FailIncorrectDetails) Code() FailCode {
 // NOTE: Implements the error interface.
 func (f *FailIncorrectDetails) Error() string {
 	return fmt.Sprintf(
-		"%v(amt=%v)", CodeIncorrectOrUnknownPaymentDetails, f.amount,
+		"%v(amt=%v, height=%v)", CodeIncorrectOrUnknownPaymentDetails,
+		f.amount, f.height,
 	)
 }
 
@@ -381,6 +398,17 @@ func (f *FailIncorrectDetails) Decode(r io.Reader, pver uint32) error {
 		return err
 	}
 
+	// At a later stage, the height field was also tacked on. We need to
+	// check for io.EOF here as well.
+	err = ReadElement(r, &f.height)
+	switch {
+	case err == io.EOF:
+		return nil
+
+	case err != nil:
+		return err
+	}
+
 	return nil
 }
 
@@ -388,7 +416,7 @@ func (f *FailIncorrectDetails) Decode(r io.Reader, pver uint32) error {
 //
 // NOTE: Part of the Serializable interface.
 func (f *FailIncorrectDetails) Encode(w io.Writer, pver uint32) error {
-	return WriteElement(w, f.amount)
+	return WriteElements(w, f.amount, f.height)
 }
 
 // FailFinalExpiryTooSoon is returned if the cltv_expiry is too low, the final
@@ -1094,6 +1122,66 @@ func (f *FailExpiryTooFar) Error() string {
 	return f.Code().String()
 }
 
+// InvalidOnionPayload is returned if the hop could not process the TLV payload
+// enclosed in the onion.
+type InvalidOnionPayload struct {
+	// Type is the TLV type that caused the specific failure.
+	Type uint64
+
+	// Offset is the byte offset within the payload where the failure
+	// occurred.
+	Offset uint16
+}
+
+// NewInvalidOnionPayload initializes a new InvalidOnionPayload failure.
+func NewInvalidOnionPayload(typ uint64, offset uint16) *InvalidOnionPayload {
+	return &InvalidOnionPayload{
+		Type:   typ,
+		Offset: offset,
+	}
+}
+
+// Code returns the failure unique code.
+//
+// NOTE: Part of the FailureMessage interface.
+func (f *InvalidOnionPayload) Code() FailCode {
+	return CodeInvalidOnionPayload
+}
+
+// Returns a human readable string describing the target FailureMessage.
+//
+// NOTE: Implements the error interface.
+func (f *InvalidOnionPayload) Error() string {
+	return fmt.Sprintf("%v(type=%v, offset=%d)",
+		f.Code(), f.Type, f.Offset)
+}
+
+// Decode decodes the failure from bytes stream.
+//
+// NOTE: Part of the Serializable interface.
+func (f *InvalidOnionPayload) Decode(r io.Reader, pver uint32) error {
+	var buf [8]byte
+	typ, err := tlv.ReadVarInt(r, &buf)
+	if err != nil {
+		return err
+	}
+	f.Type = typ
+
+	return ReadElements(r, &f.Offset)
+}
+
+// Encode writes the failure in bytes stream.
+//
+// NOTE: Part of the Serializable interface.
+func (f *InvalidOnionPayload) Encode(w io.Writer, pver uint32) error {
+	var buf [8]byte
+	if err := tlv.WriteVarInt(w, f.Type, &buf); err != nil {
+		return err
+	}
+
+	return WriteElements(w, f.Offset)
+}
+
 // DecodeFailure decodes, validates, and parses the lnwire onion failure, for
 // the provided protocol version.
 func DecodeFailure(r io.Reader, pver uint32) (FailureMessage, error) {
@@ -1274,6 +1362,9 @@ func makeEmptyOnionError(code FailCode) (FailureMessage, error) {
 
 	case CodeExpiryTooFar:
 		return &FailExpiryTooFar{}, nil
+
+	case CodeInvalidOnionPayload:
+		return &InvalidOnionPayload{}, nil
 
 	default:
 		return nil, errors.Errorf("unknown error code: %v", code)

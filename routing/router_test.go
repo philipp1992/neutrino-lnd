@@ -2,8 +2,10 @@ package routing
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image/color"
+	"math"
 	"math/rand"
 	"strings"
 	"sync/atomic"
@@ -67,14 +69,6 @@ func (c *testCtx) RestartRouter() error {
 	return nil
 }
 
-func copyPubKey(pub *btcec.PublicKey) *btcec.PublicKey {
-	return &btcec.PublicKey{
-		Curve: btcec.S256(),
-		X:     pub.X,
-		Y:     pub.Y,
-	}
-}
-
 func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGraphInstance) (
 	*testCtx, func(), error) {
 
@@ -98,6 +92,7 @@ func createTestCtxFromGraphInstance(startingHeight uint32, graphInstance *testGr
 	mcConfig := &MissionControlConfig{
 		PenaltyHalfLife:       time.Hour,
 		AprioriHopProbability: 0.9,
+		AprioriWeight:         0.5,
 	}
 
 	mc, err := NewMissionControl(
@@ -227,11 +222,12 @@ func TestFindRoutesWithFeeLimit(t *testing.T) {
 	restrictions := &RestrictParams{
 		FeeLimit:          lnwire.NewMSatFromSatoshis(10),
 		ProbabilitySource: noProbabilitySource,
+		CltvLimit:         math.MaxUint32,
 	}
 
 	route, err := ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
-		target, paymentAmt, restrictions,
+		target, paymentAmt, restrictions, nil,
 		zpay32.DefaultFinalCLTVDelta,
 	)
 	if err != nil {
@@ -274,7 +270,7 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 	var payHash [32]byte
 	paymentAmt := lnwire.NewMSatFromSatoshis(1000)
 	payment := LightningPayment{
-		Target:      ctx.aliases["luoji"],
+		Target:      ctx.aliases["sophon"],
 		Amount:      paymentAmt,
 		FeeLimit:    noFeeLimit,
 		PaymentHash: payHash,
@@ -284,16 +280,16 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 
 	// We'll modify the SendToSwitch method that's been set within the
-	// router's configuration to ignore the path that has luo ji as the
+	// router's configuration to ignore the path that has son goku as the
 	// first hop. This should force the router to instead take the
-	// available two hop path (through satoshi).
+	// the more costly path (through pham nuwen).
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
-			roasbeefLuoji := lnwire.NewShortChanIDFromInt(689530843)
-			if firstHop == roasbeefLuoji {
+			roasbeefSongoku := lnwire.NewShortChanIDFromInt(12345)
+			if firstHop == roasbeefSongoku {
 				return [32]byte{}, &htlcswitch.ForwardingError{
-					FailureSourceIdx: 0,
+					FailureSourceIdx: 1,
 					// TODO(roasbeef): temp node failure should be?
 					FailureMessage: &lnwire.FailTemporaryChannelFailure{},
 				}
@@ -302,7 +298,7 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 			return preImage, nil
 		})
 
-	// Send off the payment request to the router, route through satoshi
+	// Send off the payment request to the router, route through pham nuwen
 	// should've been selected as a fall back and succeeded correctly.
 	paymentPreImage, route, err := ctx.router.SendPayment(&payment)
 	if err != nil {
@@ -321,10 +317,10 @@ func TestSendPaymentRouteFailureFallback(t *testing.T) {
 			preImage[:], paymentPreImage[:])
 	}
 
-	// The route should have satoshi as the first hop.
-	if route.Hops[0].PubKeyBytes != ctx.aliases["satoshi"] {
+	// The route should have pham nuwen as the first hop.
+	if route.Hops[0].PubKeyBytes != ctx.aliases["phamnuwen"] {
 
-		t.Fatalf("route should go through satoshi as first hop, "+
+		t.Fatalf("route should go through phamnuwen as first hop, "+
 			"instead passes through: %v",
 			getAliasFromPubKey(route.Hops[0].PubKeyBytes,
 				ctx.aliases))
@@ -390,12 +386,14 @@ func TestChannelUpdateValidation(t *testing.T) {
 
 	hops := []*route.Hop{
 		{
-			ChannelID:   1,
-			PubKeyBytes: hop1,
+			ChannelID:     1,
+			PubKeyBytes:   hop1,
+			LegacyPayload: true,
 		},
 		{
-			ChannelID:   2,
-			PubKeyBytes: hop2,
+			ChannelID:     2,
+			PubKeyBytes:   hop2,
+			LegacyPayload: true,
 		},
 	}
 
@@ -743,7 +741,7 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	var payHash [32]byte
 	paymentAmt := lnwire.NewMSatFromSatoshis(1000)
 	payment := LightningPayment{
-		Target:      ctx.aliases["luoji"],
+		Target:      ctx.aliases["sophon"],
 		Amount:      paymentAmt,
 		FeeLimit:    noFeeLimit,
 		PaymentHash: payHash,
@@ -752,32 +750,29 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	var preImage [32]byte
 	copy(preImage[:], bytes.Repeat([]byte{9}, 32))
 
-	roasbeefLuoji := lnwire.NewShortChanIDFromInt(689530843)
+	roasbeefSongoku := lnwire.NewShortChanIDFromInt(12345)
+	roasbeefPhanNuwen := lnwire.NewShortChanIDFromInt(999991)
 
 	// First, we'll modify the SendToSwitch method to return an error
-	// indicating that the channel from roasbeef to luoji is not operable
+	// indicating that the channel from roasbeef to son goku is not operable
 	// with an UnknownNextPeer.
-	//
-	// TODO(roasbeef): filtering should be intelligent enough so just not
-	// go through satoshi at all at this point.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
-			if firstHop == roasbeefLuoji {
+			if firstHop == roasbeefSongoku {
 				// We'll first simulate an error from the first
-				// outgoing link to simulate the channel from luo ji to
-				// roasbeef not having enough capacity.
+				// hop to simulate the channel from songoku to
+				// sophon not having enough capacity.
 				return [32]byte{}, &htlcswitch.ForwardingError{
-					FailureSourceIdx: 0,
+					FailureSourceIdx: 1,
 					FailureMessage:   &lnwire.FailTemporaryChannelFailure{},
 				}
 			}
 
-			// Next, we'll create an error from satoshi to indicate
-			// that the luoji node is not longer online, which should
-			// prune out the rest of the routes.
-			roasbeefSatoshi := lnwire.NewShortChanIDFromInt(2340213491)
-			if firstHop == roasbeefSatoshi {
+			// Next, we'll create an error from phan nuwen to
+			// indicate that the sophon node is not longer online,
+			// which should prune out the rest of the routes.
+			if firstHop == roasbeefPhanNuwen {
 				return [32]byte{}, &htlcswitch.ForwardingError{
 					FailureSourceIdx: 1,
 					FailureMessage:   &lnwire.FailUnknownNextPeer{},
@@ -804,15 +799,14 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 
 	ctx.router.cfg.MissionControl.(*MissionControl).ResetHistory()
 
-	// Next, we'll modify the SendToSwitch method to indicate that luo ji
-	// wasn't originally online. This should also halt the send all
-	// together as all paths contain luoji and he can't be reached.
+	// Next, we'll modify the SendToSwitch method to indicate that the
+	// connection between songoku and isn't up.
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
-			if firstHop == roasbeefLuoji {
+			if firstHop == roasbeefSongoku {
 				return [32]byte{}, &htlcswitch.ForwardingError{
-					FailureSourceIdx: 0,
+					FailureSourceIdx: 1,
 					FailureMessage:   &lnwire.FailUnknownNextPeer{},
 				}
 			}
@@ -821,14 +815,14 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 		})
 
 	// This shouldn't return an error, as we'll make a payment attempt via
-	// the satoshi channel based on the assumption that there might be an
-	// intermittent issue with the roasbeef <-> lioji channel.
+	// the pham nuwen channel based on the assumption that there might be an
+	// intermittent issue with the songoku <-> sophon channel.
 	paymentPreImage, rt, err := ctx.router.SendPayment(&payment)
 	if err != nil {
 		t.Fatalf("unable send payment: %v", err)
 	}
 
-	// This path should go: roasbeef -> satoshi -> luoji
+	// This path should go: roasbeef -> pham nuwen -> sophon
 	if len(rt.Hops) != 2 {
 		t.Fatalf("incorrect route length: expected %v got %v", 2,
 			len(rt.Hops))
@@ -837,9 +831,9 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 		t.Fatalf("incorrect preimage used: expected %x got %x",
 			preImage[:], paymentPreImage[:])
 	}
-	if rt.Hops[0].PubKeyBytes != ctx.aliases["satoshi"] {
+	if rt.Hops[0].PubKeyBytes != ctx.aliases["phamnuwen"] {
 
-		t.Fatalf("route should go through satoshi as first hop, "+
+		t.Fatalf("route should go through phamnuwen as first hop, "+
 			"instead passes through: %v",
 			getAliasFromPubKey(rt.Hops[0].PubKeyBytes,
 				ctx.aliases))
@@ -853,12 +847,12 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	ctx.router.cfg.Payer.(*mockPaymentAttemptDispatcher).setPaymentResult(
 		func(firstHop lnwire.ShortChannelID) ([32]byte, error) {
 
-			if firstHop == roasbeefLuoji {
+			if firstHop == roasbeefSongoku {
 				// We'll first simulate an error from the first
 				// outgoing link to simulate the channel from luo ji to
 				// roasbeef not having enough capacity.
 				return [32]byte{}, &htlcswitch.ForwardingError{
-					FailureSourceIdx: 0,
+					FailureSourceIdx: 1,
 					FailureMessage:   &lnwire.FailTemporaryChannelFailure{},
 				}
 			}
@@ -886,9 +880,9 @@ func TestSendPaymentErrorPathPruning(t *testing.T) {
 	}
 
 	// The route should have satoshi as the first hop.
-	if rt.Hops[0].PubKeyBytes != ctx.aliases["satoshi"] {
+	if rt.Hops[0].PubKeyBytes != ctx.aliases["phamnuwen"] {
 
-		t.Fatalf("route should go through satoshi as first hop, "+
+		t.Fatalf("route should go through phamnuwen as first hop, "+
 			"instead passes through: %v",
 			getAliasFromPubKey(rt.Hops[0].PubKeyBytes,
 				ctx.aliases))
@@ -951,6 +945,9 @@ func TestAddProof(t *testing.T) {
 	}
 
 	info, _, _, err := ctx.router.GetChannelByID(*chanID)
+	if err != nil {
+		t.Fatalf("unable to get channel: %v", err)
+	}
 	if info.AuthProof == nil {
 		t.Fatal("proof have been updated")
 	}
@@ -1078,8 +1075,9 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	t.Parallel()
 
 	const startingBlockHeight = 101
-	ctx, cleanUp, err := createTestCtxFromFile(startingBlockHeight,
-		basicGraphFilePath)
+	ctx, cleanUp, err := createTestCtxFromFile(
+		startingBlockHeight, basicGraphFilePath,
+	)
 	if err != nil {
 		t.Fatalf("unable to create router: %v", err)
 	}
@@ -1112,7 +1110,8 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	fundingTx, _, chanID, err := createChannelEdge(ctx,
 		bitcoinKey1.SerializeCompressed(),
 		bitcoinKey2.SerializeCompressed(),
-		10000, 500)
+		10000, 500,
+	)
 	if err != nil {
 		t.Fatalf("unable to create channel edge: %v", err)
 	}
@@ -1270,7 +1269,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	copy(targetPubKeyBytes[:], targetNode.SerializeCompressed())
 	_, err = ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
-		targetPubKeyBytes, paymentAmt, noRestrictions,
+		targetPubKeyBytes, paymentAmt, noRestrictions, nil,
 		zpay32.DefaultFinalCLTVDelta,
 	)
 	if err != nil {
@@ -1313,7 +1312,7 @@ func TestAddEdgeUnknownVertexes(t *testing.T) {
 	// updated.
 	_, err = ctx.router.FindRoute(
 		ctx.router.selfNode.PubKeyBytes,
-		targetPubKeyBytes, paymentAmt, noRestrictions,
+		targetPubKeyBytes, paymentAmt, noRestrictions, nil,
 		zpay32.DefaultFinalCLTVDelta,
 	)
 	if err != nil {
@@ -2636,12 +2635,14 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 	hop2 := testGraph.aliasMap["c"]
 	hops := []*route.Hop{
 		{
-			ChannelID:   1,
-			PubKeyBytes: hop1,
+			ChannelID:     1,
+			PubKeyBytes:   hop1,
+			LegacyPayload: true,
 		},
 		{
-			ChannelID:   2,
-			PubKeyBytes: hop2,
+			ChannelID:     2,
+			PubKeyBytes:   hop2,
+			LegacyPayload: true,
 		},
 	}
 
@@ -2978,13 +2979,14 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 
 		// On startup, the router should fetch all pending payments
 		// from the ControlTower, so assert that here.
-		didFetch := make(chan struct{})
+		errCh := make(chan error)
 		go func() {
+			close(errCh)
 			select {
 			case <-control.fetchInFlight:
-				close(didFetch)
+				return
 			case <-time.After(1 * time.Second):
-				t.Fatalf("router did not fetch in flight " +
+				errCh <- errors.New("router did not fetch in flight " +
 					"payments")
 			}
 		}()
@@ -2994,7 +2996,10 @@ func TestRouterPaymentStateMachine(t *testing.T) {
 		}
 
 		select {
-		case <-didFetch:
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("error in anonymous goroutine: %s", err)
+			}
 		case <-time.After(1 * time.Second):
 			t.Fatalf("did not fetch in flight payments at startup")
 		}
@@ -3274,14 +3279,16 @@ func TestSendToRouteStructuredError(t *testing.T) {
 	hop2 := ctx.aliases["c"]
 	hops := []*route.Hop{
 		{
-			ChannelID:    1,
-			PubKeyBytes:  hop1,
-			AmtToForward: payAmt,
+			ChannelID:     1,
+			PubKeyBytes:   hop1,
+			AmtToForward:  payAmt,
+			LegacyPayload: true,
 		},
 		{
-			ChannelID:    2,
-			PubKeyBytes:  hop2,
-			AmtToForward: payAmt,
+			ChannelID:     2,
+			PubKeyBytes:   hop2,
+			AmtToForward:  payAmt,
+			LegacyPayload: true,
 		},
 	}
 
@@ -3329,5 +3336,150 @@ func TestSendToRouteStructuredError(t *testing.T) {
 		}
 	case <-time.After(100 * time.Millisecond):
 		t.Fatalf("initPayment not called")
+	}
+}
+
+// TestBuildRoute tests whether correct routes are built.
+func TestBuildRoute(t *testing.T) {
+	// Setup a three node network.
+	chanCapSat := btcutil.Amount(100000)
+	testChannels := []*testChannel{
+		// Create two local channels from a. The bandwidth is estimated
+		// in this test as the channel capacity. For building routes, we
+		// expected the channel with the largest estimated bandwidth to
+		// be selected.
+		symmetricTestChannel("a", "b", chanCapSat, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 20000,
+			MinHTLC: lnwire.NewMSatFromSatoshis(5),
+			MaxHTLC: lnwire.NewMSatFromSatoshis(chanCapSat),
+		}, 1),
+		symmetricTestChannel("a", "b", chanCapSat/2, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 20000,
+			MinHTLC: lnwire.NewMSatFromSatoshis(5),
+			MaxHTLC: lnwire.NewMSatFromSatoshis(chanCapSat / 2),
+		}, 6),
+
+		// Create two channels from b to c. For building routes, we
+		// expect the lowest cost channel to be selected. Note that this
+		// isn't a situation that we are expecting in reality. Routing
+		// nodes are recommended to keep their channel policies towards
+		// the same peer identical.
+		symmetricTestChannel("b", "c", chanCapSat, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 50000,
+			MinHTLC: lnwire.NewMSatFromSatoshis(20),
+			MaxHTLC: lnwire.NewMSatFromSatoshis(120),
+		}, 2),
+		symmetricTestChannel("b", "c", chanCapSat, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 60000,
+			MinHTLC: lnwire.NewMSatFromSatoshis(20),
+			MaxHTLC: lnwire.NewMSatFromSatoshis(120),
+		}, 7),
+
+		symmetricTestChannel("a", "e", chanCapSat, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 80000,
+			MinHTLC: lnwire.NewMSatFromSatoshis(5),
+			MaxHTLC: lnwire.NewMSatFromSatoshis(10),
+		}, 5),
+		symmetricTestChannel("e", "c", chanCapSat, &testChannelPolicy{
+			Expiry:  144,
+			FeeRate: 100000,
+			MinHTLC: lnwire.NewMSatFromSatoshis(20),
+			MaxHTLC: lnwire.NewMSatFromSatoshis(chanCapSat),
+		}, 4),
+	}
+
+	testGraph, err := createTestGraphFromChannels(testChannels, "a")
+	if err != nil {
+		t.Fatalf("unable to create graph: %v", err)
+	}
+	defer testGraph.cleanUp()
+
+	const startingBlockHeight = 101
+
+	ctx, cleanUp, err := createTestCtxFromGraphInstance(
+		startingBlockHeight, testGraph,
+	)
+	if err != nil {
+		t.Fatalf("unable to create router: %v", err)
+	}
+	defer cleanUp()
+
+	checkHops := func(rt *route.Route, expected []uint64) {
+		t.Helper()
+
+		if len(rt.Hops) != len(expected) {
+			t.Fatal("hop count mismatch")
+		}
+		for i, hop := range rt.Hops {
+			if hop.ChannelID != expected[i] {
+				t.Fatalf("expected channel %v at pos %v, but "+
+					"got channel %v",
+					expected[i], i, hop.ChannelID)
+			}
+		}
+	}
+
+	// Create hop list from the route node pubkeys.
+	hops := []route.Vertex{
+		ctx.aliases["b"], ctx.aliases["c"],
+	}
+	amt := lnwire.NewMSatFromSatoshis(100)
+
+	// Build the route for the given amount.
+	rt, err := ctx.router.BuildRoute(
+		&amt, hops, nil, 40,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check that we get the expected route back. The total amount should be
+	// the amount to deliver to hop c (100 sats) plus the max fee for the
+	// connection b->c (6 sats).
+	checkHops(rt, []uint64{1, 7})
+	if rt.TotalAmount != 106000 {
+		t.Fatalf("unexpected total amount %v", rt.TotalAmount)
+	}
+
+	// Build the route for the minimum amount.
+	rt, err = ctx.router.BuildRoute(
+		nil, hops, nil, 40,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Check that we get the expected route back. The minimum that we can
+	// send from b to c is 20 sats. Hop b charges 1200 msat for the
+	// forwarding. The channel between hop a and b can carry amounts in the
+	// range [5, 100], so 21200 msats is the minimum amount for this route.
+	checkHops(rt, []uint64{1, 7})
+	if rt.TotalAmount != 21200 {
+		t.Fatalf("unexpected total amount %v", rt.TotalAmount)
+	}
+
+	// Test a route that contains incompatible channel htlc constraints.
+	// There is no amount that can pass through both channel 5 and 4.
+	hops = []route.Vertex{
+		ctx.aliases["e"], ctx.aliases["c"],
+	}
+	_, err = ctx.router.BuildRoute(
+		nil, hops, nil, 40,
+	)
+	errNoChannel, ok := err.(ErrNoChannel)
+	if !ok {
+		t.Fatalf("expected incompatible policies error, but got %v",
+			err)
+	}
+	if errNoChannel.position != 0 {
+		t.Fatalf("unexpected no channel error position")
+	}
+	if errNoChannel.fromNode != ctx.aliases["a"] {
+		t.Fatalf("unexpected no channel error node")
 	}
 }

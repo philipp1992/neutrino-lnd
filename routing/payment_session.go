@@ -1,7 +1,7 @@
 package routing
 
 import (
-	"fmt"
+	"errors"
 
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -11,6 +11,12 @@ import (
 // BlockPadding is used to increment the finalCltvDelta value for the last hop
 // to prevent an HTLC being failed if some blocks are mined while it's in-flight.
 const BlockPadding uint16 = 3
+
+var (
+	// errPrebuiltRouteTried is returned when the single pre-built route
+	// failed and there is nothing more we can do.
+	errPrebuiltRouteTried = errors.New("pre-built route already tried")
+)
 
 // PaymentSession is used during SendPayment attempts to provide routes to
 // attempt. It also defines methods to give the PaymentSession additional
@@ -33,7 +39,7 @@ type PaymentSession interface {
 type paymentSession struct {
 	additionalEdges map[route.Vertex][]*channeldb.ChannelEdgePolicy
 
-	bandwidthHints map[uint64]lnwire.MilliSatoshi
+	getBandwidthHints func() (map[uint64]lnwire.MilliSatoshi, error)
 
 	sessionSource *SessionSource
 
@@ -66,22 +72,17 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	// If the pre-built route has been tried already, the payment session is
 	// over.
 	case p.preBuiltRoute != nil:
-		return nil, fmt.Errorf("pre-built route already tried")
+		return nil, errPrebuiltRouteTried
 	}
 
 	// Add BlockPadding to the finalCltvDelta so that the receiving node
 	// does not reject the HTLC if some blocks are mined while it's in-flight.
 	finalCltvDelta += BlockPadding
 
-	// If a route cltv limit was specified, we need to subtract the final
-	// delta before passing it into path finding. The optimal path is
-	// independent of the final cltv delta and the path finding algorithm is
-	// unaware of this value.
-	var cltvLimit *uint32
-	if payment.CltvLimit != nil {
-		limit := *payment.CltvLimit - uint32(finalCltvDelta)
-		cltvLimit = &limit
-	}
+	// We need to subtract the final delta before passing it into path
+	// finding. The optimal path is independent of the final cltv delta and
+	// the path finding algorithm is unaware of this value.
+	cltvLimit := payment.CltvLimit - uint32(finalCltvDelta)
 
 	// TODO(roasbeef): sync logic amongst dist sys
 
@@ -94,14 +95,27 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 		ProbabilitySource: ss.MissionControl.GetProbability,
 		FeeLimit:          payment.FeeLimit,
 		OutgoingChannelID: payment.OutgoingChannelID,
+		LastHop:           payment.LastHop,
 		CltvLimit:         cltvLimit,
+		DestCustomRecords: payment.DestCustomRecords,
+	}
+
+	// We'll also obtain a set of bandwidthHints from the lower layer for
+	// each of our outbound channels. This will allow the path finding to
+	// skip any links that aren't active or just don't have enough bandwidth
+	// to carry the payment. New bandwidth hints are queried for every new
+	// path finding attempt, because concurrent payments may change
+	// balances.
+	bandwidthHints, err := p.getBandwidthHints()
+	if err != nil {
+		return nil, err
 	}
 
 	path, err := p.pathFinder(
 		&graphParams{
 			graph:           ss.Graph,
 			additionalEdges: p.additionalEdges,
-			bandwidthHints:  p.bandwidthHints,
+			bandwidthHints:  bandwidthHints,
 		},
 		restrictions, &ss.PathFindingConfig,
 		ss.SelfNode.PubKeyBytes, payment.Target,
@@ -116,6 +130,7 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	sourceVertex := route.Vertex(ss.SelfNode.PubKeyBytes)
 	route, err := newRoute(
 		payment.Amount, sourceVertex, path, height, finalCltvDelta,
+		payment.DestCustomRecords,
 	)
 	if err != nil {
 		// TODO(roasbeef): return which edge/vertex didn't work
@@ -124,10 +139,4 @@ func (p *paymentSession) RequestRoute(payment *LightningPayment,
 	}
 
 	return route, err
-}
-
-// nodeChannel is a combination of the node pubkey and one of its channels.
-type nodeChannel struct {
-	node    route.Vertex
-	channel uint64
 }

@@ -184,24 +184,24 @@ type resolverType uint8
 const (
 	// resolverTimeout is the type of a resolver that's tasked with
 	// resolving an outgoing HTLC that is very close to timing out.
-	resolverTimeout = 0
+	resolverTimeout resolverType = 0
 
 	// resolverSuccess is the type of a resolver that's tasked with
 	// resolving an incoming HTLC that we already know the preimage of.
-	resolverSuccess = 1
+	resolverSuccess resolverType = 1
 
 	// resolverOutgoingContest is the type of a resolver that's tasked with
 	// resolving an outgoing HTLC that hasn't yet timed out.
-	resolverOutgoingContest = 2
+	resolverOutgoingContest resolverType = 2
 
 	// resolverIncomingContest is the type of a resolver that's tasked with
 	// resolving an incoming HTLC that we don't yet know the preimage to.
-	resolverIncomingContest = 3
+	resolverIncomingContest resolverType = 3
 
 	// resolverUnilateralSweep is the type of resolver that's tasked with
 	// sweeping out direct commitment output form the remote party's
 	// commitment transaction.
-	resolverUnilateralSweep = 4
+	resolverUnilateralSweep resolverType = 4
 )
 
 // resolverIDLen is the size of the resolver ID key. This is 36 bytes as we get
@@ -366,7 +366,7 @@ func (b *boltArbitratorLog) writeResolver(contractBucket *bbolt.Bucket,
 	// this byte, we can later properly deserialize the resolver properly.
 	var (
 		buf   bytes.Buffer
-		rType uint8
+		rType resolverType
 	)
 	switch res.(type) {
 	case *htlcTimeoutResolver:
@@ -440,7 +440,7 @@ func (b *boltArbitratorLog) CommitState(s ArbitratorState) error {
 //
 // NOTE: Part of the ContractResolver interface.
 func (b *boltArbitratorLog) FetchUnresolvedContracts() ([]ContractResolver, error) {
-	resKit := ResolverKit{
+	resolverCfg := ResolverConfig{
 		ChannelArbitratorConfig: b.cfg,
 		Checkpoint:              b.checkpointContract,
 	}
@@ -461,7 +461,7 @@ func (b *boltArbitratorLog) FetchUnresolvedContracts() ([]ContractResolver, erro
 			// We'll snip off the first byte of the raw resolver
 			// bytes in order to extract what type of resolver
 			// we're about to encode.
-			resType := resBytes[0]
+			resType := resolverType(resBytes[0])
 
 			// Then we'll create a reader using the remaining
 			// bytes.
@@ -469,56 +469,38 @@ func (b *boltArbitratorLog) FetchUnresolvedContracts() ([]ContractResolver, erro
 
 			switch resType {
 			case resolverTimeout:
-				timeoutRes := &htlcTimeoutResolver{}
-				if err := timeoutRes.Decode(resReader); err != nil {
-					return err
-				}
-				timeoutRes.AttachResolverKit(resKit)
-
-				res = timeoutRes
+				res, err = newTimeoutResolverFromReader(
+					resReader, resolverCfg,
+				)
 
 			case resolverSuccess:
-				successRes := &htlcSuccessResolver{}
-				if err := successRes.Decode(resReader); err != nil {
-					return err
-				}
-
-				res = successRes
+				res, err = newSuccessResolverFromReader(
+					resReader, resolverCfg,
+				)
 
 			case resolverOutgoingContest:
-				outContestRes := &htlcOutgoingContestResolver{
-					htlcTimeoutResolver: htlcTimeoutResolver{},
-				}
-				if err := outContestRes.Decode(resReader); err != nil {
-					return err
-				}
-
-				res = outContestRes
+				res, err = newOutgoingContestResolverFromReader(
+					resReader, resolverCfg,
+				)
 
 			case resolverIncomingContest:
-				inContestRes := &htlcIncomingContestResolver{
-					htlcSuccessResolver: htlcSuccessResolver{},
-				}
-				if err := inContestRes.Decode(resReader); err != nil {
-					return err
-				}
-
-				res = inContestRes
+				res, err = newIncomingContestResolverFromReader(
+					resReader, resolverCfg,
+				)
 
 			case resolverUnilateralSweep:
-				sweepRes := &commitSweepResolver{}
-				if err := sweepRes.Decode(resReader); err != nil {
-					return err
-				}
-
-				res = sweepRes
+				res, err = newCommitSweepResolverFromReader(
+					resReader, resolverCfg,
+				)
 
 			default:
 				return fmt.Errorf("unknown resolver type: %v", resType)
 			}
 
-			resKit.Quit = make(chan struct{})
-			res.AttachResolverKit(resKit)
+			if err != nil {
+				return err
+			}
+
 			contracts = append(contracts, res)
 			return nil
 		})
@@ -961,7 +943,7 @@ func decodeIncomingResolution(r io.Reader, h *lnwallet.IncomingHtlcResolution) e
 
 func encodeOutgoingResolution(w io.Writer, o *lnwallet.OutgoingHtlcResolution) error {
 	if err := binary.Write(w, endian, o.Expiry); err != nil {
-		return nil
+		return err
 	}
 
 	if o.SignedTimeoutTx == nil {
@@ -979,7 +961,7 @@ func encodeOutgoingResolution(w io.Writer, o *lnwallet.OutgoingHtlcResolution) e
 	}
 
 	if err := binary.Write(w, endian, o.CsvDelay); err != nil {
-		return nil
+		return err
 	}
 	if _, err := w.Write(o.ClaimOutpoint.Hash[:]); err != nil {
 		return err

@@ -18,6 +18,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/watchtowerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/wtclientrpc"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/routing"
@@ -92,7 +93,8 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 	sweeper *sweep.UtxoSweeper,
 	tower *watchtower.Standalone,
 	towerClient wtclient.Client,
-	tcpResolver lncfg.TCPResolver) error {
+	tcpResolver lncfg.TCPResolver,
+	genInvoiceFeatures func() *lnwire.FeatureVector) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
 	// that allows us to programmatically inspect its fields.
@@ -130,6 +132,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 			subCfgValue.FieldByName("Signer").Set(
 				reflect.ValueOf(cc.signer),
 			)
+			subCfgValue.FieldByName("KeyRing").Set(
+				reflect.ValueOf(cc.keyRing),
+			)
 
 		case *walletrpc.Config:
 			subCfgValue := extractReflectValue(subCfg)
@@ -151,6 +156,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 			)
 			subCfgValue.FieldByName("Sweeper").Set(
 				reflect.ValueOf(sweeper),
+			)
+			subCfgValue.FieldByName("Chain").Set(
+				reflect.ValueOf(cc.chainIO),
 			)
 
 		case *autopilotrpc.Config:
@@ -206,6 +214,9 @@ func (s *subRPCServerConfigs) PopulateDependencies(cc *chainControl,
 			)
 			subCfgValue.FieldByName("ChanDB").Set(
 				reflect.ValueOf(chanDB),
+			)
+			subCfgValue.FieldByName("GenInvoiceFeatures").Set(
+				reflect.ValueOf(genInvoiceFeatures),
 			)
 
 		case *routerrpc.Config:

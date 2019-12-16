@@ -1,25 +1,26 @@
 package tlv
 
 import (
+	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"math"
 )
 
+// MaxRecordSize is the maximum size of a particular record that will be parsed
+// by a stream decoder. This value is currently chosen to the be equal to the
+// maximum message size permitted by BOLT 1, as no record should be bigger than
+// an entire message.
+const MaxRecordSize = 65535 // 65KB
+
 // ErrStreamNotCanonical signals that a decoded stream does not contain records
 // sorting by monotonically-increasing type.
 var ErrStreamNotCanonical = errors.New("tlv stream is not canonical")
 
-// ErrUnknownRequiredType is an error returned when decoding an unknown and even
-// type from a Stream.
-type ErrUnknownRequiredType Type
-
-// Error returns a human-readable description of unknown required type.
-func (t ErrUnknownRequiredType) Error() string {
-	return fmt.Sprintf("unknown required type: %d", t)
-}
+// ErrRecordTooLarge signals that a decoded record has a length that is too
+// long to parse.
+var ErrRecordTooLarge = errors.New("record is too large")
 
 // Stream defines a TLV stream that can be used for encoding or decoding a set
 // of TLV Records.
@@ -134,6 +135,21 @@ func (s *Stream) Encode(w io.Writer) error {
 // the last record was read cleanly and we should stop parsing. All other io.EOF
 // or io.ErrUnexpectedEOF errors are returned.
 func (s *Stream) Decode(r io.Reader) error {
+	_, err := s.decode(r, nil)
+	return err
+}
+
+// DecodeWithParsedTypes is identical to Decode, but if successful, returns a
+// TypeMap containing the types of all records that were decoded or ignored from
+// the stream.
+func (s *Stream) DecodeWithParsedTypes(r io.Reader) (TypeMap, error) {
+	return s.decode(r, make(TypeMap))
+}
+
+// decode is a helper function that performs the basis of stream decoding. If
+// the caller needs the set of parsed types, it must provide an initialized
+// parsedTypes, otherwise the returned TypeMap will be nil.
+func (s *Stream) decode(r io.Reader, parsedTypes TypeMap) (TypeMap, error) {
 	var (
 		typ       Type
 		min       Type
@@ -151,11 +167,11 @@ func (s *Stream) Decode(r io.Reader) error {
 		// We'll silence an EOF when zero bytes remain, meaning the
 		// stream was cleanly encoded.
 		case err == io.EOF:
-			return nil
+			return parsedTypes, nil
 
 		// Other unexpected errors.
 		case err != nil:
-			return err
+			return nil, err
 		}
 
 		typ = Type(t)
@@ -166,7 +182,7 @@ func (s *Stream) Decode(r io.Reader) error {
 		// encodings that have duplicate records or from accepting an
 		// unsorted series.
 		if overflow || typ < min {
-			return ErrStreamNotCanonical
+			return nil, ErrStreamNotCanonical
 		}
 
 		// Read the varint length.
@@ -176,11 +192,19 @@ func (s *Stream) Decode(r io.Reader) error {
 		// We'll convert any EOFs to ErrUnexpectedEOF, since this
 		// results in an invalid record.
 		case err == io.EOF:
-			return io.ErrUnexpectedEOF
+			return nil, io.ErrUnexpectedEOF
 
 		// Other unexpected errors.
 		case err != nil:
-			return err
+			return nil, err
+		}
+
+		// Place a soft limit on the size of a sane record, which
+		// prevents malicious encoders from causing us to allocate an
+		// unbounded amount of memory when decoding variable-sized
+		// fields.
+		if length > MaxRecordSize {
+			return nil, ErrRecordTooLarge
 		}
 
 		// Search the records known to the stream for this type. We'll
@@ -200,32 +224,46 @@ func (s *Stream) Decode(r io.Reader) error {
 			// We'll convert any EOFs to ErrUnexpectedEOF, since this
 			// results in an invalid record.
 			case err == io.EOF:
-				return io.ErrUnexpectedEOF
+				return nil, io.ErrUnexpectedEOF
 
 			// Other unexpected errors.
 			case err != nil:
-				return err
+				return nil, err
 			}
 
-		// This record type is unknown to the stream, fail if the type
-		// is even meaning that we are required to understand it.
-		case typ%2 == 0:
-			return ErrUnknownRequiredType(typ)
+			// Record the successfully decoded type if the caller
+			// provided an initialized TypeMap.
+			if parsedTypes != nil {
+				parsedTypes[typ] = nil
+			}
 
 		// Otherwise, the record type is unknown and is odd, discard the
 		// number of bytes specified by length.
 		default:
-			_, err := io.CopyN(ioutil.Discard, r, int64(length))
+			// If the caller provided an initialized TypeMap, record
+			// the encoded bytes.
+			var b *bytes.Buffer
+			writer := ioutil.Discard
+			if parsedTypes != nil {
+				b = bytes.NewBuffer(make([]byte, 0, length))
+				writer = b
+			}
+
+			_, err := io.CopyN(writer, r, int64(length))
 			switch {
 
 			// We'll convert any EOFs to ErrUnexpectedEOF, since this
 			// results in an invalid record.
 			case err == io.EOF:
-				return io.ErrUnexpectedEOF
+				return nil, io.ErrUnexpectedEOF
 
 			// Other unexpected errors.
 			case err != nil:
-				return err
+				return nil, err
+			}
+
+			if parsedTypes != nil {
+				parsedTypes[typ] = b.Bytes()
 			}
 		}
 

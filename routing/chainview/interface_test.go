@@ -788,6 +788,36 @@ var interfaceImpls = []struct {
 				100*time.Millisecond,
 			)
 			if err != nil {
+				return cleanUp2, nil, fmt.Errorf("unable to "+
+					"establish connection to bitcoind: %v",
+					err)
+			}
+			if err := chainConn.Start(); err != nil {
+				return cleanUp2, nil, fmt.Errorf("unable to "+
+					"establish connection to bitcoind: %v",
+					err)
+			}
+			cleanUp3 := func() {
+				chainConn.Stop()
+				cleanUp2()
+			}
+
+			chainView := NewBitcoindFilteredChainView(chainConn)
+
+			return cleanUp3, chainView, nil
+		},
+	},
+	{
+		name: "p2p_neutrino",
+		chainViewInit: func(_ rpcclient.ConnConfig, p2pAddr string) (func(), FilteredChainView, error) {
+			spvDir, err := ioutil.TempDir("", "neutrino")
+			if err != nil {
+				return nil, nil, err
+			}
+
+			dbName := filepath.Join(spvDir, "neutrino.db")
+			spvDatabase, err := walletdb.Create("bdb", dbName, true)
+			if err != nil {
 				return nil, nil, err
 			}
 

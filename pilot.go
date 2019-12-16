@@ -8,7 +8,6 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
@@ -32,7 +31,7 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 	for _, a := range autopilot.AvailableHeuristics {
 		heuristicsStr += fmt.Sprintf(" '%v' ", a.Name())
 	}
-	availStr := fmt.Sprintf("Avaiblable heuristcs are: [%v]", heuristicsStr)
+	availStr := fmt.Sprintf("Available heuristics are: [%v]", heuristicsStr)
 
 	// We'll go through the config and make sure all the heuristics exists,
 	// and that the sum of their weights is 1.0.
@@ -71,10 +70,11 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 // chanController is an implementation of the autopilot.ChannelController
 // interface that's backed by a running lnd instance.
 type chanController struct {
-	server     *server
-	private    bool
-	minConfs   int32
-	confTarget uint32
+	server        *server
+	private       bool
+	minConfs      int32
+	confTarget    uint32
+	chanMinHtlcIn lnwire.MilliSatoshi
 }
 
 // OpenChannel opens a channel to a target peer, with a capacity of the
@@ -92,9 +92,6 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 		return err
 	}
 
-	// TODO(halseth): make configurable?
-	minHtlc := lnwire.NewMSatFromSatoshis(1)
-
 	// Construct the open channel request and send it to the server to begin
 	// the funding workflow.
 	req := &openChanReq{
@@ -103,7 +100,7 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 		subtractFees:    true,
 		localFundingAmt: amt,
 		pushAmt:         0,
-		minHtlc:         minHtlc,
+		minHtlcIn:       c.chanMinHtlcIn,
 		fundingFeePerKw: feePerKw,
 		private:         c.private,
 		remoteCsvDelay:  0,
@@ -137,12 +134,17 @@ func (c *chanController) SpliceOut(chanPoint *wire.OutPoint,
 // autopilot.ChannelController interface.
 var _ autopilot.ChannelController = (*chanController)(nil)
 
-// initAutoPilot initializes a new autopilot.ManagerCfg to manage an
-// autopilot.Agent instance based on the passed configuration struct. The agent
-// and all interfaces needed to drive it won't be launched before the Manager's
+// initAutoPilot initializes a new autopilot.ManagerCfg to manage an autopilot.
+// Agent instance based on the passed configuration structs. The agent and all
+// interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
-func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.ManagerCfg, error) {
-	atplLog.Infof("Instantiating autopilot with cfg: %v", spew.Sdump(cfg))
+func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
+	*autopilot.ManagerCfg, error) {
+
+	atplLog.Infof("Instantiating autopilot with max_channels=%d, allocation=%f, "+
+		"min_chan_size=%d, max_chan_size=%d, private=%t, min_confs=%d, "+
+		"conf_target=%d", cfg.MaxChannels, cfg.Allocation, cfg.MinChannelSize,
+		cfg.MaxChannelSize, cfg.Private, cfg.MinConfs, cfg.ConfTarget)
 
 	// Set up the constraints the autopilot heuristics must adhere to.
 	atplConstraints := autopilot.NewConstraints(
@@ -171,10 +173,11 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig) (*autopilot.ManagerCfg, er
 		Self:      self,
 		Heuristic: weightedAttachment,
 		ChanController: &chanController{
-			server:     svr,
-			private:    cfg.Private,
-			minConfs:   cfg.MinConfs,
-			confTarget: cfg.ConfTarget,
+			server:        svr,
+			private:       cfg.Private,
+			minConfs:      cfg.MinConfs,
+			confTarget:    cfg.ConfTarget,
+			chanMinHtlcIn: chainCfg.MinHTLCIn,
 		},
 		WalletBalance: func() (btcutil.Amount, error) {
 			return svr.cc.wallet.ConfirmedBalance(cfg.MinConfs)

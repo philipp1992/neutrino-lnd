@@ -1,6 +1,7 @@
 package lnd
 
 import (
+	"encoding/hex"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -16,8 +17,12 @@ import (
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+)
+
+var (
+	coinPkScript, _ = hex.DecodeString("001431df1bde03c074d0cf21ea2529427e1499b8f1de")
 )
 
 // The block height returned by the mock BlockChainIO's GetBestBlock.
@@ -237,7 +242,6 @@ func (m *mockChainIO) FreeCache() error {
 // interaction with the bitcoin network.
 type mockWalletController struct {
 	rootKey               *btcec.PrivateKey
-	prevAddres            btcutil.Address
 	publishedTransactions chan *wire.MsgTx
 	index                 uint32
 	utxos                 []*lnwallet.Utxo
@@ -251,12 +255,15 @@ func (*mockWalletController) BackEnd() string {
 // FetchInputInfo will be called to get info about the inputs to the funding
 // transaction.
 func (*mockWalletController) FetchInputInfo(
-	prevOut *wire.OutPoint) (*wire.TxOut, error) {
-	txOut := &wire.TxOut{
-		Value:    int64(10 * btcutil.SatoshiPerBitcoin),
-		PkScript: []byte("dummy"),
+	prevOut *wire.OutPoint) (*lnwallet.Utxo, error) {
+	utxo := &lnwallet.Utxo{
+		AddressType:   lnwallet.WitnessPubKey,
+		Value:         10 * btcutil.SatoshiPerBitcoin,
+		PkScript:      []byte("dummy"),
+		Confirmations: 1,
+		OutPoint:      *prevOut,
 	}
-	return txOut, nil
+	return utxo, nil
 }
 func (*mockWalletController) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
 	return 0, nil
@@ -279,13 +286,13 @@ func (*mockWalletController) IsOurAddress(a btcutil.Address) bool {
 }
 
 func (*mockWalletController) SendOutputs(outputs []*wire.TxOut,
-	_ lnwallet.SatPerKWeight) (*wire.MsgTx, error) {
+	_ chainfee.SatPerKWeight) (*wire.MsgTx, error) {
 
 	return nil, nil
 }
 
 func (*mockWalletController) CreateSimpleTx(outputs []*wire.TxOut,
-	_ lnwallet.SatPerKWeight, _ bool) (*txauthor.AuthoredTx, error) {
+	_ chainfee.SatPerKWeight, _ bool) (*txauthor.AuthoredTx, error) {
 
 	return nil, nil
 }
@@ -304,7 +311,7 @@ func (m *mockWalletController) ListUnspentWitness(minconfirms,
 	utxo := &lnwallet.Utxo{
 		AddressType: lnwallet.WitnessPubKey,
 		Value:       btcutil.Amount(10 * btcutil.SatoshiPerBitcoin),
-		PkScript:    make([]byte, 22),
+		PkScript:    coinPkScript,
 		OutPoint: wire.OutPoint{
 			Hash:  chainhash.Hash{},
 			Index: m.index,
@@ -360,34 +367,4 @@ func (m *mockSecretKeyRing) DerivePrivKey(keyDesc keychain.KeyDescriptor) (*btce
 func (m *mockSecretKeyRing) ScalarMult(keyDesc keychain.KeyDescriptor,
 	pubKey *btcec.PublicKey) ([]byte, error) {
 	return nil, nil
-}
-
-type mockPreimageCache struct {
-	sync.Mutex
-	preimageMap map[lntypes.Hash]lntypes.Preimage
-}
-
-func newMockPreimageCache() *mockPreimageCache {
-	return &mockPreimageCache{
-		preimageMap: make(map[lntypes.Hash]lntypes.Preimage),
-	}
-}
-
-func (m *mockPreimageCache) LookupPreimage(hash lntypes.Hash) (lntypes.Preimage, bool) {
-	m.Lock()
-	defer m.Unlock()
-
-	p, ok := m.preimageMap[hash]
-	return p, ok
-}
-
-func (m *mockPreimageCache) AddPreimages(preimages ...lntypes.Preimage) error {
-	m.Lock()
-	defer m.Unlock()
-
-	for _, preimage := range preimages {
-		m.preimageMap[preimage.Hash()] = preimage
-	}
-
-	return nil
 }

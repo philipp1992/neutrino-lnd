@@ -187,10 +187,6 @@ type gossipSyncerCfg struct {
 	// in compressed format.
 	peerPub [33]byte
 
-	// syncChanUpdates is a bool that indicates if we should request a
-	// continual channel update stream or not.
-	syncChanUpdates bool
-
 	// channelSeries is the primary interface that we'll use to generate
 	// our queries and respond to the queries of the remote peer.
 	channelSeries ChannelGraphTimeSeries
@@ -828,6 +824,14 @@ func (g *GossipSyncer) replyChanRangeQuery(query *lnwire.QueryChannelRange) erro
 	// TODO(roasbeef): means can't send max uint above?
 	//  * or make internal 64
 
+	// In the base case (no actual response) the first block and the last
+	// block in the query will be the same. In the loop below, we'll update
+	// these two variables incrementally with each chunk to properly
+	// compute the starting block for each response and the number of
+	// blocks in a response.
+	firstBlockHeight := query.FirstBlockHeight
+	lastBlockHeight := query.FirstBlockHeight
+
 	numChannels := int32(len(channelRange))
 	numChansSent := int32(0)
 	for {
@@ -858,13 +862,31 @@ func (g *GossipSyncer) replyChanRangeQuery(query *lnwire.QueryChannelRange) erro
 				"size=%v", g.cfg.peerPub[:], len(channelChunk))
 		}
 
+		// If we have any channels at all to return, then we need to
+		// update our pointers to the first and last blocks for each
+		// response.
+		if len(channelChunk) > 0 {
+			firstBlockHeight = channelChunk[0].BlockHeight
+			lastBlockHeight = channelChunk[len(channelChunk)-1].BlockHeight
+		}
+
+		// The number of blocks contained in this response (the total
+		// span) is the difference between the last channel ID and the
+		// first in the range. We add one as even if all channels
+		// returned are in the same block, we need to count that.
+		numBlocksInResp := lastBlockHeight - firstBlockHeight + 1
+
 		// With our chunk assembled, we'll now send to the remote peer
 		// the current chunk.
 		replyChunk := lnwire.ReplyChannelRange{
-			QueryChannelRange: *query,
-			Complete:          0,
-			EncodingType:      g.cfg.encodingType,
-			ShortChanIDs:      channelChunk,
+			QueryChannelRange: lnwire.QueryChannelRange{
+				ChainHash:        query.ChainHash,
+				NumBlocks:        numBlocksInResp,
+				FirstBlockHeight: firstBlockHeight,
+			},
+			Complete:     0,
+			EncodingType: g.cfg.encodingType,
+			ShortChanIDs: channelChunk,
 		}
 		if isFinalChunk {
 			replyChunk.Complete = 1
@@ -894,8 +916,8 @@ func (g *GossipSyncer) replyShortChanIDs(query *lnwire.QueryShortChanIDs) error 
 	// different chain.
 	if g.cfg.chainHash != query.ChainHash {
 		log.Warnf("Remote peer requested QueryShortChanIDs for "+
-			"chain=%v, we're on chain=%v", g.cfg.chainHash,
-			query.ChainHash)
+			"chain=%v, we're on chain=%v", query.ChainHash,
+			g.cfg.chainHash)
 
 		return g.cfg.sendToPeerSync(&lnwire.ReplyShortChanIDsEnd{
 			ChainHash: query.ChainHash,

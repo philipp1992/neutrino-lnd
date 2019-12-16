@@ -13,23 +13,30 @@ import (
 
 var (
 	mcTestRoute = &route.Route{
-		SourcePubKey: route.Vertex{10},
+		SourcePubKey: mcTestSelf,
 		Hops: []*route.Hop{
 			{
-				ChannelID:    1,
-				PubKeyBytes:  route.Vertex{11},
-				AmtToForward: 1000,
+				ChannelID:     1,
+				PubKeyBytes:   route.Vertex{11},
+				AmtToForward:  1000,
+				LegacyPayload: true,
 			},
 			{
-				ChannelID:   2,
-				PubKeyBytes: route.Vertex{12},
+				ChannelID:     2,
+				PubKeyBytes:   route.Vertex{12},
+				LegacyPayload: true,
 			},
 		},
 	}
 
 	mcTestTime  = time.Date(2018, time.January, 9, 14, 00, 00, 0, time.UTC)
+	mcTestSelf  = route.Vertex{10}
 	mcTestNode1 = mcTestRoute.Hops[0].PubKeyBytes
 	mcTestNode2 = mcTestRoute.Hops[1].PubKeyBytes
+
+	testPenaltyHalfLife       = 30 * time.Minute
+	testAprioriHopProbability = 0.9
+	testAprioriWeight         = 0.5
 )
 
 type mcTestContext struct {
@@ -71,8 +78,10 @@ func (ctx *mcTestContext) restartMc() {
 	mc, err := NewMissionControl(
 		ctx.db,
 		&MissionControlConfig{
-			PenaltyHalfLife:       30 * time.Minute,
-			AprioriHopProbability: 0.8,
+			PenaltyHalfLife:       testPenaltyHalfLife,
+			AprioriHopProbability: testAprioriHopProbability,
+			AprioriWeight:         testAprioriWeight,
+			SelfNode:              mcTestSelf,
 		},
 	)
 	if err != nil {
@@ -91,7 +100,6 @@ func (ctx *mcTestContext) cleanup() {
 
 // Assert that mission control returns a probability for an edge.
 func (ctx *mcTestContext) expectP(amt lnwire.MilliSatoshi, expected float64) {
-
 	ctx.t.Helper()
 
 	p := ctx.mc.GetProbability(mcTestNode1, mcTestNode2, amt)
@@ -101,8 +109,8 @@ func (ctx *mcTestContext) expectP(amt lnwire.MilliSatoshi, expected float64) {
 }
 
 // reportFailure reports a failure by using a test route.
-func (ctx *mcTestContext) reportFailure(t time.Time,
-	amt lnwire.MilliSatoshi, failure lnwire.FailureMessage) {
+func (ctx *mcTestContext) reportFailure(amt lnwire.MilliSatoshi,
+	failure lnwire.FailureMessage) {
 
 	mcTestRoute.Hops[0].AmtToForward = amt
 
@@ -110,6 +118,16 @@ func (ctx *mcTestContext) reportFailure(t time.Time,
 	ctx.mc.ReportPaymentFail(
 		ctx.pid, mcTestRoute, &errorSourceIdx, failure,
 	)
+}
+
+// reportSuccess reports a success by using a test route.
+func (ctx *mcTestContext) reportSuccess() {
+	err := ctx.mc.ReportPaymentSuccess(ctx.pid, mcTestRoute)
+	if err != nil {
+		ctx.t.Fatal(err)
+	}
+
+	ctx.pid++
 }
 
 // TestMissionControl tests mission control probability estimation.
@@ -121,58 +139,59 @@ func TestMissionControl(t *testing.T) {
 
 	testTime := time.Date(2018, time.January, 9, 14, 00, 00, 0, time.UTC)
 
-	// Initial probability is expected to be 1.
-	ctx.expectP(1000, 0.8)
+	// For local channels, we expect a higher probability than our a prior
+	// test probability.
+	selfP := ctx.mc.GetProbability(mcTestSelf, mcTestNode1, 100)
+	if selfP != prevSuccessProbability {
+		t.Fatalf("expected prev success prob for untried local chans")
+	}
+
+	// Initial probability is expected to be the a priori.
+	ctx.expectP(1000, testAprioriHopProbability)
 
 	// Expect probability to be zero after reporting the edge as failed.
-	ctx.reportFailure(
-		testTime, 1000,
-		lnwire.NewTemporaryChannelFailure(nil),
-	)
+	ctx.reportFailure(1000, lnwire.NewTemporaryChannelFailure(nil))
 	ctx.expectP(1000, 0)
 
 	// As we reported with a min penalization amt, a lower amt than reported
-	// should be unaffected.
-	ctx.expectP(500, 0.8)
+	// should return the node probability, which is the a priori
+	// probability.
+	ctx.expectP(500, testAprioriHopProbability)
 
-	// Edge decay started.
+	// Edge decay started. The node probability weighted average should now
+	// have shifted from 1:1 to 1:0.5 -> 60%. The connection probability is
+	// half way through the recovery, so we expect 30% here.
 	ctx.now = testTime.Add(30 * time.Minute)
-	ctx.expectP(1000, 0.4)
+	ctx.expectP(1000, 0.3)
 
 	// Edge fails again, this time without a min penalization amt. The edge
 	// should be penalized regardless of amount.
-	ctx.reportFailure(
-		ctx.now, 0,
-		lnwire.NewTemporaryChannelFailure(nil),
-	)
+	ctx.reportFailure(0, lnwire.NewTemporaryChannelFailure(nil))
 	ctx.expectP(1000, 0)
 	ctx.expectP(500, 0)
 
 	// Edge decay started.
 	ctx.now = testTime.Add(60 * time.Minute)
-	ctx.expectP(1000, 0.4)
+	ctx.expectP(1000, 0.3)
 
 	// Restart mission control to test persistence.
 	ctx.restartMc()
-	ctx.expectP(1000, 0.4)
+	ctx.expectP(1000, 0.3)
 
-	// A node level failure should bring probability of every channel back
-	// to zero.
-	ctx.reportFailure(
-		ctx.now, 0,
-		lnwire.NewExpiryTooSoon(lnwire.ChannelUpdate{}),
-	)
+	// A node level failure should bring probability of all known channels
+	// back to zero.
+	ctx.reportFailure(0, lnwire.NewExpiryTooSoon(lnwire.ChannelUpdate{}))
 	ctx.expectP(1000, 0)
 
 	// Check whether history snapshot looks sane.
 	history := ctx.mc.GetHistorySnapshot()
-	if len(history.Nodes) != 1 {
-		t.Fatal("unexpected number of nodes")
+
+	if len(history.Pairs) != 3 {
+		t.Fatalf("expected 3 pairs, but got %v", len(history.Pairs))
 	}
 
-	if len(history.Pairs) != 1 {
-		t.Fatal("unexpected number of channels")
-	}
+	// Test reporting a success.
+	ctx.reportSuccess()
 }
 
 // TestMissionControlChannelUpdate tests that the first channel update is not
@@ -183,16 +202,14 @@ func TestMissionControlChannelUpdate(t *testing.T) {
 	// Report a policy related failure. Because it is the first, we don't
 	// expect a penalty.
 	ctx.reportFailure(
-		ctx.now, 0,
-		lnwire.NewFeeInsufficient(0, lnwire.ChannelUpdate{}),
+		0, lnwire.NewFeeInsufficient(0, lnwire.ChannelUpdate{}),
 	)
-	ctx.expectP(0, 0.8)
+	ctx.expectP(100, testAprioriHopProbability)
 
 	// Report another failure for the same channel. We expect it to be
 	// pruned.
 	ctx.reportFailure(
-		ctx.now, 0,
-		lnwire.NewFeeInsufficient(0, lnwire.ChannelUpdate{}),
+		0, lnwire.NewFeeInsufficient(0, lnwire.ChannelUpdate{}),
 	)
-	ctx.expectP(0, 0)
+	ctx.expectP(100, 0)
 }

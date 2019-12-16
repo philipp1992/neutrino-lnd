@@ -2,6 +2,7 @@ package lntest
 
 import (
 	"bytes"
+	"context"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg"
@@ -27,46 +29,23 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/watchtowerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/wtclientrpc"
+	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/macaroons"
-	"golang.org/x/net/context"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 	"gopkg.in/macaroon.v2"
 )
 
 const (
-	// defaultNodePort is the initial p2p port which will be used by the
-	// first created lightning node to listen on for incoming p2p
-	// connections.  Subsequent allocated ports for future Lightning nodes
-	// instances will be monotonically increasing numbers calculated as
-	// such: defaultP2pPort + (4 * harness.nodeNum).
+	// defaultNodePort is the start of the range for listening ports of
+	// harness nodes. Ports are monotonically increasing starting from this
+	// number and are determined by the results of nextAvailablePort().
 	defaultNodePort = 19555
 
-	// defaultClientPort is the initial rpc port which will be used by the
-	// first created lightning node to listen on for incoming rpc
-	// connections. Subsequent allocated ports for future rpc harness
-	// instances will be monotonically increasing numbers calculated
-	// as such: defaultP2pPort + (4 * harness.nodeNum).
-	defaultClientPort = defaultNodePort + 1
-
-	// defaultRestPort is the initial rest port which will be used by the
-	// first created lightning node to listen on for incoming rest
-	// connections. Subsequent allocated ports for future rpc harness
-	// instances will be monotonically increasing numbers calculated
-	// as such: defaultP2pPort + (4 * harness.nodeNum).
-	defaultRestPort = defaultNodePort + 2
-
-	// defaultProfilePort is the initial port which will be used for
-	// profiling by the first created lightning node. Subsequent allocated
-	// ports for future rpc harness instances will be monotonically
-	// increasing numbers calculated as such:
-	// defaultProfilePort + (4 * harness.nodeNum).
-	defaultProfilePort = defaultNodePort + 3
-
-	// logPubKeyBytes is the number of bytes of the node's PubKey that
-	// will be appended to the log file name. The whole PubKey is too
-	// long and not really necessary to quickly identify what node
-	// produced which log file.
+	// logPubKeyBytes is the number of bytes of the node's PubKey that will
+	// be appended to the log file name. The whole PubKey is too long and
+	// not really necessary to quickly identify what node produced which
+	// log file.
 	logPubKeyBytes = 4
 
 	// trickleDelay is the amount of time in milliseconds between each
@@ -76,7 +55,12 @@ const (
 
 var (
 	// numActiveNodes is the number of active nodes within the test network.
-	numActiveNodes = 0
+	numActiveNodes    = 0
+	numActiveNodesMtx sync.Mutex
+
+	// lastPort is the last port determined to be free for use by a new
+	// node. It should be used atomically.
+	lastPort uint32 = defaultNodePort
 
 	// logOutput is a flag that can be set to append the output from the
 	// seed nodes to log files.
@@ -89,16 +73,42 @@ var (
 		"write goroutine dump from node n to file pprof-n.log")
 )
 
-// generateListeningPorts returns three ints representing ports to listen on
-// designated for the current lightning network test. If there haven't been any
-// test instances created, the default ports are used. Otherwise, in order to
-// support multiple test nodes running at once, the p2p, rpc, rest and
-// profiling ports are incremented after each initialization.
+// nextAvailablePort returns the first port that is available for listening by
+// a new node. It panics if no port is found and the maximum available TCP port
+// is reached.
+func nextAvailablePort() int {
+	port := atomic.AddUint32(&lastPort, 1)
+	for port < 65535 {
+		// If there are no errors while attempting to listen on this
+		// port, close the socket and return it as available. While it
+		// could be the case that some other process picks up this port
+		// between the time the socket is closed and it's reopened in
+		// the harness node, in practice in CI servers this seems much
+		// less likely than simply some other process already being
+		// bound at the start of the tests.
+		addr := fmt.Sprintf("127.0.0.1:%d", port)
+		l, err := net.Listen("tcp4", addr)
+		if err == nil {
+			err := l.Close()
+			if err == nil {
+				return int(port)
+			}
+		}
+		port = atomic.AddUint32(&lastPort, 1)
+	}
+
+	// No ports available? Must be a mistake.
+	panic("no ports available for listening")
+}
+
+// generateListeningPorts returns four ints representing ports to listen on
+// designated for the current lightning network test. This returns the next
+// available ports for the p2p, rpc, rest and profiling services.
 func generateListeningPorts() (int, int, int, int) {
-	p2p := defaultNodePort + (4 * numActiveNodes)
-	rpc := defaultClientPort + (4 * numActiveNodes)
-	rest := defaultRestPort + (4 * numActiveNodes)
-	profile := defaultProfilePort + (4 * numActiveNodes)
+	p2p := nextAvailablePort()
+	rpc := nextAvailablePort()
+	rest := nextAvailablePort()
+	profile := nextAvailablePort()
 
 	return p2p, rpc, rest, profile
 }
@@ -294,8 +304,10 @@ func newNode(cfg nodeConfig) (*HarnessNode, error) {
 
 	cfg.P2PPort, cfg.RPCPort, cfg.RESTPort, cfg.ProfilePort = generateListeningPorts()
 
+	numActiveNodesMtx.Lock()
 	nodeNum := numActiveNodes
 	numActiveNodes++
+	numActiveNodesMtx.Unlock()
 
 	return &HarnessNode{
 		cfg:               &cfg,
@@ -333,6 +345,22 @@ func (hn *HarnessNode) TLSKeyStr() string {
 // this node.
 func (hn *HarnessNode) ChanBackupPath() string {
 	return hn.cfg.ChanBackupPath()
+}
+
+// AdminMacPath returns the filepath to the admin.macaroon file for this node.
+func (hn *HarnessNode) AdminMacPath() string {
+	return hn.cfg.AdminMacPath
+}
+
+// ReadMacPath returns the filepath to the readonly.macaroon file for this node.
+func (hn *HarnessNode) ReadMacPath() string {
+	return hn.cfg.ReadMacPath
+}
+
+// InvoiceMacPath returns the filepath to the invoice.macaroon file for this
+// node.
+func (hn *HarnessNode) InvoiceMacPath() string {
+	return hn.cfg.InvoiceMacPath
 }
 
 // Start launches a new process running lnd. Additionally, the PID of the
@@ -468,7 +496,7 @@ func (hn *HarnessNode) initClientWhenReady() error {
 		conn    *grpc.ClientConn
 		connErr error
 	)
-	if err := WaitNoError(func() error {
+	if err := wait.NoError(func() error {
 		conn, connErr = hn.ConnectRPC(true)
 		return connErr
 	}, 5*time.Second); err != nil {
@@ -543,7 +571,7 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	// until then, we'll create a dummy subscription to ensure we can do so
 	// successfully before proceeding. We use a dummy subscription in order
 	// to not consume an update from the real one.
-	err = WaitNoError(func() error {
+	err = wait.NoError(func() error {
 		req := &lnrpc.GraphTopologySubscription{}
 		ctx, cancelFunc := context.WithCancel(context.Background())
 		topologyClient, err := hn.SubscribeChannelGraph(ctx, req)
@@ -634,48 +662,26 @@ func (hn *HarnessNode) writePidFile() error {
 	return nil
 }
 
-// ConnectRPC uses the TLS certificate and admin macaroon files written by the
-// lnd node to create a gRPC client connection.
-func (hn *HarnessNode) ConnectRPC(useMacs bool) (*grpc.ClientConn, error) {
-	// Wait until TLS certificate and admin macaroon are created before
-	// using them, up to 20 sec.
-	tlsTimeout := time.After(30 * time.Second)
-	for !fileExists(hn.cfg.TLSCertPath) {
-		select {
-		case <-tlsTimeout:
-			return nil, fmt.Errorf("timeout waiting for TLS cert " +
-				"file to be created after 30 seconds")
-		case <-time.After(100 * time.Millisecond):
-		}
-	}
+// ReadMacaroon waits a given duration for the macaroon file to be created. If
+// the file is readable within the timeout, its content is de-serialized as a
+// macaroon and returned.
+func (hn *HarnessNode) ReadMacaroon(macPath string, timeout time.Duration) (
+	*macaroon.Macaroon, error) {
 
-	opts := []grpc.DialOption{
-		grpc.WithBlock(),
-		grpc.WithTimeout(time.Second * 20),
-	}
-
-	tlsCreds, err := credentials.NewClientTLSFromFile(hn.cfg.TLSCertPath, "")
-	if err != nil {
-		return nil, err
-	}
-
-	opts = append(opts, grpc.WithTransportCredentials(tlsCreds))
-
-	if !useMacs {
-		return grpc.Dial(hn.cfg.RPCAddr(), opts...)
-	}
-
-	macTimeout := time.After(30 * time.Second)
-	for !fileExists(hn.cfg.AdminMacPath) {
+	// Wait until macaroon file is created before using it.
+	macTimeout := time.After(timeout)
+	for !fileExists(macPath) {
 		select {
 		case <-macTimeout:
-			return nil, fmt.Errorf("timeout waiting for admin " +
-				"macaroon file to be created after 30 seconds")
+			return nil, fmt.Errorf("timeout waiting for macaroon "+
+				"file %s to be created after %d seconds",
+				macPath, timeout/time.Second)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
 
-	macBytes, err := ioutil.ReadFile(hn.cfg.AdminMacPath)
+	// Now that we know the file exists, read it and return the macaroon.
+	macBytes, err := ioutil.ReadFile(macPath)
 	if err != nil {
 		return nil, err
 	}
@@ -683,11 +689,61 @@ func (hn *HarnessNode) ConnectRPC(useMacs bool) (*grpc.ClientConn, error) {
 	if err = mac.UnmarshalBinary(macBytes); err != nil {
 		return nil, err
 	}
+	return mac, nil
+}
 
+// ConnectRPCWithMacaroon uses the TLS certificate and given macaroon to
+// create a gRPC client connection.
+func (hn *HarnessNode) ConnectRPCWithMacaroon(mac *macaroon.Macaroon) (
+	*grpc.ClientConn, error) {
+
+	// Wait until TLS certificate is created before using it, up to 30 sec.
+	tlsTimeout := time.After(DefaultTimeout)
+	for !fileExists(hn.cfg.TLSCertPath) {
+		select {
+		case <-tlsTimeout:
+			return nil, fmt.Errorf("timeout waiting for TLS cert " +
+				"file to be created")
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+
+	opts := []grpc.DialOption{grpc.WithBlock()}
+	tlsCreds, err := credentials.NewClientTLSFromFile(
+		hn.cfg.TLSCertPath, "",
+	)
+	if err != nil {
+		return nil, err
+	}
+	opts = append(opts, grpc.WithTransportCredentials(tlsCreds))
+
+	if mac == nil {
+		return grpc.Dial(hn.cfg.RPCAddr(), opts...)
+	}
 	macCred := macaroons.NewMacaroonCredential(mac)
 	opts = append(opts, grpc.WithPerRPCCredentials(macCred))
 
-	return grpc.Dial(hn.cfg.RPCAddr(), opts...)
+	ctx, cancel := context.WithTimeout(context.Background(), DefaultTimeout)
+	defer cancel()
+	return grpc.DialContext(ctx, hn.cfg.RPCAddr(), opts...)
+}
+
+// ConnectRPC uses the TLS certificate and admin macaroon files written by the
+// lnd node to create a gRPC client connection.
+func (hn *HarnessNode) ConnectRPC(useMacs bool) (*grpc.ClientConn, error) {
+	// If we don't want to use macaroons, just pass nil, the next method
+	// will handle it correctly.
+	if !useMacs {
+		return hn.ConnectRPCWithMacaroon(nil)
+	}
+
+	// If we should use a macaroon, always take the admin macaroon as a
+	// default.
+	mac, err := hn.ReadMacaroon(hn.cfg.AdminMacPath, DefaultTimeout)
+	if err != nil {
+		return nil, err
+	}
+	return hn.ConnectRPCWithMacaroon(mac)
 }
 
 // SetExtraArgs assigns the ExtraArgs field for the node's configuration. The
@@ -1064,7 +1120,7 @@ func (hn *HarnessNode) WaitForBalance(expectedBalance btcutil.Amount, confirmed 
 		return btcutil.Amount(balance.UnconfirmedBalance) == expectedBalance
 	}
 
-	err := WaitPredicate(doesBalanceMatch, 30*time.Second)
+	err := wait.Predicate(doesBalanceMatch, 30*time.Second)
 	if err != nil {
 		return fmt.Errorf("balances not synced after deadline: "+
 			"expected %v, only have %v", expectedBalance, lastBalance)

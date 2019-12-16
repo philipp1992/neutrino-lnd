@@ -33,12 +33,28 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/chainview"
 )
 
 const (
-	defaultBitcoinMinHTLCMSat = lnwire.MilliSatoshi(1000)
+	// defaultBitcoinMinHTLCMSat is the default smallest value htlc this
+	// node will accept. This value is proposed in the channel open sequence
+	// and cannot be changed during the life of the channel. It is zero by
+	// default to allow maximum flexibility in deciding what size payments
+	// to forward.
+	//
+	// All forwarded payments are subjected to the min htlc constraint of
+	// the routing policy of the outgoing channel. This implicitly controls
+	// the minimum htlc value on the incoming channel too.
+	defaultBitcoinMinHTLCInMSat = lnwire.MilliSatoshi(1)
+
+	// defaultBitcoinMinHTLCOutMSat is the default minimum htlc value that
+	// we require for sending out htlcs. Our channel peer may have a lower
+	// min htlc channel parameter, but we - by default - don't forward
+	// anything under the value defined here.
+	defaultBitcoinMinHTLCOutMSat = lnwire.MilliSatoshi(1000)
 
 	// DefaultBitcoinBaseFeeMSat is the default forwarding base fee.
 	DefaultBitcoinBaseFeeMSat = lnwire.MilliSatoshi(1000)
@@ -50,19 +66,20 @@ const (
 	// delta.
 	DefaultBitcoinTimeLockDelta = 40
 
-	defaultLitecoinMinHTLCMSat   = lnwire.MilliSatoshi(1000)
-	defaultLitecoinBaseFeeMSat   = lnwire.MilliSatoshi(1000)
-	defaultLitecoinFeeRate       = lnwire.MilliSatoshi(1)
-	defaultLitecoinTimeLockDelta = 576
-	defaultLitecoinDustLimit     = btcutil.Amount(54600)
+	defaultLitecoinMinHTLCInMSat  = lnwire.MilliSatoshi(1)
+	defaultLitecoinMinHTLCOutMSat = lnwire.MilliSatoshi(1000)
+	defaultLitecoinBaseFeeMSat    = lnwire.MilliSatoshi(1000)
+	defaultLitecoinFeeRate        = lnwire.MilliSatoshi(1)
+	defaultLitecoinTimeLockDelta  = 576
+	defaultLitecoinDustLimit      = btcutil.Amount(54600)
 
 	// defaultBitcoinStaticFeePerKW is the fee rate of 50 sat/vbyte
 	// expressed in sat/kw.
-	defaultBitcoinStaticFeePerKW = lnwallet.SatPerKWeight(12500)
+	defaultBitcoinStaticFeePerKW = chainfee.SatPerKWeight(12500)
 
 	// defaultLitecoinStaticFeePerKW is the fee rate of 200 sat/vbyte
 	// expressed in sat/kw.
-	defaultLitecoinStaticFeePerKW = lnwallet.SatPerKWeight(50000)
+	defaultLitecoinStaticFeePerKW = chainfee.SatPerKWeight(50000)
 
 	// btcToLtcConversionRate is a fixed ratio used in order to scale up
 	// payments when running on the Litecoin chain.
@@ -121,7 +138,7 @@ func (c chainCode) String() string {
 type chainControl struct {
 	chainIO lnwallet.BlockChainIO
 
-	feeEstimator lnwallet.FeeEstimator
+	feeEstimator chainfee.Estimator
 
 	signer input.Signer
 
@@ -138,6 +155,8 @@ type chainControl struct {
 	wallet *lnwallet.LightningWallet
 
 	routingPolicy htlcswitch.ForwardingPolicy
+
+	minHtlcIn lnwire.MilliSatoshi
 }
 
 // newChainControlFromConfig attempts to create a chainControl instance
@@ -168,22 +187,24 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	switch registeredChains.PrimaryChain() {
 	case bitcoinChain:
 		cc.routingPolicy = htlcswitch.ForwardingPolicy{
-			MinHTLC:       cfg.Bitcoin.MinHTLC,
+			MinHTLCOut:    cfg.Bitcoin.MinHTLCOut,
 			BaseFee:       cfg.Bitcoin.BaseFee,
 			FeeRate:       cfg.Bitcoin.FeeRate,
 			TimeLockDelta: cfg.Bitcoin.TimeLockDelta,
 		}
-		cc.feeEstimator = lnwallet.NewStaticFeeEstimator(
+		cc.minHtlcIn = cfg.Bitcoin.MinHTLCIn
+		cc.feeEstimator = chainfee.NewStaticEstimator(
 			defaultBitcoinStaticFeePerKW, 0,
 		)
 	case litecoinChain:
 		cc.routingPolicy = htlcswitch.ForwardingPolicy{
-			MinHTLC:       cfg.Litecoin.MinHTLC,
+			MinHTLCOut:    cfg.Litecoin.MinHTLCOut,
 			BaseFee:       cfg.Litecoin.BaseFee,
 			FeeRate:       cfg.Litecoin.FeeRate,
 			TimeLockDelta: cfg.Litecoin.TimeLockDelta,
 		}
-		cc.feeEstimator = lnwallet.NewStaticFeeEstimator(
+		cc.minHtlcIn = cfg.Litecoin.MinHTLCIn
+		cc.feeEstimator = chainfee.NewStaticEstimator(
 			defaultLitecoinStaticFeePerKW, 0,
 		)
 	case xsncoinChain:
@@ -241,8 +262,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		if cfg.NeutrinoMode.FeeURL != "" {
 			ltndLog.Infof("Using API fee estimator!")
 
-			estimator := lnwallet.NewWebAPIFeeEstimator(
-				lnwallet.SparseConfFeeSource{
+			estimator := chainfee.NewWebAPIEstimator(
+				chainfee.SparseConfFeeSource{
 					URL: cfg.NeutrinoMode.FeeURL,
 				},
 				defaultBitcoinStaticFeePerKW,
@@ -431,8 +452,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// if we're using bitcoind as a backend, then we can
 			// use live fee estimates, rather than a statically
 			// coded value.
-			fallBackFeeRate := lnwallet.SatPerKVByte(25 * 1000)
-			cc.feeEstimator, err = lnwallet.NewBitcoindFeeEstimator(
+			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
+			cc.feeEstimator, err = chainfee.NewBitcoindEstimator(
 				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
@@ -448,8 +469,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// if we're using litecoind as a backend, then we can
 			// use live fee estimates, rather than a statically
 			// coded value.
-			fallBackFeeRate := lnwallet.SatPerKVByte(25 * 1000)
-			cc.feeEstimator, err = lnwallet.NewBitcoindFeeEstimator(
+			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
+			cc.feeEstimator, err = chainfee.NewBitcoindEstimator(
 				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
@@ -570,8 +591,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// if we're using btcd as a backend, then we can use
 			// live fee estimates, rather than a statically coded
 			// value.
-			fallBackFeeRate := lnwallet.SatPerKVByte(25 * 1000)
-			cc.feeEstimator, err = lnwallet.NewBtcdFeeEstimator(
+			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
+			cc.feeEstimator, err = chainfee.NewBtcdEstimator(
 				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
@@ -836,7 +857,7 @@ func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error
 	}
 
 	dbName := filepath.Join(dbPath, "neutrino.db")
-	db, err := walletdb.Create("bdb", dbName)
+	db, err := walletdb.Create("bdb", dbName, !cfg.SyncFreelist)
 	if err != nil {
 		return nil, nil, fmt.Errorf("unable to create neutrino "+
 			"database: %v", err)

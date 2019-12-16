@@ -21,11 +21,16 @@ import (
 type SingleBackupVersion byte
 
 const (
-	// DefaultSingleVersion is the defautl version of the single channel
-	// backup. The seralized version of this static channel backup is
+	// DefaultSingleVersion is the default version of the single channel
+	// backup. The serialized version of this static channel backup is
 	// simply: version || SCB. Where SCB is the known format of the
 	// version.
 	DefaultSingleVersion = 0
+
+	// TweaklessCommitVersion is the second SCB version. This version
+	// implicitly denotes that this channel uses the new tweakless commit
+	// format.
+	TweaklessCommitVersion = 1
 )
 
 // Single is a static description of an existing channel that can be used for
@@ -61,6 +66,9 @@ type Single struct {
 	// ShortChannelID encodes the exact location in the chain in which the
 	// channel was initially confirmed. This includes: the block height,
 	// transaction index, and the output within the target transaction.
+	// Channels that were not confirmed at the time of backup creation will
+	// have the funding TX broadcast height set as their block height in
+	// the ShortChannelID.
 	ShortChannelID lnwire.ShortChannelID
 
 	// RemoteNodePub is the identity public key of the remote node this
@@ -121,12 +129,21 @@ func NewSingle(channel *channeldb.OpenChannel,
 	// key.
 	_, shaChainPoint := btcec.PrivKeyFromBytes(btcec.S256(), b.Bytes())
 
-	return Single{
-		Version:         DefaultSingleVersion,
+	// If a channel is unconfirmed, the block height of the ShortChannelID
+	// is zero. This will lead to problems when trying to restore that
+	// channel as the spend notifier would get a height hint of zero.
+	// To work around that problem, we add the channel broadcast height
+	// to the channel ID so we can use that as height hint on restore.
+	chanID := channel.ShortChanID()
+	if chanID.BlockHeight == 0 {
+		chanID.BlockHeight = channel.FundingBroadcastHeight
+	}
+
+	single := Single{
 		IsInitiator:     channel.IsInitiator,
 		ChainHash:       channel.ChainHash,
 		FundingOutpoint: channel.FundingOutpoint,
-		ShortChannelID:  channel.ShortChannelID,
+		ShortChannelID:  chanID,
 		RemoteNodePub:   channel.IdentityPub,
 		Addresses:       nodeAddrs,
 		Capacity:        channel.Capacity,
@@ -139,6 +156,14 @@ func NewSingle(channel *channeldb.OpenChannel,
 			},
 		},
 	}
+
+	if channel.ChanType.IsTweakless() {
+		single.Version = TweaklessCommitVersion
+	} else {
+		single.Version = DefaultSingleVersion
+	}
+
+	return single
 }
 
 // Serialize attempts to write out the serialized version of the target
@@ -148,6 +173,7 @@ func (s *Single) Serialize(w io.Writer) error {
 	// we're aware of.
 	switch s.Version {
 	case DefaultSingleVersion:
+	case TweaklessCommitVersion:
 	default:
 		return fmt.Errorf("unable to serialize w/ unknown "+
 			"version: %v", s.Version)
@@ -276,12 +302,12 @@ func readRemoteKeyDesc(r io.Reader) (keychain.KeyDescriptor, error) {
 
 	_, err := io.ReadFull(r, pub[:])
 	if err != nil {
-		return keyDesc, nil
+		return keychain.KeyDescriptor{}, err
 	}
 
 	keyDesc.PubKey, err = btcec.ParsePubKey(pub[:], btcec.S256())
 	if err != nil {
-		return keyDesc, nil
+		return keychain.KeyDescriptor{}, err
 	}
 
 	keyDesc.PubKey.Curve = nil
@@ -305,6 +331,7 @@ func (s *Single) Deserialize(r io.Reader) error {
 
 	switch s.Version {
 	case DefaultSingleVersion:
+	case TweaklessCommitVersion:
 	default:
 		return fmt.Errorf("unable to de-serialize w/ unknown "+
 			"version: %v", s.Version)

@@ -15,6 +15,7 @@ import (
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
 var (
@@ -99,7 +100,7 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 
 	backend := newMockBackend(notifier)
 
-	estimator := newMockFeeEstimator(10000, lnwallet.FeePerKwFloor)
+	estimator := newMockFeeEstimator(10000, chainfee.FeePerKwFloor)
 
 	publishChan := make(chan wire.MsgTx, 2)
 	ctx := &sweeperTestContext{
@@ -130,9 +131,8 @@ func createSweeperTestContext(t *testing.T) *sweeperTestContext {
 			ctx.timeoutChan <- c
 			return c
 		},
-		Store:   store,
-		Signer:  &mockSigner{},
-		ChainIO: &mockChainIO{},
+		Store:  store,
+		Signer: &mockSigner{},
 		GenSweepScript: func() ([]byte, error) {
 			script := []byte{outputScriptCount}
 			outputScriptCount++
@@ -286,25 +286,6 @@ func (ctx *sweeperTestContext) assertPendingInputs(inputs ...input.Input) {
 	}
 }
 
-// receiveSpendTx receives the transaction sent through the given resultChan.
-func receiveSpendTx(t *testing.T, resultChan chan Result) *wire.MsgTx {
-	t.Helper()
-
-	var result Result
-	select {
-	case result = <-resultChan:
-	case <-time.After(5 * time.Second):
-		t.Fatal("no sweep result received")
-	}
-
-	if result.Err != nil {
-		t.Fatalf("expected successful spend, but received error "+
-			"\"%v\" instead", result.Err)
-	}
-
-	return result.Tx
-}
-
 // assertTxSweepsInputs ensures that the transaction returned within the value
 // received from resultChan spends the given inputs.
 func assertTxSweepsInputs(t *testing.T, sweepTx *wire.MsgTx,
@@ -334,7 +315,7 @@ func assertTxSweepsInputs(t *testing.T, sweepTx *wire.MsgTx,
 // NOTE: This assumes that transactions only have one output, as this is the
 // only type of transaction the UtxoSweeper can create at the moment.
 func assertTxFeeRate(t *testing.T, tx *wire.MsgTx,
-	expectedFeeRate lnwallet.SatPerKWeight, inputs ...input.Input) {
+	expectedFeeRate chainfee.SatPerKWeight, inputs ...input.Input) {
 
 	t.Helper()
 
@@ -359,7 +340,7 @@ func assertTxFeeRate(t *testing.T, tx *wire.MsgTx,
 	outputAmt := tx.TxOut[0].Value
 
 	fee := btcutil.Amount(inputAmt - outputAmt)
-	_, txWeight, _, _ := getWeightEstimate(inputs)
+	_, txWeight := getWeightEstimate(inputs)
 
 	expectedFee := expectedFeeRate.FeeForWeight(txWeight)
 	if fee != expectedFee {
@@ -1014,11 +995,11 @@ func TestDifferentFeePreferences(t *testing.T) {
 	// this to ensure the sweeper can broadcast distinct transactions for
 	// each sweep with a different fee preference.
 	lowFeePref := FeePreference{ConfTarget: 12}
-	lowFeeRate := lnwallet.SatPerKWeight(5000)
+	lowFeeRate := chainfee.SatPerKWeight(5000)
 	ctx.estimator.blocksToFee[lowFeePref.ConfTarget] = lowFeeRate
 
 	highFeePref := FeePreference{ConfTarget: 6}
-	highFeeRate := lnwallet.SatPerKWeight(10000)
+	highFeeRate := chainfee.SatPerKWeight(10000)
 	ctx.estimator.blocksToFee[highFeePref.ConfTarget] = highFeeRate
 
 	input1 := spendableInputs[0]
@@ -1136,7 +1117,7 @@ func TestBumpFeeRBF(t *testing.T) {
 	ctx := createSweeperTestContext(t)
 
 	lowFeePref := FeePreference{ConfTarget: 144}
-	lowFeeRate := lnwallet.FeePerKwFloor
+	lowFeeRate := chainfee.FeePerKwFloor
 	ctx.estimator.blocksToFee[lowFeePref.ConfTarget] = lowFeeRate
 
 	// We'll first try to bump the fee of an output currently unknown to the

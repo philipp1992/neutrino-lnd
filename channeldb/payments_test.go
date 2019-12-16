@@ -11,19 +11,35 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/lnwire"
+	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/tlv"
 )
 
 var (
 	priv, _ = btcec.NewPrivateKey(btcec.S256())
 	pub     = priv.PubKey()
 
-	testHop = &route.Hop{
+	tlvBytes   = []byte{1, 2, 3}
+	tlvEncoder = tlv.StubEncoder(tlvBytes)
+	testHop1   = &route.Hop{
 		PubKeyBytes:      route.NewVertex(pub),
 		ChannelID:        12345,
 		OutgoingTimeLock: 111,
 		AmtToForward:     555,
+		CustomRecords: record.CustomSet{
+			65536: []byte{},
+			80001: []byte{},
+		},
+		MPP: record.NewMPP(32, [32]byte{0x42}),
+	}
+
+	testHop2 = &route.Hop{
+		PubKeyBytes:      route.NewVertex(pub),
+		ChannelID:        12345,
+		OutgoingTimeLock: 111,
+		AmtToForward:     555,
+		LegacyPayload:    true,
 	}
 
 	testRoute = route.Route{
@@ -31,39 +47,11 @@ var (
 		TotalAmount:   1234567,
 		SourcePubKey:  route.NewVertex(pub),
 		Hops: []*route.Hop{
-			testHop,
-			testHop,
+			testHop2,
+			testHop1,
 		},
 	}
 )
-
-func makeFakePayment() *outgoingPayment {
-	fakeInvoice := &Invoice{
-		// Use single second precision to avoid false positive test
-		// failures due to the monotonic time component.
-		CreationDate:   time.Unix(time.Now().Unix(), 0),
-		Memo:           []byte("fake memo"),
-		Receipt:        []byte("fake receipt"),
-		PaymentRequest: []byte(""),
-	}
-
-	copy(fakeInvoice.Terms.PaymentPreimage[:], rev[:])
-	fakeInvoice.Terms.Value = lnwire.NewMSatFromSatoshis(10000)
-
-	fakePath := make([][33]byte, 3)
-	for i := 0; i < 3; i++ {
-		copy(fakePath[i][:], bytes.Repeat([]byte{byte(i)}, 33))
-	}
-
-	fakePayment := &outgoingPayment{
-		Invoice:        *fakeInvoice,
-		Fee:            101,
-		Path:           fakePath,
-		TimeLockLength: 1000,
-	}
-	copy(fakePayment.PaymentPreimage[:], rev[:])
-	return fakePayment
-}
 
 func makeFakeInfo() (*PaymentCreationInfo, *PaymentAttemptInfo) {
 	var preimg lntypes.Preimage
@@ -86,14 +74,6 @@ func makeFakeInfo() (*PaymentCreationInfo, *PaymentAttemptInfo) {
 	return c, a
 }
 
-func makeFakePaymentHash() [32]byte {
-	var paymentHash [32]byte
-	rBytes, _ := randomBytes(0, 32)
-	copy(paymentHash[:], rBytes)
-
-	return paymentHash
-}
-
 // randomBytes creates random []byte with length in range [minLen, maxLen)
 func randomBytes(minLen, maxLen int) ([]byte, error) {
 	randBuf := make([]byte, minLen+rand.Intn(maxLen-minLen))
@@ -104,58 +84,6 @@ func randomBytes(minLen, maxLen int) ([]byte, error) {
 	}
 
 	return randBuf, nil
-}
-
-func makeRandomFakePayment() (*outgoingPayment, error) {
-	var err error
-	fakeInvoice := &Invoice{
-		// Use single second precision to avoid false positive test
-		// failures due to the monotonic time component.
-		CreationDate: time.Unix(time.Now().Unix(), 0),
-	}
-
-	fakeInvoice.Memo, err = randomBytes(1, 50)
-	if err != nil {
-		return nil, err
-	}
-
-	fakeInvoice.Receipt, err = randomBytes(1, 50)
-	if err != nil {
-		return nil, err
-	}
-
-	fakeInvoice.PaymentRequest, err = randomBytes(1, 50)
-	if err != nil {
-		return nil, err
-	}
-
-	preImg, err := randomBytes(32, 33)
-	if err != nil {
-		return nil, err
-	}
-	copy(fakeInvoice.Terms.PaymentPreimage[:], preImg)
-
-	fakeInvoice.Terms.Value = lnwire.MilliSatoshi(rand.Intn(10000))
-
-	fakePathLen := 1 + rand.Intn(5)
-	fakePath := make([][33]byte, fakePathLen)
-	for i := 0; i < fakePathLen; i++ {
-		b, err := randomBytes(33, 34)
-		if err != nil {
-			return nil, err
-		}
-		copy(fakePath[i][:], b)
-	}
-
-	fakePayment := &outgoingPayment{
-		Invoice:        *fakeInvoice,
-		Fee:            lnwire.MilliSatoshi(rand.Intn(1001)),
-		Path:           fakePath,
-		TimeLockLength: uint32(rand.Intn(10000)),
-	}
-	copy(fakePayment.PaymentPreimage[:], fakeInvoice.Terms.PaymentPreimage[:])
-
-	return fakePayment, nil
 }
 
 func TestSentPaymentSerialization(t *testing.T) {
@@ -190,13 +118,37 @@ func TestSentPaymentSerialization(t *testing.T) {
 		t.Fatalf("unable to deserialize info: %v", err)
 	}
 
+	// First we verify all the records match up porperly, as they aren't
+	// able to be properly compared using reflect.DeepEqual.
+	err = assertRouteEqual(&s.Route, &newAttemptInfo.Route)
+	if err != nil {
+		t.Fatalf("Routes do not match after "+
+			"serialization/deserialization: %v", err)
+	}
+
+	// Clear routes to allow DeepEqual to compare the remaining fields.
+	newAttemptInfo.Route = route.Route{}
+	s.Route = route.Route{}
+
 	if !reflect.DeepEqual(s, newAttemptInfo) {
+		s.SessionKey.Curve = nil
+		newAttemptInfo.SessionKey.Curve = nil
 		t.Fatalf("Payments do not match after "+
 			"serialization/deserialization %v vs %v",
 			spew.Sdump(s), spew.Sdump(newAttemptInfo),
 		)
 	}
+}
 
+// assertRouteEquals compares to routes for equality and returns an error if
+// they are not equal.
+func assertRouteEqual(a, b *route.Route) error {
+	if !reflect.DeepEqual(a, b) {
+		return fmt.Errorf("PaymentAttemptInfos don't match: %v vs %v",
+			spew.Sdump(a), spew.Sdump(b))
+	}
+
+	return nil
 }
 
 func TestRouteSerialization(t *testing.T) {
@@ -213,9 +165,11 @@ func TestRouteSerialization(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if !reflect.DeepEqual(testRoute, route2) {
+	// First we verify all the records match up porperly, as they aren't
+	// able to be properly compared using reflect.DeepEqual.
+	err = assertRouteEqual(&testRoute, &route2)
+	if err != nil {
 		t.Fatalf("routes not equal: \n%v vs \n%v",
 			spew.Sdump(testRoute), spew.Sdump(route2))
 	}
-
 }

@@ -14,7 +14,6 @@ import (
 	"github.com/coreos/bbolt"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/lntypes"
-	"github.com/lightningnetwork/lnd/routing/route"
 )
 
 func initDB() (*DB, error) {
@@ -132,13 +131,22 @@ func TestPaymentControlSwitchFail(t *testing.T) {
 	)
 
 	// Verifies that status was changed to StatusSucceeded.
-	var route *route.Route
-	route, err = pControl.Success(info.PaymentHash, preimg)
+	var payment *MPPayment
+	payment, err = pControl.Success(info.PaymentHash, preimg)
 	if err != nil {
 		t.Fatalf("error shouldn't have been received, got: %v", err)
 	}
-	if !reflect.DeepEqual(*route, attempt.Route) {
-		t.Fatalf("unexpected route returned")
+
+	if len(payment.HTLCs) != 1 {
+		t.Fatalf("payment should have one htlc, got: %d",
+			len(payment.HTLCs))
+	}
+
+	err = assertRouteEqual(&payment.HTLCs[0].Route, &attempt.Route)
+	if err != nil {
+		t.Fatalf("unexpected route returned: %v vs %v: %v",
+			spew.Sdump(attempt.Route),
+			spew.Sdump(payment.HTLCs[0].Route), err)
 	}
 
 	assertPaymentStatus(t, db, info.PaymentHash, StatusSucceeded)
@@ -427,7 +435,6 @@ func checkPaymentCreationInfo(bucket *bbolt.Bucket, c *PaymentCreationInfo) erro
 	r := bytes.NewReader(b)
 	c2, err := deserializePaymentCreationInfo(r)
 	if err != nil {
-		fmt.Println("creation info err: ", err)
 		return err
 	}
 	if !reflect.DeepEqual(c, c2) {
@@ -454,12 +461,8 @@ func checkPaymentAttemptInfo(bucket *bbolt.Bucket, a *PaymentAttemptInfo) error 
 	if err != nil {
 		return err
 	}
-	if !reflect.DeepEqual(a, a2) {
-		return fmt.Errorf("PaymentAttemptInfos don't match: %v vs %v",
-			spew.Sdump(a), spew.Sdump(a2))
-	}
 
-	return nil
+	return assertRouteEqual(&a.Route, &a2.Route)
 }
 
 func checkSettleInfo(bucket *bbolt.Bucket, preimg lntypes.Preimage) error {

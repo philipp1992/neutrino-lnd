@@ -7,6 +7,7 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
+	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/zpay32"
 )
 
@@ -36,13 +37,6 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		settleDate = invoice.SettleDate.Unix()
 	}
 
-	// Expiry time will default to 3600 seconds if not specified
-	// explicitly.
-	expiry := int64(decoded.Expiry().Seconds())
-
-	// The expiry will default to 9 blocks if not specified explicitly.
-	cltvExpiry := decoded.MinFinalCLTVExpiry()
-
 	// Convert between the `lnrpc` and `routing` types.
 	routeHints := CreateRPCRouteHints(decoded.RouteHints)
 
@@ -50,10 +44,10 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 	satAmt := invoice.Terms.Value.ToSatoshis()
 	satAmtPaid := invoice.AmtPaid.ToSatoshis()
 
-	isSettled := invoice.Terms.State == channeldb.ContractSettled
+	isSettled := invoice.State == channeldb.ContractSettled
 
 	var state lnrpc.Invoice_InvoiceState
-	switch invoice.Terms.State {
+	switch invoice.State {
 	case channeldb.ContractOpen:
 		state = lnrpc.Invoice_OPEN
 	case channeldb.ContractSettled:
@@ -64,21 +58,55 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		state = lnrpc.Invoice_ACCEPTED
 	default:
 		return nil, fmt.Errorf("unknown invoice state %v",
-			invoice.Terms.State)
+			invoice.State)
+	}
+
+	rpcHtlcs := make([]*lnrpc.InvoiceHTLC, 0, len(invoice.Htlcs))
+	for key, htlc := range invoice.Htlcs {
+		var state lnrpc.InvoiceHTLCState
+		switch htlc.State {
+		case channeldb.HtlcStateAccepted:
+			state = lnrpc.InvoiceHTLCState_ACCEPTED
+		case channeldb.HtlcStateSettled:
+			state = lnrpc.InvoiceHTLCState_SETTLED
+		case channeldb.HtlcStateCanceled:
+			state = lnrpc.InvoiceHTLCState_CANCELED
+		default:
+			return nil, fmt.Errorf("unknown state %v", htlc.State)
+		}
+
+		rpcHtlc := lnrpc.InvoiceHTLC{
+			ChanId:          key.ChanID.ToUint64(),
+			HtlcIndex:       key.HtlcID,
+			AcceptHeight:    int32(htlc.AcceptHeight),
+			AcceptTime:      htlc.AcceptTime.Unix(),
+			ExpiryHeight:    int32(htlc.Expiry),
+			AmtMsat:         uint64(htlc.Amt),
+			State:           state,
+			CustomRecords:   htlc.CustomRecords,
+			MppTotalAmtMsat: uint64(htlc.MppTotalAmt),
+		}
+
+		// Only report resolved times if htlc is resolved.
+		if htlc.State != channeldb.HtlcStateAccepted {
+			rpcHtlc.ResolveTime = htlc.ResolveTime.Unix()
+		}
+
+		rpcHtlcs = append(rpcHtlcs, &rpcHtlc)
 	}
 
 	rpcInvoice := &lnrpc.Invoice{
 		Memo:            string(invoice.Memo[:]),
-		Receipt:         invoice.Receipt[:],
 		RHash:           decoded.PaymentHash[:],
 		Value:           int64(satAmt),
+		ValueMsat:       int64(invoice.Terms.Value),
 		CreationDate:    invoice.CreationDate.Unix(),
 		SettleDate:      settleDate,
 		Settled:         isSettled,
 		PaymentRequest:  paymentRequest,
 		DescriptionHash: descHash,
-		Expiry:          expiry,
-		CltvExpiry:      cltvExpiry,
+		Expiry:          int64(invoice.Terms.Expiry.Seconds()),
+		CltvExpiry:      uint64(invoice.Terms.FinalCltvDelta),
 		FallbackAddr:    fallbackAddr,
 		RouteHints:      routeHints,
 		AddIndex:        invoice.AddIndex,
@@ -88,6 +116,8 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		AmtPaidMsat:     int64(invoice.AmtPaid),
 		AmtPaid:         int64(invoice.AmtPaid),
 		State:           state,
+		Htlcs:           rpcHtlcs,
+		Features:        CreateRPCFeatures(invoice.Terms.Features),
 	}
 
 	if preimage != channeldb.UnknownPreimage {
@@ -95,6 +125,25 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 	}
 
 	return rpcInvoice, nil
+}
+
+// CreateRPCFeatures maps a feature vector into a list of lnrpc.Features.
+func CreateRPCFeatures(fv *lnwire.FeatureVector) map[uint32]*lnrpc.Feature {
+	if fv == nil {
+		return nil
+	}
+
+	features := fv.Features()
+	rpcFeatures := make(map[uint32]*lnrpc.Feature, len(features))
+	for bit := range features {
+		rpcFeatures[uint32(bit)] = &lnrpc.Feature{
+			Name:       fv.Name(bit),
+			IsRequired: bit.IsRequired(),
+			IsKnown:    fv.IsKnown(bit),
+		}
+	}
+
+	return rpcFeatures
 }
 
 // CreateRPCRouteHints takes in the decoded form of an invoice's route hints
