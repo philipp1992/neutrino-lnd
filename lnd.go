@@ -546,8 +546,7 @@ func Main() error {
 	defer server.Stop()
 
 	// Dual Channels Funding Manager
-	//if cfg.DualFunding.Active {
-
+	if cfg.DualFunding.Active {
 		dfConfig, err := initDualFunding(server, graphDir)
 		if err != nil {
 			err := fmt.Errorf("Unable to initialize dual channel manager: %v", err)
@@ -567,7 +566,7 @@ func Main() error {
 			return err
 		}
 		defer dualChanManager.Stop()
-	//}
+	}
 
 	// Now that the server has started, if the autopilot mode is currently
 	// active, then we'll start the autopilot agent immediately. It will be
