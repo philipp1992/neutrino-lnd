@@ -426,7 +426,7 @@ func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.Clo
 	// mark it as opened channel
 	nodeID, ok = func() (NodeID, bool) {
 		for nodeID, dcn := range dc.chanState {
-			if dcn.theirOutpoint == summary.ChanPoint {
+			if dcn.theirOutpoint == summary.ChanPoint || dcn.ourOutpoint == summary.ChanPoint {
 				dualChannel = dcn
 				return nodeID, true
 			}
@@ -439,6 +439,17 @@ func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.Clo
 	dc.chanStateMtx.Unlock()
 
 	if !ok {
+		return
+	}
+
+	// check in case we have this channel in open channels,
+	// and peer has closed our dual channel
+	if dualChannel.ourOutpoint == summary.ChanPoint {
+		// means that peer closed our dual channel, remove from db
+		if err := dc.deleteDualChannelInfo(nodeID); err != nil {
+			log.Errorf("Failed to remove info from db for dual channel with node %v %v", nodeID, err)
+		}
+		
 		return
 	}
 
