@@ -208,15 +208,15 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			defaultLitecoinStaticFeePerKW, 0,
 		)
 	case xsncoinChain:
-               cc.routingPolicy = htlcswitch.ForwardingPolicy{
-                       MinHTLC:       cfg.Xsncoin.MinHTLC,
-                       BaseFee:       cfg.Xsncoin.BaseFee,
-                       FeeRate:       cfg.Xsncoin.FeeRate,
-                       TimeLockDelta: cfg.Xsncoin.TimeLockDelta,
-                       }
-               cc.feeEstimator = lnwallet.NewStaticFeeEstimator(
-                       defaultBitcoinStaticFeePerKW, 0,
-               )
+		cc.routingPolicy = htlcswitch.ForwardingPolicy{
+			MinHTLCOut:    cfg.Xsncoin.MinHTLCOut,
+			BaseFee:       cfg.Xsncoin.BaseFee,
+			FeeRate:       cfg.Xsncoin.FeeRate,
+			TimeLockDelta: cfg.Xsncoin.TimeLockDelta,
+		}
+		cc.feeEstimator = chainfee.NewStaticEstimator(
+			defaultBitcoinStaticFeePerKW, 0,
+		)
 	default:
 		return nil, fmt.Errorf("Default routing policy for chain %v is "+
 			"unknown", registeredChains.PrimaryChain())
@@ -486,8 +486,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// if we're using xsnd as a backend, then we can
 			// use live fee estimates, rather than a statically
 			// coded value.
-			fallBackFeeRate := lnwallet.SatPerKVByte(25 * 1000)
-			cc.feeEstimator, err = lnwallet.NewBitcoindFeeEstimator(
+			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
+			cc.feeEstimator, err = chainfee.NewBitcoindEstimator(
 				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {

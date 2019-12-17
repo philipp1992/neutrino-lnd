@@ -413,7 +413,8 @@ func loadConfig() (*config, error) {
 			RPCHost: defaultRPCHost,
 		},
 		Xsncoin: &chainConfig {
-			MinHTLC:       defaultBitcoinMinHTLCMSat,
+			MinHTLCIn:     defaultBitcoinMinHTLCInMSat,
+			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
 			BaseFee:       DefaultBitcoinBaseFeeMSat,
 			FeeRate:       DefaultBitcoinFeeRate,
 			TimeLockDelta: DefaultBitcoinTimeLockDelta,
