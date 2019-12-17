@@ -2,12 +2,7 @@ package lnd
 
 import (
 	"context"
-	"fmt"
 	"github.com/lightningnetwork/lnd/dualfunding"
-	"io"
-	"os"
-	"path/filepath"
-
 	"github.com/btcsuite/btcd/connmgr"
 	"github.com/btcsuite/btclog"
 	"github.com/lightninglabs/neutrino"
@@ -53,18 +48,12 @@ import (
 // log file.  This must be performed early during application startup by
 // calling logWriter.InitLogRotator.
 var (
-	logWriter = &build.LogWriter{}
+	logWriter = build.NewRotatingLogWriter()
 
-	// backendLog is the logging backend used to create all subsystem
-	// loggers.  The backend must not be used before the log rotator has
-	// been initialized, or data races and/or nil pointer dereferences will
-	// occur.
-	backendLog = btclog.NewBackend(logWriter)
-
-	// logRotator is one of the logging outputs.  It should be closed on
-	// application shutdown.
-	logRotator *rotator.Rotator
-
+	// Loggers that need to be accessible from the lnd package can be placed
+	// here. Loggers that are only used in sub modules can be added directly
+	// by using the addSubLogger method.
+	ltndLog = build.NewSubLogger("LTND", logWriter.GenSubLogger)
 	peerLog = build.NewSubLogger("PEER", logWriter.GenSubLogger)
 	rpcsLog = build.NewSubLogger("RPCS", logWriter.GenSubLogger)
 	srvrLog = build.NewSubLogger("SRVR", logWriter.GenSubLogger)
@@ -72,7 +61,7 @@ var (
 	utxnLog = build.NewSubLogger("UTXN", logWriter.GenSubLogger)
 	brarLog = build.NewSubLogger("BRAR", logWriter.GenSubLogger)
 	atplLog = build.NewSubLogger("ATPL", logWriter.GenSubLogger)
-        dchnLog = build.NewSubLogger("DCHN", logWriter.GenSubLogger)
+	dchnLog = build.NewSubLogger("DCHN", logWriter.GenSubLogger)
 )
 
 // Initialize package-global logger variables.
