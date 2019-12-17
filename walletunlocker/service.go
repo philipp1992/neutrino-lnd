@@ -11,7 +11,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
-	"golang.org/x/net/context"
 	"os"
 	"time"
 

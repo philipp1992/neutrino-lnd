@@ -37,7 +37,6 @@ func (c *chanManager) OpenChannel(target *btcec.PublicKey,
 		return nil, err
 	}
 
-	// TODO(halseth): make configurable?
 	minHtlc := lnwire.NewMSatFromSatoshis(1)
 
 	// Construct the open channel request and send it to the server to begin
@@ -48,7 +47,7 @@ func (c *chanManager) OpenChannel(target *btcec.PublicKey,
 		subtractFees:    false,
 		localFundingAmt: amt,
 		pushAmt:         0,
-		minHtlc:         minHtlc,
+		minHtlcIn:       minHtlc,
 		fundingFeePerKw: feePerKw,
 		private:         false,
 		remoteCsvDelay:  0,
@@ -101,8 +100,7 @@ func (c *chanManager) CloseChannel(chanPoint *wire.OutPoint) error {
 	// the htlc switch which will handle the negotiation and
 	// broadcast details.
 	updateChan, errChan = c.server.htlcSwitch.CloseLink(
-		chanPoint, htlcswitch.CloseRegular, feeRate,
-	)
+		chanPoint, htlcswitch.CloseRegular, feeRate, nil)
 
 out:
 	for {

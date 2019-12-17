@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"sync"
 )
 
@@ -37,7 +38,7 @@ type txSubscriptionClient struct {
 }
 
 
-func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.TxOut, error) {
+func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*lnwallet.Utxo, error) {
 	utxo, err := lw.client.GetUnspentOutput(&prevOut.Hash, prevOut.Index)
 	if err != nil {
 		return nil, err
@@ -48,13 +49,17 @@ func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*wire.T
 	}
 
 	pkScript, err := hex.DecodeString(utxo.ScriptPubKeyHex)
-
 	if err != nil {
 		return nil, err
 	}
 
-	return &wire.TxOut{
-		Value: utxo.Amount,
+	amount, err := btcutil.NewAmount(float64(utxo.Amount))
+	if err != nil {
+		return nil, err
+	}
+
+	return &lnwallet.Utxo{
+		Value: amount,
 		PkScript: pkScript,
 	}, nil
 }
@@ -86,11 +91,11 @@ func (lw *LightWalletController) IsOurAddress(a btcutil.Address) bool {
 }
 
 func (lw *LightWalletController) SendOutputs(outputs []*wire.TxOut,
-	feeRate lnwallet.SatPerKWeight) (*wire.MsgTx, error) {
+	feeRate chainfee.SatPerKWeight) (*wire.MsgTx, error) {
 	panic("implement me")
 }
 
-func (lw *LightWalletController) CreateSimpleTx(outputs []*wire.TxOut, feeRate lnwallet.SatPerKWeight,
+func (lw *LightWalletController) CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
 	dryRun bool) (*txauthor.AuthoredTx, error) {
 	panic("implement me")
 }
