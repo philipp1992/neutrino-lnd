@@ -140,6 +140,33 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 
 		txIn.SignatureScript = inputScript.SigScript
 		txIn.Witness = inputScript.Witness
+	}
+
+	// Finally, we'll populate the chanPoint now that we've fully
+	// constructed the funding transaction.
+	f.chanPoint = &wire.OutPoint{
+		Hash:  fundingTx.TxHash(),
+		Index: multiSigIndex,
+	}
+
+	for i, txIn := range fundingTx.TxIn {
+		// We can only sign this input if it's ours, so we'll ask the
+		// coin source if it can map this outpoint into a coin we own.
+		// If not, then we'll continue as it isn't our input.
+		info, err := f.coinSource.CoinFromOutPoint(
+			txIn.PreviousOutPoint,
+		)
+		if err != nil {
+			continue
+		}
+
+		// Now that we know the input is ours, we'll populate the
+		// signDesc with the per input unique information.
+		signDesc.Output = &wire.TxOut{
+			Value:    info.Value,
+			PkScript: info.PkScript,
+		}
+		signDesc.InputIndex = i
 
 		vm, err := txscript.NewEngine(signDesc.Output.PkScript,
 			fundingTx, i, txscript.StandardVerifyFlags, nil,
@@ -150,13 +177,6 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 		if err := vm.Execute(); err != nil {
 			log.Errorf("revocation spend is invalid: %v", err)
 		}
-	}
-
-	// Finally, we'll populate the chanPoint now that we've fully
-	// constructed the funding transaction.
-	f.chanPoint = &wire.OutPoint{
-		Hash:  fundingTx.TxHash(),
-		Index: multiSigIndex,
 	}
 
 
