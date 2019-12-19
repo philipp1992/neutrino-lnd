@@ -140,6 +140,16 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 
 		txIn.SignatureScript = inputScript.SigScript
 		txIn.Witness = inputScript.Witness
+
+		vm, err := txscript.NewEngine(signDesc.Output.PkScript,
+			fundingTx, i, txscript.StandardVerifyFlags, nil,
+			nil, signDesc.Output.Value)
+		if err != nil {
+			log.Errorf("unable to create engine: %v", err)
+		}
+		if err := vm.Execute(); err != nil {
+			log.Errorf("revocation spend is invalid: %v", err)
+		}
 	}
 
 	// Finally, we'll populate the chanPoint now that we've fully
@@ -148,6 +158,7 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 		Hash:  fundingTx.TxHash(),
 		Index: multiSigIndex,
 	}
+
 
 	return fundingTx, nil
 }
