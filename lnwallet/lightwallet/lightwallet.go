@@ -53,10 +53,7 @@ func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*lnwall
 		return nil, err
 	}
 
-	amount, err := btcutil.NewAmount(float64(utxo.Amount))
-	if err != nil {
-		return nil, err
-	}
+	amount := btcutil.Amount(utxo.Amount)
 
 	return &lnwallet.Utxo{
 		Value: amount,
