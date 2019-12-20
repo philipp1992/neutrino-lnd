@@ -312,6 +312,8 @@ func (dc *dualChannelManager) start() error {
 				}
 
 				dc.handleNewDualChannelRequest(pendingChannel)
+			case <-dc.quit:
+				return
 			}
 		}
 
