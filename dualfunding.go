@@ -2,18 +2,16 @@ package lnd
 
 import (
 	"fmt"
-
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/htlcswitch"
 	//"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
-	"github.com/lightningnetwork/lnd/htlcswitch"
+	"github.com/lightningnetwork/lnd/dualfunding"
 	//"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/sweep"
-	"github.com/lightningnetwork/lnd/dualfunding"
-
 )
 
 // chanController is an implementation of the autopilot.ChannelController
@@ -149,6 +147,14 @@ func initDualFunding(svr *server, graphDir string) (*dualfunding.DualChannelConf
 			server:     svr,
 		},
 		SubscribeTopology: svr.chanRouter.SubscribeTopology,
+		SubscribePendingChannels: func() (*dualfunding.PendingChannelClient, error) {
+			return &dualfunding.PendingChannelClient{
+				ChannelOpened: svr.pendingChannelOpened,
+				Cancel: func() {
+
+				},
+			}, nil
+		},
 		DbPath: graphDir,
 	}, nil
 

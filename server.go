@@ -258,6 +258,8 @@ type server struct {
 
 	quit chan struct{}
 
+	pendingChannelOpened chan *channeldb.OpenChannel
+
 	wg sync.WaitGroup
 }
 
@@ -423,6 +425,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		peerDisconnectedListeners: make(map[string][]chan<- struct{}),
 
 		featureMgr: featureMgr,
+		pendingChannelOpened: make(chan *channeldb.OpenChannel),
 		quit:       make(chan struct{}),
 	}
 
@@ -1080,6 +1083,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 				s.persistentPeers[pubStr] = false
 			}
 			s.mu.Unlock()
+
+			s.pendingChannelOpened <- channel
 
 			// With that taken care of, we'll send this channel to
 			// the chain arb so it can react to on-chain events.

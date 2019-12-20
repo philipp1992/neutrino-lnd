@@ -28,6 +28,11 @@ var (
 	byteOrder = binary.BigEndian
 )
 
+type PendingChannelClient struct {
+	ChannelOpened <-chan *channeldb.OpenChannel
+	Cancel func()
+}
+
 type DualChannelConfig struct {
 
 	Self *btcec.PublicKey
@@ -45,6 +50,8 @@ type DualChannelConfig struct {
 	// SubscribeTopology is used to get a subscription for topology changes
 	// on the network.
 	SubscribeTopology func() (*routing.TopologyClient, error)
+
+	SubscribePendingChannels func() (*PendingChannelClient, error)
 }
 
 ///////////////////////////////////////////////////////////////////////////////
@@ -284,8 +291,29 @@ func (dc *dualChannelManager) start() error {
 		return err
 	}
 
+	pendingChannelsSubscription, err := dc.cfg.SubscribePendingChannels()
+
 	// start listening to channel changes notifications
-	dc.wg.Add(1)
+	dc.wg.Add(2)
+
+	go func() {
+		defer pendingChannelsSubscription.Cancel()
+		defer dc.wg.Done()
+
+		for {
+			select {
+			case pendingChannel, ok := <-pendingChannelsSubscription.ChannelOpened:
+				if !ok {
+					return
+				}
+
+				if !pendingChannel.IsPending {
+					return
+				}
+			}
+		}
+
+	}()
 
 	go func() {
 		defer graphSubscription.Cancel()
