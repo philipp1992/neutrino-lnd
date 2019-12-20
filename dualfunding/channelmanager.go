@@ -417,14 +417,14 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(channel *channeldb.Ope
 		dc.pendingOpenCloses[nodeID] = PendingDualChannel{
 			DualChannel: DualChannel {
 				ourOutpoint:   *pendingOutpoint,
-				theirOutpoint: channel.ChanPoint,
+				theirOutpoint: channel.FundingOutpoint,
 			},
 			opening: true,
 		}
 		dc.pendingMtx.Unlock()
 		log.Infof("Opening channel back to %s", nodeID)
 
-		err = dc.syncDualChannelInfo(nodeID, channel.ChanPoint, *pendingOutpoint)
+		err = dc.syncDualChannelInfo(nodeID, channel.FundingOutpoint, *pendingOutpoint)
 		if err != nil {
 			log.Warnf("Unable to write info into db for %v %v",
 				nodeID, err)
