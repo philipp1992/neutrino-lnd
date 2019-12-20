@@ -307,9 +307,11 @@ func (dc *dualChannelManager) start() error {
 					return
 				}
 
-				if !pendingChannel.IsPending {
+				if !pendingChannel.IsPending || pendingChannel.IsInitiator {
 					return
 				}
+
+				dc.handleNewDualChannelRequest(pendingChannel)
 			}
 		}
 
@@ -335,10 +337,7 @@ func (dc *dualChannelManager) start() error {
 					// channels that we've created
 					// ourselves.
 
-					if edgeUpdate.ConnectingNode.IsEqual(dc.cfg.Self) {
-						dc.handleNewDualChannelRequest(edgeUpdate)
-						continue
-					} else if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
+					if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
 						// means state one of our channels has changed
 						dc.handleOurChannelOpened(edgeUpdate)
 					}
@@ -383,15 +382,12 @@ func (dc *dualChannelManager) stop() error {
 	return nil
 }
 
-func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.ChannelEdgeUpdate) {
+func (dc *dualChannelManager) handleNewDualChannelRequest(channel *channeldb.OpenChannel) {
 
 	log.Infof("List of existing chans ", dc.chanState)
 
-	if edgeUpdate.Disabled == true {
-		return
-	}
 
-	nodeID := NewNodeID(edgeUpdate.AdvertisingNode)
+	nodeID := NewNodeID(channel.IdentityPub)
 
 	dc.chanStateMtx.Lock()
 	if _, ok := dc.chanState[nodeID]; ok {
@@ -411,7 +407,7 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.Ch
 	dc.pendingMtx.Unlock()
 
 
-	pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(edgeUpdate.AdvertisingNode, edgeUpdate.Capacity)
+	pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.IdentityPub, channel.Capacity)
 
 	if err == nil {
 		// If we were successful, we'll track this peer in our set of pending
@@ -421,14 +417,14 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.Ch
 		dc.pendingOpenCloses[nodeID] = PendingDualChannel{
 			DualChannel: DualChannel {
 				ourOutpoint:   *pendingOutpoint,
-				theirOutpoint: edgeUpdate.ChanPoint,
+				theirOutpoint: channel.ChanPoint,
 			},
 			opening: true,
 		}
 		dc.pendingMtx.Unlock()
 		log.Infof("Opening channel back to %s", nodeID)
 
-		err = dc.syncDualChannelInfo(nodeID, edgeUpdate.ChanPoint, *pendingOutpoint)
+		err = dc.syncDualChannelInfo(nodeID, channel.ChanPoint, *pendingOutpoint)
 		if err != nil {
 			log.Warnf("Unable to write info into db for %v %v",
 				nodeID, err)
@@ -436,7 +432,7 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(edgeUpdate *routing.Ch
 
 	} else {
 		log.Warnf("Unable to open channel to %x of %v: %v",
-			nodeID, edgeUpdate.Capacity, err)
+			nodeID, channel.Capacity, err)
 
 	}
 }
