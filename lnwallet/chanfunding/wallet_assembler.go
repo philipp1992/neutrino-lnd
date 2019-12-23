@@ -149,37 +149,6 @@ func (f *FullIntent) CompileFundingTx(extraInputs []*wire.TxIn,
 		Index: multiSigIndex,
 	}
 
-	for i, txIn := range fundingTx.TxIn {
-		// We can only sign this input if it's ours, so we'll ask the
-		// coin source if it can map this outpoint into a coin we own.
-		// If not, then we'll continue as it isn't our input.
-		info, err := f.coinSource.CoinFromOutPoint(
-			txIn.PreviousOutPoint,
-		)
-		if err != nil {
-			continue
-		}
-
-		// Now that we know the input is ours, we'll populate the
-		// signDesc with the per input unique information.
-		signDesc.Output = &wire.TxOut{
-			Value:    info.Value,
-			PkScript: info.PkScript,
-		}
-		signDesc.InputIndex = i
-
-		vm, err := txscript.NewEngine(signDesc.Output.PkScript,
-			fundingTx, i, txscript.StandardVerifyFlags, nil,
-			nil, signDesc.Output.Value)
-		if err != nil {
-			log.Errorf("unable to create engine: %v", err)
-		}
-		if err := vm.Execute(); err != nil {
-			log.Errorf("revocation spend is invalid: %v", err)
-		}
-	}
-
-
 	return fundingTx, nil
 }
 

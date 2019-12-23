@@ -294,7 +294,7 @@ func (dc *dualChannelManager) start() error {
 	pendingChannelsSubscription, err := dc.cfg.SubscribePendingChannels()
 
 	// start listening to channel changes notifications
-	dc.wg.Add(2)
+	dc.wg.Add(1)
 
 	go func() {
 		defer pendingChannelsSubscription.Cancel()
@@ -308,7 +308,7 @@ func (dc *dualChannelManager) start() error {
 				}
 
 				if !pendingChannel.IsPending || pendingChannel.IsInitiator {
-					return
+					continue
 				}
 
 				dc.handleNewDualChannelRequest(pendingChannel)
@@ -318,6 +318,8 @@ func (dc *dualChannelManager) start() error {
 		}
 
 	}()
+
+	dc.wg.Add(1)
 
 	go func() {
 		defer graphSubscription.Cancel()
@@ -408,35 +410,36 @@ func (dc *dualChannelManager) handleNewDualChannelRequest(channel *channeldb.Ope
 	}
 	dc.pendingMtx.Unlock()
 
+	go func() {
+		pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.IdentityPub, channel.Capacity)
 
-	pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.IdentityPub, channel.Capacity)
+		if err == nil {
+			// If we were successful, we'll track this peer in our set of pending
+			// opens. We do this here to ensure we don't stall on selecting new
+			// peers if the connection attempt happens to take too long.
+			dc.pendingMtx.Lock()
+			dc.pendingOpenCloses[nodeID] = PendingDualChannel{
+				DualChannel: DualChannel{
+					ourOutpoint:   *pendingOutpoint,
+					theirOutpoint: channel.FundingOutpoint,
+				},
+				opening: true,
+			}
+			dc.pendingMtx.Unlock()
+			log.Infof("Opening channel back to %s", nodeID)
 
-	if err == nil {
-		// If we were successful, we'll track this peer in our set of pending
-		// opens. We do this here to ensure we don't stall on selecting new
-		// peers if the connection attempt happens to take too long.
-		dc.pendingMtx.Lock()
-		dc.pendingOpenCloses[nodeID] = PendingDualChannel{
-			DualChannel: DualChannel {
-				ourOutpoint:   *pendingOutpoint,
-				theirOutpoint: channel.FundingOutpoint,
-			},
-			opening: true,
+			err = dc.syncDualChannelInfo(nodeID, channel.FundingOutpoint, *pendingOutpoint)
+			if err != nil {
+				log.Warnf("Unable to write info into db for %v %v",
+					nodeID, err)
+			}
+
+		} else {
+			log.Warnf("Unable to open channel to %x of %v: %v",
+				nodeID, channel.Capacity, err)
+
 		}
-		dc.pendingMtx.Unlock()
-		log.Infof("Opening channel back to %s", nodeID)
-
-		err = dc.syncDualChannelInfo(nodeID, channel.FundingOutpoint, *pendingOutpoint)
-		if err != nil {
-			log.Warnf("Unable to write info into db for %v %v",
-				nodeID, err)
-		}
-
-	} else {
-		log.Warnf("Unable to open channel to %x of %v: %v",
-			nodeID, channel.Capacity, err)
-
-	}
+	}()
 }
 
 func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.ClosedChanSummary) {
