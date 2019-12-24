@@ -425,8 +425,8 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		peerDisconnectedListeners: make(map[string][]chan<- struct{}),
 
 		featureMgr: featureMgr,
-		pendingChannelOpened: make(chan *channeldb.OpenChannel),
-		quit:       make(chan struct{}),
+		pendingChannelOpened: 	make(chan *channeldb.OpenChannel),
+		quit:       			make(chan struct{}),
 	}
 
 	s.witnessBeacon = &preimageBeacon{
@@ -1084,7 +1084,9 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 			}
 			s.mu.Unlock()
 
-			s.pendingChannelOpened <- channel
+			if !channel.IsInitiator {
+				s.pendingChannelOpened <- channel
+			}
 
 			// With that taken care of, we'll send this channel to
 			// the chain arb so it can react to on-chain events.
