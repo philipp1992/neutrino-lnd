@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"github.com/btcsuite/btcd/wire"
+	"github.com/btcsuite/btcutil"
 	"github.com/coreos/bbolt"
 	"os"
 	"path/filepath"
@@ -31,6 +32,18 @@ var (
 type PendingChannelClient struct {
 	ChannelOpened <-chan *channeldb.OpenChannel
 	Cancel func()
+}
+
+type chanPendingOpenUpdate struct {
+	pendingChan *channeldb.OpenChannel
+}
+
+type chanEdgeUpdate struct {
+	update *routing.ChannelEdgeUpdate
+}
+
+type chanClosedUpdate struct {
+	update *routing.ClosedChanSummary
 }
 
 type DualChannelConfig struct {
@@ -66,25 +79,33 @@ type PendingDualChannel struct {
 	opening bool
 }
 
+type openChannelRequest struct {
+	theirOutpoint wire.OutPoint
+	identityPub *btcec.PublicKey
+	capacity btcutil.Amount
+}
+
 type dualChannelManager struct {
-	started sync.Once
-	stopped sync.Once
-	db *bbolt.DB
-	cfg *DualChannelConfig
-	dualFundingRequests chan interface{}
-	quit chan struct{}
-	wg   sync.WaitGroup
+	started      sync.Once
+	stopped      sync.Once
+	db           *bbolt.DB
+	cfg          *DualChannelConfig
+	stateUpdates chan interface{}
+	quit         chan struct{}
+	wg           sync.WaitGroup
 
 	// chanState tracks the current set of open channels for given peer
 	chanState    map[NodeID]DualChannel
-	chanStateMtx sync.Mutex
+	// requests that are created from pending channels, to open dual funding channel
+	openChannelsRequests map[NodeID]openChannelRequest
 
 	// pendingOpenCloses tracks the channels that we've requested to be
 	// initiated, but haven't yet been confirmed as being fully opened.
 	// This state is required as otherwise, we may go over our allotted
 	// channel limit, or open multiple channels to the same node.
 	pendingOpenCloses map[NodeID]PendingDualChannel
-	pendingMtx        sync.Mutex
+
+	disabledChannels map[wire.OutPoint]NodeID
 }
 
 // fileExists returns true if the file exists, and false otherwise.
@@ -207,11 +228,11 @@ func (dc *dualChannelManager) fetchDualChannelInfo() map[NodeID]DualChannel {
 // dualChannelManager.
 func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) {
 	chManager :=  &dualChannelManager {
-		cfg:                 cfg,
-		chanState:           make(map[NodeID]DualChannel),
-		dualFundingRequests: make(chan interface{}, msgBufferSize),
-		quit:                make(chan struct{}),
-		pendingOpenCloses:   make(map[NodeID]PendingDualChannel),
+		cfg:               cfg,
+		chanState:         make(map[NodeID]DualChannel),
+		stateUpdates:      make(chan interface{}),
+		quit:              make(chan struct{}),
+		pendingOpenCloses: make(map[NodeID]PendingDualChannel),
 	}
 
 	var err error
@@ -281,6 +302,139 @@ func (dc *dualChannelManager) Start() error {
 
 ///////////////////////////////////////////////////////////////////////////////
 
+func (dc *dualChannelManager) handlePendingChannelsEvents(pendingChannelsSubscription *PendingChannelClient) {
+	defer pendingChannelsSubscription.Cancel()
+	defer dc.wg.Done()
+
+	for {
+		select {
+		case pendingChannel, ok := <-pendingChannelsSubscription.ChannelOpened:
+			if !ok {
+				return
+			}
+
+			if !pendingChannel.IsPending || pendingChannel.IsInitiator {
+				continue
+			}
+
+			dc.stateUpdates <- chanPendingOpenUpdate{
+				pendingChannel,
+			}
+
+		case <-dc.quit:
+			return
+		}
+	}
+
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
+func (dc *dualChannelManager) handleGraphEvents(graphSubscription *routing.TopologyClient) {
+	defer graphSubscription.Cancel()
+	defer dc.wg.Done()
+
+	for {
+		select {
+		case topChange, ok := <-graphSubscription.TopologyChanges:
+			// If the router is shutting down, then we will
+			// as well.
+			if !ok {
+				return
+			}
+
+			for _, edgeUpdate := range topChange.ChannelEdgeUpdates {
+				// If this isn't an advertisement by
+				// the backing lnd node, then we'll
+				// continue as we only want to add
+				// channels that we've created
+				// ourselves.
+
+				if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
+					// means state one of our channels has changed
+					dc.stateUpdates <- chanEdgeUpdate {
+						edgeUpdate,
+					}
+				}
+			}
+
+			// For each closed channel, we'll obtain
+			// the chanID of the closed channel and send it
+			// to the pilot.
+			for _, chanClose := range topChange.ClosedChannels {
+				dc.stateUpdates <- chanClosedUpdate{
+					chanClose,
+				}
+			}
+
+		case <-dc.quit:
+			return
+		}
+	}
+}
+
+func (dc *dualChannelManager) handleDualFundingEvents() {
+	defer dc.wg.Done()
+
+	for {
+		select {
+		case signal := <-dc.stateUpdates:
+			switch update := signal.(type) {
+			case *chanPendingOpenUpdate:
+				nodeID := NewNodeID(update.pendingChan.IdentityPub)
+
+				// start by checking active channel
+				_, hasChannel := dc.chanState[nodeID]
+
+				if hasChannel {
+					// if we have active channel, check if we have disabledChannel
+					// which is a candidate for closing
+					_, hasChannel = func(newPendingChanNodeID NodeID) (wire.OutPoint, bool) {
+						for outpoint, nodeID := range dc.disabledChannels {
+							if nodeID == newPendingChanNodeID {
+								return outpoint, false
+							}
+						}
+
+						return wire.OutPoint{}, true
+					}(nodeID)
+				} else {
+					// if we don't have active channel, we still might have pending open channel
+					if pending, ok := dc.pendingOpenCloses[nodeID]; ok {
+						hasChannel = pending.opening
+					}
+				}
+
+				// if we have disabled channel and we have received new open channel request,
+				// it means that we might want to save that channel for later processing.
+				if !hasChannel {
+					dc.openChannelsRequests[nodeID] = openChannelRequest{
+						theirOutpoint: update.pendingChan.FundingOutpoint,
+						identityPub: update.pendingChan.IdentityPub,
+						capacity: update.pendingChan.Capacity,
+					}
+
+					dc.updateOpenChannelRequests()
+				}
+
+			case *chanClosedUpdate:
+				dc.handleDualChannelCloseRequest(update.update)
+				dc.handleOurChannelClosed(update.update)
+				
+				// in case some of our channels closed, try opening new channel
+				dc.updateOpenChannelRequests()
+			case *chanEdgeUpdate:
+				dc.handleOurChannelOpened(update.update)
+			}
+		case <- dc.quit:
+			return
+
+		}
+	}
+}
+
+///////////////////////////////////////////////////////////////////////////////
+
 func (dc *dualChannelManager) start() error {
 
 	log.Infof("Dual channel controller running")
@@ -294,72 +448,11 @@ func (dc *dualChannelManager) start() error {
 	pendingChannelsSubscription, err := dc.cfg.SubscribePendingChannels()
 
 	// start listening to channel changes notifications
-	dc.wg.Add(1)
+	dc.wg.Add(3)
 
-	go func() {
-		defer pendingChannelsSubscription.Cancel()
-		defer dc.wg.Done()
-
-		for {
-			select {
-			case pendingChannel, ok := <-pendingChannelsSubscription.ChannelOpened:
-				if !ok {
-					return
-				}
-
-				if !pendingChannel.IsPending || pendingChannel.IsInitiator {
-					continue
-				}
-
-				dc.handleNewDualChannelRequest(pendingChannel)
-			case <-dc.quit:
-				return
-			}
-		}
-
-	}()
-
-	dc.wg.Add(1)
-
-	go func() {
-		defer graphSubscription.Cancel()
-		defer dc.wg.Done()
-
-		for {
-			select {
-			case topChange, ok := <-graphSubscription.TopologyChanges:
-				// If the router is shutting down, then we will
-				// as well.
-				if !ok {
-					return
-				}
-
-				for _, edgeUpdate := range topChange.ChannelEdgeUpdates {
-					// If this isn't an advertisement by
-					// the backing lnd node, then we'll
-					// continue as we only want to add
-					// channels that we've created
-					// ourselves.
-
-					if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
-						// means state one of our channels has changed
-						dc.handleOurChannelOpened(edgeUpdate)
-					}
-				}
-
-				// For each closed channel, we'll obtain
-				// the chanID of the closed channel and send it
-				// to the pilot.
-				for _, chanClose := range topChange.ClosedChannels {
-					dc.handleDualChannelCloseRequest(chanClose)
-					dc.handleOurChannelClosed(chanClose)
-				}
-
-			case <-dc.quit:
-				return
-			}
-		}
-	}()
+	go dc.handlePendingChannelsEvents(pendingChannelsSubscription)
+	go dc.handleGraphEvents(graphSubscription)
+	go dc.handleDualFundingEvents()
 
 	return nil
 }
@@ -386,60 +479,54 @@ func (dc *dualChannelManager) stop() error {
 	return nil
 }
 
-func (dc *dualChannelManager) handleNewDualChannelRequest(channel *channeldb.OpenChannel) {
+func (dc *dualChannelManager) updateOpenChannelRequests() {
 
 	log.Infof("List of existing chans ", dc.chanState)
 
+	for nodeID, channel := range dc.openChannelsRequests {
 
-	nodeID := NewNodeID(channel.IdentityPub)
-
-	dc.chanStateMtx.Lock()
-	if _, ok := dc.chanState[nodeID]; ok {
-		log.Infof("Such id exist in db %v", nodeID)
-		dc.chanStateMtx.Unlock()
-		return
-	}
-	dc.chanStateMtx.Unlock()
-
-
-	dc.pendingMtx.Lock()
-	if _, ok := dc.pendingOpenCloses[nodeID]; ok {
-		log.Infof("Already have a pending channel to peer: %v", nodeID)
-		dc.pendingMtx.Unlock()
-		return
-	}
-	dc.pendingMtx.Unlock()
-
-	go func() {
-		pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.IdentityPub, channel.Capacity)
-
-		if err == nil {
-			// If we were successful, we'll track this peer in our set of pending
-			// opens. We do this here to ensure we don't stall on selecting new
-			// peers if the connection attempt happens to take too long.
-			dc.pendingMtx.Lock()
-			dc.pendingOpenCloses[nodeID] = PendingDualChannel{
-				DualChannel: DualChannel{
-					ourOutpoint:   *pendingOutpoint,
-					theirOutpoint: channel.FundingOutpoint,
-				},
-				opening: true,
-			}
-			dc.pendingMtx.Unlock()
-			log.Infof("Opening channel back to %s", nodeID)
-
-			err = dc.syncDualChannelInfo(nodeID, channel.FundingOutpoint, *pendingOutpoint)
-			if err != nil {
-				log.Warnf("Unable to write info into db for %v %v",
-					nodeID, err)
-			}
-
-		} else {
-			log.Warnf("Unable to open channel to %x of %v: %v",
-				nodeID, channel.Capacity, err)
-
+		if _, ok := dc.chanState[nodeID]; ok {
+			log.Infof("Already have active channel for %v", nodeID)
+			return
 		}
-	}()
+
+		if pendingChan, ok := dc.pendingOpenCloses[nodeID]; ok && pendingChan.opening {
+			log.Infof("Already have a pending channel to peer: %v", nodeID)
+			return
+		}
+
+		delete(dc.openChannelsRequests, nodeID)
+
+		go func() {
+			pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.identityPub, channel.capacity)
+
+			if err == nil {
+				// If we were successful, we'll track this peer in our set of pending
+				// opens. We do this here to ensure we don't stall on selecting new
+				// peers if the connection attempt happens to take too long.
+				dc.pendingOpenCloses[nodeID] = PendingDualChannel{
+					DualChannel: DualChannel{
+						ourOutpoint:   *pendingOutpoint,
+						theirOutpoint: channel.theirOutpoint,
+					},
+					opening: true,
+				}
+				log.Infof("Opening channel back to %s", nodeID)
+
+				err = dc.syncDualChannelInfo(nodeID, channel.theirOutpoint, *pendingOutpoint)
+				if err != nil {
+					log.Warnf("Unable to write info into db for %v %v",
+						nodeID, err)
+				}
+
+			} else {
+				log.Warnf("Unable to open channel to %x of %v: %v",
+					nodeID, channel.capacity, err)
+
+			}
+		}()
+
+	}
 }
 
 func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.ClosedChanSummary) {
@@ -449,8 +536,6 @@ func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.Clo
 		ok bool
 		dualChannel DualChannel
 	)
-
-	dc.chanStateMtx.Lock()
 	
 	// mark it as opened channel
 	nodeID, ok = func() (NodeID, bool) {
@@ -465,7 +550,6 @@ func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.Clo
 	}()
 
 	delete(dc.chanState, nodeID)
-	dc.chanStateMtx.Unlock()
 
 	if !ok {
 		return
@@ -488,18 +572,13 @@ func (dc *dualChannelManager) handleDualChannelCloseRequest(summary *routing.Clo
 	err := dc.cfg.ChanController.CloseChannel(&dualChannel.ourOutpoint)
 
 	if err != nil {
-		dc.chanStateMtx.Lock()
 		dc.chanState[nodeID] = dualChannel
-		dc.chanStateMtx.Unlock()
-
 		log.Infof("Failed to close channel with node %v %v", nodeID, summary.ChanPoint.String(), err)
 	} else {
-		dc.pendingMtx.Lock()
 		dc.pendingOpenCloses[nodeID] = PendingDualChannel{
 			DualChannel: dualChannel,
 			opening: false,
 		}
-		dc.pendingMtx.Unlock()
 		log.Infof("Made closing channel request with node %v %v", nodeID, summary.ChanPoint.String())
 	}
 }
@@ -514,27 +593,20 @@ func (dc *dualChannelManager) handleOurChannelOpened(update *routing.ChannelEdge
 		ok             bool
 	)
 
-	dc.pendingMtx.Lock()
 	if pendingChannel, ok = dc.pendingOpenCloses[nodeID]; !ok {
 		// means that our channel is not pending as dual funded,
 		// we don't know anything about it
-		dc.pendingMtx.Unlock()
 		return
 	}
 
 	// means that update is regarding closing channel, so just skip this
 	if pendingChannel.opening == false {
-		dc.pendingMtx.Unlock()
 		return
 	}
 
 	delete(dc.pendingOpenCloses, nodeID)
-	dc.pendingMtx.Unlock()
-
-	dc.chanStateMtx.Lock()
 	// mark it as opened channel
 	dc.chanState[nodeID] = pendingChannel.DualChannel
-	dc.chanStateMtx.Unlock()
 }
 
 func (dc *dualChannelManager) handleOurChannelClosed(summary *routing.ClosedChanSummary) {
@@ -543,8 +615,6 @@ func (dc *dualChannelManager) handleOurChannelClosed(summary *routing.ClosedChan
 		ok bool
 		dualChannel DualChannel
 	)
-
-	dc.pendingMtx.Lock()
 
 	nodeID, ok = func() (NodeID, bool) {
 		for nodeID, dcn := range dc.pendingOpenCloses {
@@ -558,12 +628,10 @@ func (dc *dualChannelManager) handleOurChannelClosed(summary *routing.ClosedChan
 	}()
 
 	if !ok {
-		dc.pendingMtx.Unlock()
 		return
 	}
 
 	delete(dc.pendingOpenCloses, nodeID)
-	dc.pendingMtx.Unlock()
 
 	// it means that our channel was closed, at this point we can
 	// safely delete everything regarding this peer
