@@ -350,11 +350,10 @@ func (dc *dualChannelManager) handleGraphEvents(graphSubscription *routing.Topol
 				// channels that we've created
 				// ourselves.
 
-				if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
-					// means state one of our channels has changed
-					dc.stateUpdates <- chanEdgeUpdate {
-						edgeUpdate,
-					}
+
+				// means state one of our channels has changed
+				dc.stateUpdates <- chanEdgeUpdate {
+					edgeUpdate,
 				}
 			}
 
@@ -418,13 +417,29 @@ func (dc *dualChannelManager) handleDualFundingEvents() {
 				}
 
 			case *chanClosedUpdate:
-				dc.handleDualChannelCloseRequest(update.update)
-				dc.handleOurChannelClosed(update.update)
-				
+				// since we got 1 confirmation about disabled channel,
+				// we would like to remove it since it doesn't give any info
+				closeUpdate := update.update
+				delete(dc.disabledChannels, closeUpdate.ChanPoint)
+
+				dc.handleDualChannelCloseRequest(closeUpdate)
+				dc.handleOurChannelClosed(closeUpdate)
+
 				// in case some of our channels closed, try opening new channel
 				dc.updateOpenChannelRequests()
 			case *chanEdgeUpdate:
-				dc.handleOurChannelOpened(update.update)
+				edgeUpdate := update.update
+
+				if edgeUpdate.Disabled {
+					// need to check if we really need to pass AdvertisingNode here
+					dc.disabledChannels[edgeUpdate.ChanPoint] = NewNodeID(edgeUpdate.AdvertisingNode)
+				} else {
+					delete(dc.disabledChannels, edgeUpdate.ChanPoint)
+				}
+
+				if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
+					dc.handleOurChannelOpened(edgeUpdate)
+				}
 			}
 		case <- dc.quit:
 			return
