@@ -254,7 +254,10 @@ func (ev *PendingChannelsEventSource) serveEvents() {
 				exit:     make(chan struct{}),
 			}
 			ev.Unlock()
+		case <- ev.quit:
+			return
 		}
+
 	}
 }
 

@@ -227,7 +227,9 @@ func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) 
 		chanState:         make(map[NodeID]DualChannel),
 		stateUpdates:      make(chan interface{}),
 		quit:              make(chan struct{}),
+		openChannelsRequests: make(map[NodeID]openChannelRequest),
 		pendingOpenCloses: make(map[NodeID]PendingDualChannel),
+		disabledChannels: make(map[wire.OutPoint]NodeID),
 	}
 
 	var err error
@@ -312,7 +314,7 @@ func (dc *dualChannelManager) handlePendingChannelsEvents(pendingChannelsSubscri
 				continue
 			}
 
-			dc.stateUpdates <- chanPendingOpenUpdate{
+			dc.stateUpdates <- &chanPendingOpenUpdate{
 				pendingChannel,
 			}
 
@@ -347,7 +349,7 @@ func (dc *dualChannelManager) handleGraphEvents(graphSubscription *routing.Topol
 
 
 				// means state one of our channels has changed
-				dc.stateUpdates <- chanEdgeUpdate {
+				dc.stateUpdates <- &chanEdgeUpdate {
 					edgeUpdate,
 				}
 			}
@@ -356,7 +358,7 @@ func (dc *dualChannelManager) handleGraphEvents(graphSubscription *routing.Topol
 			// the chanID of the closed channel and send it
 			// to the pilot.
 			for _, chanClose := range topChange.ClosedChannels {
-				dc.stateUpdates <- chanClosedUpdate{
+				dc.stateUpdates <- &chanClosedUpdate{
 					chanClose,
 				}
 			}
@@ -435,6 +437,8 @@ func (dc *dualChannelManager) handleDualFundingEvents() {
 				if edgeUpdate.AdvertisingNode.IsEqual(dc.cfg.Self) {
 					dc.handleOurChannelOpened(edgeUpdate)
 				}
+			default:
+				log.Errorf("Unsupported event of type", update)
 			}
 		case <- dc.quit:
 			return
@@ -521,7 +525,7 @@ func (dc *dualChannelManager) updateOpenChannelRequests() {
 					},
 					opening: true,
 				}
-				log.Infof("Opening channel back to %s", nodeID)
+				log.Infof("Opening dual channel to %x", nodeID[:])
 
 				err = dc.syncDualChannelInfo(nodeID, channel.theirOutpoint, *pendingOutpoint)
 				if err != nil {
