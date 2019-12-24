@@ -2,7 +2,6 @@ package lightwallet
 
 import (
 	"encoding/hex"
-	"fmt"
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -53,10 +52,7 @@ func (lw *LightWalletController) privateKeyForScript(pkScript []byte, signDesc *
 		}
 	}
 
-	_, addresses, _, _ := txscript.ExtractPkScriptAddrs(pkScript, lw.config.NetParams)
-
-	fmt.Printf("Requesting priv key for address: %v\n", addresses)
-
+	txscript.ExtractPkScriptAddrs(pkScript, lw.config.NetParams)
 	bytes, err := hex.DecodeString(*encodedKey)
 
 	if err != nil {

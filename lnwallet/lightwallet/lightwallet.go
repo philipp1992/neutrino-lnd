@@ -4,10 +4,10 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
-	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
@@ -148,14 +148,11 @@ func (lw *LightWalletController) ListTransactionDetails() ([]*lnwallet.Transacti
 // should not be used as an input for created transactions.
 func (lw *LightWalletController) LockedOutpoint(o wire.OutPoint) bool {
 	_, locked := lw.lockedOutpoints[o]
-	fmt.Printf("\nChecking %s \n Returning %f\n", o.Hash.String(), locked)
 	return locked
 }
 
 func (lw *LightWalletController) LockOutpoint(o wire.OutPoint) {
 	lw.lockedOutpoints[o] = struct{}{}
-	fmt.Printf("\nLocking %s\n", o.Hash.String())
-
 }
 
 func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {

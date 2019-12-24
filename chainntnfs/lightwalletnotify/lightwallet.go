@@ -255,7 +255,7 @@ out:
 				}()
 
 			case *chainntnfs.HistoricalSpendDispatch:
-				fmt.Printf("HistoricalSpendDispatch received")
+				chainntnfs.Log.Infof("New HistoricalSpendDispatch received")
 				b.wg.Add(1)
 				go func() {
 					defer b.wg.Done()
@@ -389,7 +389,7 @@ out:
 				continue
 
 			case chain.BlockDisconnected:
-				fmt.Printf("BlockDisconnected received")
+				chainntnfs.Log.Infof("New BlockDisconnected received")
 
 			case chain.RelevantTx:
 
@@ -426,7 +426,7 @@ out:
 func (b *LightWalletNotifier) historicalConfDetails(confRequest chainntnfs.ConfRequest,
 	startHeight, endHeight uint32) (*chainntnfs.TxConfirmation, error) {
 
-	fmt.Printf("Requested historicalConfDetails for txid=%v, startHeight=%v, endHeight=%v\n",
+	chainntnfs.Log.Infof("Requested historicalConfDetails for txid=%v, startHeight=%v, endHeight=%v",
 		confRequest.TxID.String(), startHeight, endHeight)
 
 	txConf, blockHash, blockHeight, err := b.chainConn.GetRawTransactionVerbose(&confRequest.TxID)

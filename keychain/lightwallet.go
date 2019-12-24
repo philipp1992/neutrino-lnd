@@ -3,7 +3,6 @@ package keychain
 import (
 	"crypto/sha256"
 	"encoding/hex"
-	"fmt"
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/grpcclient"
 )
@@ -54,8 +53,6 @@ func (b *LightWalletKeyRing) DeriveNextKey(keyFam KeyFamily) (KeyDescriptor, err
 	keyDesc.Index = res.Locator.Index
 	keyDesc.Family = KeyFamily(res.Locator.Family)
 
-	fmt.Printf("DeriveNextKey: fam: %v %v %v, pubkey: %s\n", keyFam, keyDesc.Family, keyDesc.Index, hex.EncodeToString(keyDesc.PubKey.SerializeCompressed()))
-
 	return keyDesc, nil
 }
 
@@ -82,8 +79,6 @@ func (b *LightWalletKeyRing) DeriveKey(keyLoc KeyLocator) (KeyDescriptor, error)
 	}
 
 	keyDesc.KeyLocator = keyLoc
-
-	fmt.Printf("DeriveKey: %v %v, pubkey: %s\n", keyDesc.Family, keyDesc.Index, hex.EncodeToString(keyDesc.PubKey.SerializeCompressed()))
 
 	return keyDesc, nil
 }
@@ -112,9 +107,7 @@ func (b *LightWalletKeyRing) DerivePrivKey(keyDesc KeyDescriptor) (*btcec.Privat
 		return nil, err
 	}
 
-	key, pubKey := btcec.PrivKeyFromBytes(btcec.S256(), pkBytes)
-
-	fmt.Printf("DerivePrivKey: %v %v, pubkey: %s\n", keyDesc.Family, keyDesc.Index, hex.EncodeToString(pubKey.SerializeCompressed()))
+	key, _ = btcec.PrivKeyFromBytes(btcec.S256(), pkBytes)
 
 	return key, nil
 }
