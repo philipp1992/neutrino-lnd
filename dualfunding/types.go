@@ -4,6 +4,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/channeldb"
 )
 
 // channelState is a type that represents the set of active channels of the
@@ -44,6 +45,11 @@ func NewNodeID(pub *btcec.PublicKey) NodeID {
 const (
 	msgBufferSize = 50
 )
+
+type PendingChannelClient struct {
+	ChannelOpened <-chan *channeldb.OpenChannel
+	Cancel func()
+}
 
 // ChannelController is a simple interface that allows an auto-pilot agent to
 // open a channel within the graph to a target peer, close targeted channels,

@@ -29,11 +29,6 @@ var (
 	byteOrder = binary.BigEndian
 )
 
-type PendingChannelClient struct {
-	ChannelOpened <-chan *channeldb.OpenChannel
-	Cancel func()
-}
-
 type chanPendingOpenUpdate struct {
 	pendingChan *channeldb.OpenChannel
 }

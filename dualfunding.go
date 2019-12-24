@@ -1,12 +1,17 @@
 package lnd
 
 import (
+	"errors"
 	"fmt"
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
+	"sync"
+	"sync/atomic"
+
 	//"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/dualfunding"
@@ -118,7 +123,180 @@ out:
 
 }
 
-// A compile time assertion to ensure chanController meets the
+type updateClient struct {
+	// ntfnChan is a send-only channel that's used to propagate
+	// notification s from the channel router to an instance of a
+	// topologyClient client.
+	ntfnChan chan<- *channeldb.OpenChannel
+
+	// exit is a channel that is used internally by the channel router to
+	// cancel any active un-consumed goroutine notifications.
+	exit chan struct{}
+
+	wg sync.WaitGroup
+}
+
+// clientUpdate is a message sent to the channel router to either
+// register a new topology client or re-register an existing client.
+type clientUpdate struct {
+	// cancel indicates if the update to the client is cancelling an
+	// existing client's notifications. If not then this update will be to
+	// register a new set of notifications.
+	cancel bool
+
+	// clientID is the unique identifier for this client. Any further
+	// updates (deleting or adding) to this notification client will be
+	// dispatched according to the target clientID.
+	clientID uint64
+
+	// ntfnChan is a *send-only* channel in which notifications should be
+	// sent over from router -> client.
+	ntfnChan chan<- *channeldb.OpenChannel
+}
+
+type PendingChannelsEventSource struct {
+	pendingChannelsSource chan *channeldb.OpenChannel
+	ntfnClientUpdates chan *clientUpdate
+	updateClients map[uint64]*updateClient
+
+	ntfnClientCounter uint64 // To be used atomically.
+
+	started uint32 // To be used atomically.
+	stopped uint32 // To be used atomically.
+
+	sync.RWMutex
+
+	quit chan struct{}
+	wg   sync.WaitGroup
+}
+
+func New(pendingChannelsChan chan *channeldb.OpenChannel) (*PendingChannelsEventSource, error) {
+	return &PendingChannelsEventSource{
+		pendingChannelsSource: pendingChannelsChan,
+		ntfnClientUpdates: make(chan *clientUpdate),
+		updateClients: make(map[uint64]*updateClient),
+		quit: make(chan struct{}),
+	}, nil
+}
+
+func (ev *PendingChannelsEventSource) Start() {
+	if !atomic.CompareAndSwapUint32(&ev.started, 0, 1) {
+		return
+	}
+
+	ev.wg.Add(1)
+	go ev.serveEvents()
+}
+
+func (ev *PendingChannelsEventSource) Stop() {
+	if !atomic.CompareAndSwapUint32(&ev.stopped, 0, 1) {
+		return
+	}
+
+	close(ev.quit)
+	ev.wg.Wait()
+}
+
+func (ev *PendingChannelsEventSource) serveEvents() {
+	defer ev.wg.Done()
+
+	for {
+		select {
+		case pendingChan := <-ev.pendingChannelsSource:
+			ev.RLock()
+			for _, client := range ev.updateClients {
+				client.wg.Add(1)
+				go func(c *updateClient) {
+					defer client.wg.Done()
+					select {
+
+					// In this case we'll try to send the notification
+					// directly to the upstream client consumer.
+					case c.ntfnChan <- pendingChan:
+
+					// If the client cancels the notifications, then we'll
+					// exit early.
+					case <-c.exit:
+
+					// Similarly, if the ChannelRouter itself exists early,
+					// then we'll also exit ourselves.
+					case <-ev.quit:
+
+					}
+				}(client)
+			}
+			ev.RUnlock()
+
+		case ntfnUpdate := <-ev.ntfnClientUpdates:
+			clientID := ntfnUpdate.clientID
+
+			if ntfnUpdate.cancel {
+				ev.RLock()
+				client, ok := ev.updateClients[ntfnUpdate.clientID]
+				ev.RUnlock()
+				if ok {
+					ev.Lock()
+					delete(ev.updateClients, clientID)
+					ev.Unlock()
+
+					close(client.exit)
+					client.wg.Wait()
+
+					close(client.ntfnChan)
+				}
+
+				continue
+			}
+
+			ev.Lock()
+			ev.updateClients[ntfnUpdate.clientID] = &updateClient{
+				ntfnChan: ntfnUpdate.ntfnChan,
+				exit:     make(chan struct{}),
+			}
+			ev.Unlock()
+		}
+	}
+}
+
+func (ev *PendingChannelsEventSource) SubscribePendingChannels() (*dualfunding.PendingChannelClient, error) {
+	// If the router is not yet started, return an error to avoid a
+	// deadlock waiting for it to handle the subscription request.
+	if atomic.LoadUint32(&ev.started) == 0 {
+		return nil, fmt.Errorf("router not started")
+	}
+
+	// We'll first atomically obtain the next ID for this client from the
+	// incrementing client ID counter.
+	clientID := atomic.AddUint64(&ev.ntfnClientCounter, 1)
+
+	ntfnChan := make(chan *channeldb.OpenChannel, 10)
+
+	select {
+	case ev.ntfnClientUpdates <- &clientUpdate{
+		cancel:   false,
+		clientID: clientID,
+		ntfnChan: ntfnChan,
+	}:
+	case <-ev.quit:
+		return nil, errors.New("ChannelRouter shutting down")
+	}
+
+	return &dualfunding.PendingChannelClient{
+		ChannelOpened: ntfnChan,
+		Cancel: func() {
+			select {
+			case ev.ntfnClientUpdates <- &clientUpdate{
+				cancel:   true,
+				clientID: clientID,
+			}:
+			case <-ev.quit:
+				return
+			}
+		},
+	}, nil
+}
+
+	// A compile time assertion to ensure chanController meets the
 // autopilot.ChannelController interface.
 var _ dualfunding.ChannelManager = (*chanManager)(nil)
 
@@ -126,7 +304,7 @@ var _ dualfunding.ChannelManager = (*chanManager)(nil)
 // autopilot.Agent instance based on the passed configuration struct. The agent
 // and all interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
-func initDualFunding(svr *server, graphDir string) (*dualfunding.DualChannelConfig, error) {
+func initDualFunding(svr *server, pendingChannelsEv *PendingChannelsEventSource, graphDir string) (*dualfunding.DualChannelConfig, error) {
 
 	// With the heuristic itself created, we can now populate the remainder
 	// of the items that the autopilot agent needs to perform its duties.
@@ -147,14 +325,7 @@ func initDualFunding(svr *server, graphDir string) (*dualfunding.DualChannelConf
 			server:     svr,
 		},
 		SubscribeTopology: svr.chanRouter.SubscribeTopology,
-		SubscribePendingChannels: func() (*dualfunding.PendingChannelClient, error) {
-			return &dualfunding.PendingChannelClient{
-				ChannelOpened: svr.pendingChannelOpened,
-				Cancel: func() {
-
-				},
-			}, nil
-		},
+		SubscribePendingChannels: pendingChannelsEv.SubscribePendingChannels,
 		DbPath: graphDir,
 	}, nil
 

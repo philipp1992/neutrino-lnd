@@ -606,9 +606,21 @@ func Main(lisCfg ListenerCfg) error {
 	}
 	defer server.Stop()
 
+
+	pendingChannelsEventSource, err := New(server.pendingChannelOpened)
+
+	if err != nil {
+		err := fmt.Errorf("Unable to create pending channels event source: %v", err)
+		ltndLog.Error(err)
+		return err
+	}
+
+	pendingChannelsEventSource.Start()
+	defer pendingChannelsEventSource.Stop()
+
 	// Dual Channels Funding Manager
 	if cfg.DualFunding.Active {
-		dfConfig, err := initDualFunding(server, graphDir)
+		dfConfig, err := initDualFunding(server, pendingChannelsEventSource, graphDir)
 		if err != nil {
 			err := fmt.Errorf("Unable to initialize dual channel manager: %v", err)
 			ltndLog.Error(err)
