@@ -100,7 +100,7 @@ type dualChannelManager struct {
 	// channel limit, or open multiple channels to the same node.
 	pendingOpenCloses map[NodeID]PendingDualChannel
 
-	disabledChannels map[wire.OutPoint]NodeID
+	disabledChannels map[wire.OutPoint]bool
 }
 
 // fileExists returns true if the file exists, and false otherwise.
@@ -229,7 +229,7 @@ func NewDualChannelManager(cfg *DualChannelConfig) (*dualChannelManager, error) 
 		quit:              make(chan struct{}),
 		openChannelsRequests: make(map[NodeID]openChannelRequest),
 		pendingOpenCloses: make(map[NodeID]PendingDualChannel),
-		disabledChannels: make(map[wire.OutPoint]NodeID),
+		disabledChannels: make(map[wire.OutPoint]bool),
 	}
 
 	var err error
@@ -380,20 +380,16 @@ func (dc *dualChannelManager) handleDualFundingEvents() {
 				nodeID := NewNodeID(update.pendingChan.IdentityPub)
 
 				// start by checking active channel
-				_, hasChannel := dc.chanState[nodeID]
+				dualChannel, hasChannel := dc.chanState[nodeID]
 
 				if hasChannel {
 					// if we have active channel, check if we have disabledChannel
 					// which is a candidate for closing
-					_, hasChannel = func(newPendingChanNodeID NodeID) (wire.OutPoint, bool) {
-						for outpoint, nodeID := range dc.disabledChannels {
-							if nodeID == newPendingChanNodeID {
-								return outpoint, false
-							}
-						}
+					if _, hasDisabledChannel := dc.disabledChannels[dualChannel.theirOutpoint]; hasDisabledChannel {
+						// if we have candidate for closing, then we will need to save open channel request
+						hasChannel = false
+					}
 
-						return wire.OutPoint{}, true
-					}(nodeID)
 				} else {
 					// if we don't have active channel, we still might have pending open channel
 					if pending, ok := dc.pendingOpenCloses[nodeID]; ok {
@@ -429,7 +425,7 @@ func (dc *dualChannelManager) handleDualFundingEvents() {
 
 				if edgeUpdate.Disabled {
 					// need to check if we really need to pass AdvertisingNode here
-					dc.disabledChannels[edgeUpdate.ChanPoint] = NewNodeID(edgeUpdate.AdvertisingNode)
+					dc.disabledChannels[edgeUpdate.ChanPoint] = true
 				} else {
 					delete(dc.disabledChannels, edgeUpdate.ChanPoint)
 				}
