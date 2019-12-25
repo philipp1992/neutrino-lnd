@@ -511,7 +511,9 @@ func (dc *dualChannelManager) updateOpenChannelRequests() {
 
 		delete(dc.openChannelsRequests, nodeID)
 
+		dc.wg.Add(1)
 		go func() {
+			defer dc.wg.Done()
 			pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.identityPub, channel.capacity)
 
 			if err == nil {
