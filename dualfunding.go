@@ -265,7 +265,7 @@ func (ev *PendingChannelsEventSource) SubscribePendingChannels() (*dualfunding.P
 	// If the router is not yet started, return an error to avoid a
 	// deadlock waiting for it to handle the subscription request.
 	if atomic.LoadUint32(&ev.started) == 0 {
-		return nil, fmt.Errorf("router not started")
+		return nil, fmt.Errorf("PendingChannelsEventSource not started")
 	}
 
 	// We'll first atomically obtain the next ID for this client from the
@@ -281,7 +281,7 @@ func (ev *PendingChannelsEventSource) SubscribePendingChannels() (*dualfunding.P
 		ntfnChan: ntfnChan,
 	}:
 	case <-ev.quit:
-		return nil, errors.New("ChannelRouter shutting down")
+		return nil, errors.New("PendingChannelsEventSource shutting down")
 	}
 
 	return &dualfunding.PendingChannelClient{
