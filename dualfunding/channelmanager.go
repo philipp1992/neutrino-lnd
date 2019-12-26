@@ -310,7 +310,7 @@ func (dc *dualChannelManager) handlePendingChannelsEvents(pendingChannelsSubscri
 				return
 			}
 
-			if !pendingChannel.IsPending || pendingChannel.IsInitiator {
+			if !pendingChannel.IsPending || pendingChannel.IsInitiator || pendingChannel.LocalCommitment.LocalBalance != 0 {
 				continue
 			}
 
