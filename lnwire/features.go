@@ -81,6 +81,26 @@ const (
 	// party's non-delay output should not be tweaked.
 	StaticRemoteKeyOptional FeatureBit = 13
 
+	// PaymentAddrRequired is a required feature bit that signals that a
+	// node requires payment addresses, which are used to mitigate probing
+	// attacks on the receiver of a payment.
+	PaymentAddrRequired FeatureBit = 14
+
+	// PaymentAddrOptional is an optional feature bit that signals that a
+	// node supports payment addresses, which are used to mitigate probing
+	// attacks on the receiver of a payment.
+	PaymentAddrOptional FeatureBit = 15
+
+	// MPPOptional is a required feature bit that signals that the receiver
+	// of a payment requires settlement of an invoice with more than one
+	// HTLC.
+	MPPRequired FeatureBit = 16
+
+	// MPPOptional is an optional feature bit that signals that the receiver
+	// of a payment supports settlement of an invoice with more than one
+	// HTLC.
+	MPPOptional FeatureBit = 17
+
 	// maxAllowedSize is a maximum allowed size of feature vector.
 	//
 	// NOTE: Within the protocol, the maximum allowed message size is 65535
@@ -114,6 +134,10 @@ var Features = map[FeatureBit]string{
 	TLVOnionPayloadOptional:       "tlv-onion",
 	StaticRemoteKeyOptional:       "static-remote-key",
 	StaticRemoteKeyRequired:       "static-remote-key",
+	PaymentAddrOptional:           "payment-addr",
+	PaymentAddrRequired:           "payment-addr",
+	MPPOptional:                   "multi-path-payments",
+	MPPRequired:                   "multi-path-payments",
 }
 
 // RawFeatureVector represents a set of feature bits as defined in BOLT-09.  A
@@ -335,6 +359,11 @@ func NewFeatureVector(featureVector *RawFeatureVector,
 		RawFeatureVector: featureVector,
 		featureNames:     featureNames,
 	}
+}
+
+// EmptyFeatureVector returns a feature vector with no bits set.
+func EmptyFeatureVector() *FeatureVector {
+	return NewFeatureVector(nil, Features)
 }
 
 // HasFeature returns whether a particular feature is included in the set. The

@@ -1445,20 +1445,6 @@ func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 		return nil, err
 	}
 
-	// Now that we know the destination is reachable within the graph, we'll
-	// execute our path finding algorithm.
-	path, err := findPath(
-		&graphParams{
-			graph:          r.cfg.Graph,
-			bandwidthHints: bandwidthHints,
-		},
-		restrictions, &r.cfg.PathFindingConfig,
-		source, target, amt,
-	)
-	if err != nil {
-		return nil, err
-	}
-
 	// We'll fetch the current block height so we can properly calculate the
 	// required HTLC time locks within the route.
 	_, currentHeight, err := r.cfg.Chain.GetBestBlock()
@@ -1466,10 +1452,30 @@ func (r *ChannelRouter) FindRoute(source, target route.Vertex,
 		return nil, err
 	}
 
+	// Now that we know the destination is reachable within the graph, we'll
+	// execute our path finding algorithm.
+	finalHtlcExpiry := currentHeight + int32(finalCLTVDelta)
+
+	path, err := findPath(
+		&graphParams{
+			graph:          r.cfg.Graph,
+			bandwidthHints: bandwidthHints,
+		},
+		restrictions, &r.cfg.PathFindingConfig,
+		source, target, amt, finalHtlcExpiry,
+	)
+	if err != nil {
+		return nil, err
+	}
+
 	// Create the route with absolute time lock values.
 	route, err := newRoute(
-		amt, source, path, uint32(currentHeight), finalCLTVDelta,
-		destCustomRecords,
+		source, path, uint32(currentHeight),
+		finalHopParams{
+			amt:       amt,
+			cltvDelta: finalCLTVDelta,
+			records:   destCustomRecords,
+		},
 	)
 	if err != nil {
 		return nil, err
@@ -1500,13 +1506,6 @@ func generateNewSessionKey() (*btcec.PrivateKey, error) {
 // be sent to the first hop within the route.
 func generateSphinxPacket(rt *route.Route, paymentHash []byte,
 	sessionKey *btcec.PrivateKey) ([]byte, *sphinx.Circuit, error) {
-
-	// As a sanity check, we'll ensure that the set of hops has been
-	// properly filled in, otherwise, we won't actually be able to
-	// construct a route.
-	if len(rt.Hops) == 0 {
-		return nil, nil, route.ErrNoRouteHopsProvided
-	}
 
 	// Now that we know we have an actual route, we'll map the route into a
 	// sphinx payument path which includes per-hop paylods for each hop
@@ -1617,6 +1616,19 @@ type LightningPayment struct {
 	// LastHop is the pubkey of the last node before the final destination
 	// is reached. If nil, any node may be used.
 	LastHop *route.Vertex
+
+	// DestFeatures specifies the set of features we assume the final node
+	// has for pathfinding. Typically these will be taken directly from an
+	// invoice, but they can also be manually supplied or assumed by the
+	// sender. If a nil feature vector is provided, the router will try to
+	// fallback to the graph in order to load a feature vector for a node in
+	// the public graph.
+	DestFeatures *lnwire.FeatureVector
+
+	// PaymentAddr is the payment address specified by the receiver. This
+	// field should be a random 32-byte nonce presented in the receiver's
+	// invoice to prevent probing of the destination.
+	PaymentAddr *[32]byte
 
 	// PaymentRequest is an optional payment request that this payment is
 	// attempting to complete.
@@ -2093,11 +2105,7 @@ func (r *ChannelRouter) GetChannelByID(chanID lnwire.ShortChannelID) (
 //
 // NOTE: This method is part of the ChannelGraphSource interface.
 func (r *ChannelRouter) FetchLightningNode(node route.Vertex) (*channeldb.LightningNode, error) {
-	pubKey, err := btcec.ParsePubKey(node[:], btcec.S256())
-	if err != nil {
-		return nil, fmt.Errorf("unable to parse raw public key: %v", err)
-	}
-	return r.cfg.Graph.FetchLightningNode(pubKey)
+	return r.cfg.Graph.FetchLightningNode(nil, node)
 }
 
 // ForEachNode is used to iterate over every node in router topology.
@@ -2424,7 +2432,11 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 	}
 
 	return newRoute(
-		receiverAmt, source, pathEdges, uint32(height),
-		uint16(finalCltvDelta), nil,
+		source, pathEdges, uint32(height),
+		finalHopParams{
+			amt:       receiverAmt,
+			cltvDelta: uint16(finalCltvDelta),
+			records:   nil,
+		},
 	)
 }

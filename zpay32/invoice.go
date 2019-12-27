@@ -144,7 +144,8 @@ type Invoice struct {
 	Destination *btcec.PublicKey
 
 	// minFinalCLTVExpiry is the value that the creator of the invoice
-	// expects to be used for the
+	// expects to be used for the CLTV expiry of the HTLC extended to it in
+	// the last hop.
 	//
 	// NOTE: This value is optional, and should be set to nil if the
 	// invoice creator doesn't have a strong requirement on the CLTV expiry
@@ -1094,6 +1095,14 @@ func writeTaggedFields(bufferBase32 *bytes.Buffer, invoice *Invoice) error {
 			return err
 		}
 	}
+	if invoice.PaymentAddr != nil {
+		err := writeBytes32(
+			bufferBase32, fieldTypeS, *invoice.PaymentAddr,
+		)
+		if err != nil {
+			return err
+		}
+	}
 	if invoice.Features.SerializeSize32() > 0 {
 		var b bytes.Buffer
 		err := invoice.Features.RawFeatureVector.EncodeBase32(&b)
@@ -1102,14 +1111,6 @@ func writeTaggedFields(bufferBase32 *bytes.Buffer, invoice *Invoice) error {
 		}
 
 		err = writeTaggedField(bufferBase32, fieldType9, b.Bytes())
-		if err != nil {
-			return err
-		}
-	}
-	if invoice.PaymentAddr != nil {
-		err := writeBytes32(
-			bufferBase32, fieldTypeS, *invoice.PaymentAddr,
-		)
 		if err != nil {
 			return err
 		}

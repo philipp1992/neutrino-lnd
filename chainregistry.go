@@ -77,6 +77,10 @@ const (
 	// expressed in sat/kw.
 	defaultBitcoinStaticFeePerKW = chainfee.SatPerKWeight(12500)
 
+	// defaultBitcoinStaticMinRelayFeeRate is the min relay fee used for
+	// static estimators.
+	defaultBitcoinStaticMinRelayFeeRate = chainfee.FeePerKwFloor
+
 	// defaultLitecoinStaticFeePerKW is the fee rate of 200 sat/vbyte
 	// expressed in sat/kw.
 	defaultLitecoinStaticFeePerKW = chainfee.SatPerKWeight(50000)
@@ -194,7 +198,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		}
 		cc.minHtlcIn = cfg.Bitcoin.MinHTLCIn
 		cc.feeEstimator = chainfee.NewStaticEstimator(
-			defaultBitcoinStaticFeePerKW, 0,
+			defaultBitcoinStaticFeePerKW,
+			defaultBitcoinStaticMinRelayFeeRate,
 		)
 	case litecoinChain:
 		cc.routingPolicy = htlcswitch.ForwardingPolicy{

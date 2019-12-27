@@ -27,9 +27,9 @@ type Registry interface {
 	NotifyExitHopHtlc(payHash lntypes.Hash, paidAmount lnwire.MilliSatoshi,
 		expiry uint32, currentHeight int32,
 		circuitKey channeldb.CircuitKey, hodlChan chan<- interface{},
-		payload invoices.Payload) (*invoices.HodlEvent, error)
+		payload invoices.Payload) (*invoices.HtlcResolution, error)
 
-	// HodlUnsubscribeAll unsubscribes from all hodl events.
+	// HodlUnsubscribeAll unsubscribes from all htlc resolutions.
 	HodlUnsubscribeAll(subscriber chan<- interface{})
 }
 
@@ -43,8 +43,8 @@ type OnionProcessor interface {
 // UtxoSweeper defines the sweep functions that contract court requires.
 type UtxoSweeper interface {
 	// SweepInput sweeps inputs back into the wallet.
-	SweepInput(input input.Input,
-		feePreference sweep.FeePreference) (chan sweep.Result, error)
+	SweepInput(input input.Input, params sweep.Params) (chan sweep.Result,
+		error)
 
 	// CreateSweepTx accepts a list of inputs and signs and generates a txn
 	// that spends from them. This method also makes an accurate fee

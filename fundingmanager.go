@@ -101,6 +101,8 @@ var (
 	// script is set for a peer that does not support the feature bit.
 	errUpfrontShutdownScriptNotSupported = errors.New("peer does not support" +
 		"option upfront shutdown script")
+
+	zeroID [32]byte
 )
 
 // reservationWithCtx encapsulates a pending channel reservation. This wrapper
@@ -842,8 +844,8 @@ func (f *fundingManager) advanceFundingState(channel *channeldb.OpenChannel,
 		// are still steps left of the setup procedure. We continue the
 		// procedure where we left off.
 		err = f.stateStep(
-			channel, lnChannel, shortChanID, channelState,
-			updateChan,
+			channel, lnChannel, shortChanID, pendingChanID,
+			channelState, updateChan,
 		)
 		if err != nil {
 			fndgLog.Errorf("Unable to advance state(%v): %v",
@@ -859,7 +861,8 @@ func (f *fundingManager) advanceFundingState(channel *channeldb.OpenChannel,
 // updateChan can be set non-nil to get OpenStatusUpdates.
 func (f *fundingManager) stateStep(channel *channeldb.OpenChannel,
 	lnChannel *lnwallet.LightningChannel,
-	shortChanID *lnwire.ShortChannelID, channelState channelOpeningState,
+	shortChanID *lnwire.ShortChannelID, pendingChanID [32]byte,
+	channelState channelOpeningState,
 	updateChan chan<- *lnrpc.OpenStatusUpdate) error {
 
 	chanID := lnwire.NewChanIDFromOutPoint(&channel.FundingOutpoint)
@@ -938,6 +941,7 @@ func (f *fundingManager) stateStep(channel *channeldb.OpenChannel,
 						ChannelPoint: cp,
 					},
 				},
+				PendingChanId: pendingChanID[:],
 			}
 
 			select {
@@ -1819,6 +1823,7 @@ func (f *fundingManager) handleFundingSigned(fmsg *fundingSignedMsg) {
 
 	// Send an update to the upstream client that the negotiation process
 	// is over.
+	//
 	// TODO(roasbeef): add abstraction over updates to accommodate
 	// long-polling, or SSE, etc.
 	upd := &lnrpc.OpenStatusUpdate{
@@ -1828,6 +1833,7 @@ func (f *fundingManager) handleFundingSigned(fmsg *fundingSignedMsg) {
 				OutputIndex: fundingPoint.Index,
 			},
 		},
+		PendingChanId: pendingChanID[:],
 	}
 
 	select {
@@ -2856,9 +2862,23 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		channelFlags = lnwire.FFAnnounceChannel
 	}
 
-	// Obtain a new pending channel ID which is used to track this
-	// reservation throughout its lifetime.
-	chanID := f.nextPendingChanID()
+	// If the caller specified their own channel ID, then we'll use that.
+	// Otherwise we'll generate a fresh one as normal.  This will be used
+	// to track this reservation throughout its lifetime.
+	var chanID [32]byte
+	if msg.pendingChanID == zeroID {
+		chanID = f.nextPendingChanID()
+	} else {
+		// If the user specified their own pending channel ID, then
+		// we'll ensure it doesn't collide with any existing pending
+		// channel ID.
+		chanID = msg.pendingChanID
+		if _, err := f.getReservationCtx(peerKey, chanID); err == nil {
+			msg.err <- fmt.Errorf("pendingChannelID(%x) "+
+				"already present", chanID[:])
+			return
+		}
+	}
 
 	// Initialize a funding reservation with the local wallet. If the
 	// wallet doesn't have enough funds to commit to this channel, then the
@@ -2889,6 +2909,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		Flags:            channelFlags,
 		MinConfs:         msg.minConfs,
 		Tweakless:        tweaklessCommitment,
+		ChanFunder:       msg.chanFunder,
 	}
 
 	reservation, err := f.cfg.Wallet.InitChannelReservation(req)

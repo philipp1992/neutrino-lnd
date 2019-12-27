@@ -26,6 +26,10 @@ var (
 	// each route.
 	ErrNoRouteHopsProvided = fmt.Errorf("empty route hops provided")
 
+	// ErrMaxRouteHopsExceeded is returned when a caller attempts to
+	// construct a new sphinx packet, but provides too many hops.
+	ErrMaxRouteHopsExceeded = fmt.Errorf("route has too many hops")
+
 	// ErrIntermediateMPPHop is returned when a hop tries to deliver an MPP
 	// record to an intermediate hop, only final hops can receive MPP
 	// records.
@@ -180,6 +184,53 @@ func (h *Hop) PackHopPayload(w io.Writer, nextChanID uint64) error {
 	return tlvStream.Encode(w)
 }
 
+// Size returns the total size this hop's payload would take up in the onion
+// packet.
+func (h *Hop) PayloadSize(nextChanID uint64) uint64 {
+	if h.LegacyPayload {
+		return sphinx.LegacyHopDataSize
+	}
+
+	var payloadSize uint64
+
+	addRecord := func(tlvType tlv.Type, length uint64) {
+		payloadSize += tlv.VarIntSize(uint64(tlvType)) +
+			tlv.VarIntSize(length) + length
+	}
+
+	// Add amount size.
+	addRecord(record.AmtOnionType, tlv.SizeTUint64(uint64(h.AmtToForward)))
+
+	// Add lock time size.
+	addRecord(
+		record.LockTimeOnionType,
+		tlv.SizeTUint64(uint64(h.OutgoingTimeLock)),
+	)
+
+	// Add next hop if present.
+	if nextChanID != 0 {
+		addRecord(record.NextHopOnionType, 8)
+	}
+
+	// Add mpp if present.
+	if h.MPP != nil {
+		addRecord(record.MPPOnionType, h.MPP.PayloadSize())
+	}
+
+	// Add custom records.
+	for k, v := range h.CustomRecords {
+		addRecord(tlv.Type(k), uint64(len(v)))
+	}
+
+	// Add the size required to encode the payload length.
+	payloadSize += tlv.VarIntSize(payloadSize)
+
+	// Add HMAC.
+	payloadSize += sphinx.HMACSize
+
+	return payloadSize
+}
+
 // Route represents a path through the channel graph which runs over one or
 // more channels in succession. This struct carries all the information
 // required to craft the Sphinx onion packet, and send the payment along the
@@ -266,6 +317,16 @@ func NewRouteFromHops(amtToSend lnwire.MilliSatoshi, timeLock uint32,
 // final hop.
 func (r *Route) ToSphinxPath() (*sphinx.PaymentPath, error) {
 	var path sphinx.PaymentPath
+
+	// We can only construct a route if there are hops provided.
+	if len(r.Hops) == 0 {
+		return nil, ErrNoRouteHopsProvided
+	}
+
+	// Check maximum route length.
+	if len(r.Hops) > sphinx.NumMaxHops {
+		return nil, ErrMaxRouteHopsExceeded
+	}
 
 	// For each hop encoded within the route, we'll convert the hop struct
 	// to an OnionHop with matching per-hop payload within the path as used

@@ -47,6 +47,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
+	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/nat"
 	"github.com/lightningnetwork/lnd/netann"
@@ -385,6 +386,7 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 		FinalCltvRejectDelta: defaultFinalCltvRejectDelta,
 		HtlcHoldDuration:     invoices.DefaultHtlcHoldDuration,
 		Clock:                clock.NewDefaultClock(),
+		AcceptKeySend:        cfg.AcceptKeySend,
 	}
 
 	s := &server{
@@ -803,10 +805,10 @@ func newServer(listenAddrs []net.Addr, chanDB *channeldb.DB,
 	}
 
 	s.sweeper = sweep.New(&sweep.UtxoSweeperConfig{
-		FeeEstimator:       cc.feeEstimator,
-		GenSweepScript:     newSweepPkScriptGen(cc.wallet),
-		Signer:             cc.wallet.Cfg.Signer,
-		PublishTransaction: cc.wallet.PublishTransaction,
+		FeeEstimator:   cc.feeEstimator,
+		GenSweepScript: newSweepPkScriptGen(cc.wallet),
+		Signer:         cc.wallet.Cfg.Signer,
+		Wallet:         cc.wallet,
 		NewBatchTimer: func() <-chan time.Time {
 			return time.NewTimer(sweep.DefaultBatchWindowDuration).C
 		},
@@ -3120,6 +3122,17 @@ type openChanReq struct {
 
 	// TODO(roasbeef): add ability to specify channel constraints as well
 
+	// chanFunder is an optional channel funder that allows the caller to
+	// control exactly how the channel funding is carried out. If not
+	// specified, then the default chanfunding.WalletAssembler will be
+	// used.
+	chanFunder chanfunding.Assembler
+
+	// pendingChanID is not all zeroes (the default value), then this will
+	// be the pending channel ID used for the funding flow within the wire
+	// protocol.
+	pendingChanID [32]byte
+
 	updates chan *lnrpc.OpenStatusUpdate
 	err     chan error
 }
@@ -3381,7 +3394,12 @@ func computeNextBackoff(currBackoff time.Duration) time.Duration {
 
 // fetchNodeAdvertisedAddr attempts to fetch an advertised address of a node.
 func (s *server) fetchNodeAdvertisedAddr(pub *btcec.PublicKey) (net.Addr, error) {
-	node, err := s.chanDB.ChannelGraph().FetchLightningNode(pub)
+	vertex, err := route.NewVertexFromBytes(pub.SerializeCompressed())
+	if err != nil {
+		return nil, err
+	}
+
+	node, err := s.chanDB.ChannelGraph().FetchLightningNode(nil, vertex)
 	if err != nil {
 		return nil, err
 	}
