@@ -497,12 +497,12 @@ func (dc *dualChannelManager) updateOpenChannelRequests() {
 
 		if _, ok := dc.chanState[nodeID]; ok {
 			log.Infof("Already have active channel for %v", nodeID)
-			return
+			continue
 		}
 
 		if pendingChan, ok := dc.pendingOpenCloses[nodeID]; ok && pendingChan.opening {
 			log.Infof("Already have a pending channel to peer: %v", nodeID)
-			return
+			continue
 		}
 
 		delete(dc.openChannelsRequests, nodeID)
