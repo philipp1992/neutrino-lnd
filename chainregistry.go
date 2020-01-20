@@ -86,9 +86,9 @@ const (
 	defaultLitecoinStaticFeePerKW = chainfee.SatPerKWeight(50000)
 
 	// btcToLtcConversionRate is a fixed ratio used in order to scale up
-	// payments when running on the Litecoin chain.
+	// payments when running on the Litecoin chain.source_pub_key
 	btcToLtcConversionRate = 60
-	btcToXsnConversionRate = 100000
+	btcToXsnConversionRate = 6000
 )
 
 // defaultBtcChannelConstraints is the default set of channel constraints that are
