@@ -268,6 +268,31 @@ func (u *unifiedPolicy) getPolicyNetwork(
 	return &modifiedPolicy
 }
 
+func (u *unifiedPolicy) getChanDisabledPolicy() bool {
+
+	if u.localChan {
+		return false
+	}
+
+	return u.getChanDisabledPolicyNetwork()
+}
+
+func (u *unifiedPolicy) getChanDisabledPolicyNetwork() bool {
+
+	for _, edge := range u.edges {
+		// For network channels, skip the disabled ones.
+		edgeFlags := edge.policy.ChannelFlags
+		isDisabled := edgeFlags&lnwire.ChanUpdateDisabled != 0
+		if isDisabled {
+			continue
+		}
+
+		return false
+	}
+
+	return true
+}
+
 // minAmt returns the minimum amount that can be forwarded on this connection.
 func (u *unifiedPolicy) minAmt() lnwire.MilliSatoshi {
 	min := lnwire.MaxMilliSatoshi

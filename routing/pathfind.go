@@ -74,6 +74,9 @@ var (
 	// not exist in the graph.
 	errNoPathFound = errors.New("unable to find a path to destination")
 
+	// errEdgesDisabled is returned when all possible edges to the target destination are disabled
+	errEdgesDisabled = errors.New("destination hops disabled")
+
 	// errInsufficientLocalBalance is returned when none of the local
 	// channels have enough balance for the payment.
 	errInsufficientBalance = errors.New("insufficient local balance")
@@ -412,6 +415,13 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	start := time.Now()
 	nodesVisited := 0
 	edgesExpanded := 0
+
+	// Pathfinding additional flags to be checked
+	var (
+		// edgeDisabled returns whether all edges to destination are disabled from current graph view
+		edgesDisabled = true
+	)
+
 	defer func() {
 		timeElapsed := time.Since(start)
 		log.Debugf("Pathfinding perf metrics: nodes=%v, edges=%v, "+
@@ -822,6 +832,11 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 				continue
 			}
 
+			disabled := unifiedPolicy.getChanDisabledPolicy()
+			if !disabled {
+				edgesDisabled = false
+			}
+
 			// Get feature vector for fromNode.
 			fromFeatures, err := getGraphFeatures(fromNode)
 			if err != nil {
@@ -836,6 +851,9 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 			// Check if this candidate node is better than what we
 			// already have.
 			processEdge(fromNode, fromFeatures, policy, partialPath)
+			//if err != nil {
+			//	return nil, err
+			//}
 		}
 
 		if nodeHeap.Len() == 0 {
@@ -862,6 +880,11 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		// Determine the next hop forward using the next map.
 		currentNodeWithDist, ok := distance[currentNode]
 		if !ok {
+
+			if edgesDisabled {
+				return nil, errEdgesDisabled
+			}
+
 			// If the node doesnt have a next hop it means we didn't find a path.
 			return nil, errNoPathFound
 		}
