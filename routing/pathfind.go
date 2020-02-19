@@ -409,6 +409,8 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	source, target route.Vertex, amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
 	[]*channeldb.ChannelEdgePolicy, error) {
 
+	log.Infof("trying to find route for amt=%v, src=%v, dst=%v ", amt.ToSatoshis().String(), source.String(), target.String())
+
 	// Pathfinding can be a significant portion of the total payment
 	// latency, especially on low-powered devices. Log several metrics to
 	// aid in the analysis performance problems in this area.
@@ -595,6 +597,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 		// If the probability is zero, there is no point in trying.
 		if edgeProbability == 0 {
+			log.Errorf("Zero probability to destination")
 			return
 		}
 
@@ -619,6 +622,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 		// Check that we are within our CLTV limit.
 		if uint64(incomingCltv) > absoluteCltvLimit {
+			log.Errorf("CLTV limit not within our one incoming=%d, absolute=%d", uint64(incomingCltv), absoluteCltvLimit)
 			return
 		}
 
@@ -633,6 +637,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		// node would be added to the path.
 		totalFee := amountToReceive - amt
 		if totalFee > r.FeeLimit {
+			log.Errorf("Fee is bigger then the fee limit total=%s, limit=%s", totalFee.String(), r.FeeLimit.String())
 			return
 		}
 
@@ -645,6 +650,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		// abandon this direction. Adding further nodes can only lower
 		// the probability more.
 		if probability < cfg.MinProbability {
+			log.Errorf("Probability is less then minimal expected")
 			return
 		}
 
@@ -820,7 +826,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 			// Apply last hop restriction if set.
 			if r.LastHop != nil &&
 				pivot == target && fromNode != *r.LastHop {
-
+				log.Infof("Last hop restriction not set")
 				continue
 			}
 
@@ -851,9 +857,6 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 			// Check if this candidate node is better than what we
 			// already have.
 			processEdge(fromNode, fromFeatures, policy, partialPath)
-			//if err != nil {
-			//	return nil, err
-			//}
 		}
 
 		if nodeHeap.Len() == 0 {
@@ -885,7 +888,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 				return nil, errEdgesDisabled
 			}
 
-			// If the node doesnt have a next hop it means we didn't find a path.
+			// If the node doesn't have a next hop it means we didn't find a path.
 			return nil, errNoPathFound
 		}
 
