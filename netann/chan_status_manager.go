@@ -416,6 +416,15 @@ func (m *ChanStatusManager) markPendingInactiveChannels() {
 		// ChanStatusPendingDisable meaning that we have already
 		// scheduled the time at which it will be disabled.
 		if curState.Status != ChanStatusEnabled {
+
+			// give a chance to a channels which were enabled while peer got unsynchronized
+			chanID := lnwire.NewChanIDFromOutPoint(&c.FundingOutpoint)
+			if m.cfg.IsChannelActive(chanID) {
+				log.Debugf("Marking channel(%v) enabled",
+					c.FundingOutpoint)
+				m.chanStates.markEnabled(c.FundingOutpoint)
+			}
+
 			continue
 		}
 
