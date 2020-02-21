@@ -365,7 +365,34 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			cc.wc = wc
 		}
 
+		// If we're not in regtest mode, then we'll attempt to use a
+		// proper fee estimator for testnet.
+		rpcConfig := &rpcclient.ConnConfig{
+			Host:                 lightWalletHost,
+			User:                 lightWalletMode.RPCUser,
+			Pass:                 lightWalletMode.RPCPass,
+			DisableConnectOnNew:  true,
+			DisableAutoReconnect: false,
+			DisableTLS:           true,
+			HTTPPostMode:         true,
+		}
 
+		ltndLog.Infof("Initializing lightwallet backed fee estimator")
+
+		// Finally, we'll re-initialize the fee estimator, as
+		// if we're using lightwallet as a backend, then we can
+		// use live fee estimates, rather than a statically
+		// coded value.
+		fallBackFeeRate := chainfee.SatPerKVByte(1000)
+		cc.feeEstimator, err = chainfee.NewLightWalletEstimator(
+			*rpcConfig, fallBackFeeRate.FeePerKWeight(),
+		)
+		if err != nil {
+			return nil, err
+		}
+		if err := cc.feeEstimator.Start(); err != nil {
+			return nil, err
+		}
 
 	case "bitcoind", "litecoind", "xsnd":
 		var bitcoindMode *bitcoindConfig

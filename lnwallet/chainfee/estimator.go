@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/rpcclient"
+	grpcclient "github.com/btcsuite/btcd/grpcclient"
 	"github.com/btcsuite/btcutil"
 )
 
@@ -449,6 +450,134 @@ func (b *BitcoindEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, err
 // A compile-time assertion to ensure that BitcoindEstimator implements the
 // Estimator interface.
 var _ Estimator = (*BitcoindEstimator)(nil)
+
+
+/////////////////////////////////////////////////////////////////////////////////
+
+// BitcoindEstimator is an implementation of the Estimator interface backed by
+// the RPC interface of an active bitcoind node. This implementation will proxy
+// any fee estimation requests to bitcoind's RPC interface.
+type LightWalletEstimator struct {
+	// fallbackFeePerKW is the fallback fee rate in sat/kw that is returned
+	// if the fee estimator does not yet have enough data to actually
+	// produce fee estimates.
+	fallbackFeePerKW SatPerKWeight
+
+	// minFeePerKW is the minimum fee, in sat/kw, that we should enforce.
+	// This will be used as the default fee rate for a transaction when the
+	// estimated fee rate is too low to allow the transaction to propagate
+	// through the network.
+	minFeePerKW SatPerKWeight
+
+	lightWalletConn *grpcclient.Client
+}
+
+// NewBitcoindEstimator creates a new BitcoindEstimator given a fully populated
+// rpc config that is able to successfully connect and authenticate with the
+// bitcoind node, and also a fall back fee rate. The fallback fee rate is used
+// in the occasion that the estimator has insufficient data, or returns zero
+// for a fee estimate.
+func NewLightWalletEstimator(rpcConfig rpcclient.ConnConfig,
+	fallBackFeeRate SatPerKWeight) (*LightWalletEstimator, error) {
+
+	rpcConfig.DisableConnectOnNew = true
+	rpcConfig.DisableAutoReconnect = false
+	rpcConfig.DisableTLS = true
+	rpcConfig.HTTPPostMode = true
+	chainConn, err := grpcclient.New(&rpcConfig)
+	if err != nil {
+		return nil, err
+	}
+
+	return &LightWalletEstimator{
+		fallbackFeePerKW: fallBackFeeRate,
+		lightWalletConn:  chainConn,
+	}, nil
+}
+
+// Start signals the Estimator to start any processes or goroutines
+// it needs to perform its duty.
+//
+// NOTE: This method is part of the Estimator interface.
+func (b *LightWalletEstimator) Start() error {
+	b.minFeePerKW = FeePerKwFloor
+	log.Debugf("Using minimum fee rate of %v sat/kw",
+		int64(b.minFeePerKW))
+
+	return nil
+}
+
+// Stop stops any spawned goroutines and cleans up the resources used
+// by the fee estimator.
+//
+// NOTE: This method is part of the Estimator interface.
+func (b *LightWalletEstimator) Stop() error {
+	return nil
+}
+
+// EstimateFeePerKW takes in a target for the number of blocks until an initial
+// confirmation and returns the estimated fee expressed in sat/kw.
+//
+// NOTE: This method is part of the Estimator interface.
+func (b *LightWalletEstimator) EstimateFeePerKW(numBlocks uint32) (SatPerKWeight, error) {
+	feeEstimate, err := b.fetchEstimate(numBlocks)
+	switch {
+	// If the estimator doesn't have enough data, or returns an error, then
+	// to return a proper value, then we'll return the default fall back
+	// fee rate.
+	case err != nil:
+		log.Errorf("unable to query estimator: %v", err)
+		fallthrough
+
+	case feeEstimate == 0:
+		return b.fallbackFeePerKW, nil
+	}
+
+	return feeEstimate, nil
+}
+
+// RelayFeePerKW returns the minimum fee rate required for transactions to be
+// relayed.
+//
+// NOTE: This method is part of the Estimator interface.
+func (b *LightWalletEstimator) RelayFeePerKW() SatPerKWeight {
+	return b.minFeePerKW
+}
+
+// fetchEstimate returns a fee estimate for a transaction to be confirmed in
+// confTarget blocks. The estimate is returned in sat/kw.
+func (b *LightWalletEstimator) fetchEstimate(confTarget uint32) (SatPerKWeight, error) {
+
+	// First, we'll send an "estimatesmartfee" command as grpc request.
+	satPerKB, err := b.lightWalletConn.EstimateNetworkFee(uint64(confTarget))
+	if err != nil {
+		return 0, err
+	}
+
+	// Since we use fee rates in sat/kw internally, we'll convert the
+	// estimated fee rate from its sat/kb representation to sat/kw.
+	satPerKw := SatPerKVByte(satPerKB).FeePerKWeight()
+
+	// Finally, we'll enforce our fee floor.
+	if satPerKw < b.minFeePerKW {
+		log.Debugf("Estimated fee rate of %v sat/kw is too low, "+
+			"using fee floor of %v sat/kw instead", satPerKw,
+			b.minFeePerKW)
+
+		satPerKw = b.minFeePerKW
+	}
+
+	log.Debugf("Returning %v sat/kw for conf target of %v",
+		int64(satPerKw), confTarget)
+
+	return satPerKw, nil
+}
+
+// A compile-time assertion to ensure that BitcoindEstimator implements the
+// Estimator interface.
+var _ Estimator = (*LightWalletEstimator)(nil)
+
+/////////////////////////////////////////////////////////////////////////////
 
 // WebAPIFeeSource is an interface allows the WebAPIEstimator to query an
 // arbitrary HTTP-based fee estimator. Each new set/network will gain an
