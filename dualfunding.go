@@ -12,10 +12,8 @@ import (
 	"sync"
 	"sync/atomic"
 
-	//"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/dualfunding"
-	//"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/sweep"
 )
 
@@ -331,6 +329,4 @@ func initDualFunding(svr *server, pendingChannelsEv *PendingChannelsEventSource,
 		SubscribePendingChannels: pendingChannelsEv.SubscribePendingChannels,
 		DbPath: graphDir,
 	}, nil
-
-	//Graph:       autopilot.ChannelGraphFromDatabase(svr.chanDB.ChannelGraph()),
 }

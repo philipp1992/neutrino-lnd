@@ -306,14 +306,20 @@ func (dc *dualChannelManager) handlePendingChannelsEvents(pendingChannelsSubscri
 	for {
 		select {
 		case pendingChannel, ok := <-pendingChannelsSubscription.ChannelOpened:
+
+			log.Infof("New pending channel received with params isInitiator=%f LocalCommitment=%d Remote=%d",
+				pendingChannel.IsInitiator, pendingChannel.LocalCommitment.LocalBalance, pendingChannel.RemoteCommitment.LocalBalance)
 			if !ok {
+				log.Errorf("Returning if !ok")
 				return
 			}
 
 			if !pendingChannel.IsPending || pendingChannel.IsInitiator || pendingChannel.LocalCommitment.LocalBalance != 0 {
+				log.Warnf("Returning on check")
 				continue
 			}
 
+			log.Infof("Sending This Request")
 			dc.stateUpdates <- &chanPendingOpenUpdate{
 				pendingChannel,
 			}
@@ -337,6 +343,7 @@ func (dc *dualChannelManager) handleGraphEvents(graphSubscription *routing.Topol
 			// If the router is shutting down, then we will
 			// as well.
 			if !ok {
+				log.Errorf("Returning if !ok topology updates")
 				return
 			}
 
@@ -377,6 +384,8 @@ func (dc *dualChannelManager) handleDualFundingEvents() {
 		case signal := <-dc.stateUpdates:
 			switch update := signal.(type) {
 			case *chanPendingOpenUpdate:
+
+				log.Infof("New pending open update", update.pendingChan.IdentityPub)
 				nodeID := NewNodeID(update.pendingChan.IdentityPub)
 
 				// start by checking active channel
@@ -421,6 +430,9 @@ func (dc *dualChannelManager) handleDualFundingEvents() {
 				// in case some of our channels closed, try opening new channel
 				dc.updateOpenChannelRequests()
 			case *chanEdgeUpdate:
+
+				log.Infof("New chan edge update", update.update.AdvertisingNode)
+
 				edgeUpdate := update.update
 
 				if edgeUpdate.Disabled {
@@ -492,8 +504,11 @@ func (dc *dualChannelManager) stop() error {
 func (dc *dualChannelManager) updateOpenChannelRequests() {
 
 	log.Infof("List of existing chans ", dc.chanState)
+	log.Infof("Existing channel requests ", len(dc.openChannelsRequests))
 
 	for nodeID, channel := range dc.openChannelsRequests {
+
+		log.Infof("Checking request for %v", nodeID)
 
 		if _, ok := dc.chanState[nodeID]; ok {
 			log.Infof("Already have active channel for %v", nodeID)
@@ -508,9 +523,9 @@ func (dc *dualChannelManager) updateOpenChannelRequests() {
 		delete(dc.openChannelsRequests, nodeID)
 
 		dc.wg.Add(1)
-		go func() {
+		go func(identityKey *btcec.PublicKey, theirOutpoint wire.OutPoint, capacity btcutil.Amount) {
 			defer dc.wg.Done()
-			pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(channel.identityPub, channel.capacity)
+			pendingOutpoint, err := dc.cfg.ChanController.OpenChannel(identityKey, capacity)
 
 			if err == nil {
 				// If we were successful, we'll track this peer in our set of pending
@@ -519,13 +534,13 @@ func (dc *dualChannelManager) updateOpenChannelRequests() {
 				dc.pendingOpenCloses[nodeID] = PendingDualChannel{
 					DualChannel: DualChannel{
 						ourOutpoint:   *pendingOutpoint,
-						theirOutpoint: channel.theirOutpoint,
+						theirOutpoint: theirOutpoint,
 					},
 					opening: true,
 				}
 				log.Infof("Opening dual channel to %x", nodeID[:])
 
-				err = dc.syncDualChannelInfo(nodeID, channel.theirOutpoint, *pendingOutpoint)
+				err = dc.syncDualChannelInfo(nodeID, theirOutpoint, *pendingOutpoint)
 				if err != nil {
 					log.Warnf("Unable to write info into db for %v %v",
 						nodeID, err)
@@ -533,10 +548,10 @@ func (dc *dualChannelManager) updateOpenChannelRequests() {
 
 			} else {
 				log.Warnf("Unable to open channel to %x of %v: %v",
-					nodeID, channel.capacity, err)
+					nodeID, capacity, err)
 
 			}
-		}()
+		}(channel.identityPub, channel.theirOutpoint, channel.capacity)
 
 	}
 }
