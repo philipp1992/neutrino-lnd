@@ -633,11 +633,30 @@ func loadConfig() (*config, error) {
 
 	// Ensure that the specified values for the min and max channel size
 	// don't are within the bounds of the normal chan size constraints.
-	if cfg.Autopilot.MinChannelSize < int64(minChanFundingSize) {
-		cfg.Autopilot.MinChannelSize = int64(minChanFundingSize)
-	}
-	if cfg.Autopilot.MaxChannelSize > int64(MaxFundingAmount) {
-		cfg.Autopilot.MaxChannelSize = int64(MaxFundingAmount)
+	switch {
+	case cfg.Bitcoin.Active:
+		if cfg.Autopilot.MinChannelSize < int64(minChanFundingSize) {
+			cfg.Autopilot.MinChannelSize = int64(minChanFundingSize)
+		}
+		if cfg.Autopilot.MaxChannelSize > int64(MaxBtcFundingAmount) {
+			cfg.Autopilot.MaxChannelSize = int64(MaxBtcFundingAmount)
+		}
+
+	case cfg.Litecoin.Active:
+		if cfg.Autopilot.MinChannelSize < int64(minLtcChanFundingSize) {
+			cfg.Autopilot.MinChannelSize = int64(minLtcChanFundingSize)
+		}
+		if cfg.Autopilot.MaxChannelSize > int64(maxLtcFundingAmount) {
+			cfg.Autopilot.MaxChannelSize = int64(maxLtcFundingAmount)
+		}
+
+	case cfg.Xsncoin.Active:
+		if cfg.Autopilot.MinChannelSize < int64(minXsnChanFundingSize) {
+			cfg.Autopilot.MinChannelSize = int64(minXsnChanFundingSize)
+		}
+		if cfg.Autopilot.MaxChannelSize > int64(maxXsnFundingAmount) {
+			cfg.Autopilot.MaxChannelSize = int64(maxXsnFundingAmount)
+		}
 	}
 
 	if _, err := validateAtplCfg(cfg.Autopilot); err != nil {
