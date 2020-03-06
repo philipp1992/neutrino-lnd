@@ -9,8 +9,6 @@ import (
 	"crypto/tls"
 	"fmt"
 	"github.com/lightningnetwork/lnd/dualfunding"
-	"strconv"
-
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -414,19 +412,12 @@ func Main(lisCfg ListenerCfg) error {
 	// chainRegistry interface.
 	primaryChain := registeredChains.PrimaryChain()
 	registeredChains.RegisterChain(primaryChain, activeChainControl)
-
-	rpcPort, err := strconv.Atoi(strings.Split(cfg.RawRPCListeners[0], ":")[1])
-
-	if err != nil {
-		return err
-	}
-
+	
 	// TODO(roasbeef): add rotation
 	idPrivKey, err := activeChainControl.wallet.DerivePrivKey(keychain.KeyDescriptor{
 		KeyLocator: keychain.KeyLocator{
 			Family: keychain.KeyFamilyNodeKey,
-			//Index:  0, // TODO(yuraolex): change it back
-			Index: uint32(rpcPort),
+			Index:  0,
 		},
 	})
 	if err != nil {
