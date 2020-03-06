@@ -417,11 +417,16 @@ func (m *ChanStatusManager) markPendingInactiveChannels() {
 		// scheduled the time at which it will be disabled.
 		if curState.Status != ChanStatusEnabled {
 
-			// give a chance to a channels which were enabled while peer got unsynchronized
-			err := m.processEnableRequest(c.FundingOutpoint)
-			if err != nil {
-				log.Errorf("Unable to process enable request for "+
-					"Channel(%v): %v", c.FundingOutpoint, err)
+			chanID := lnwire.NewChanIDFromOutPoint(&c.FundingOutpoint)
+
+			// check duplication to avoid error logs
+			if m.cfg.IsChannelActive(chanID) {
+				// give a chance to a channels which were enabled while peer got unsynchronized
+				err := m.processEnableRequest(c.FundingOutpoint)
+				if err != nil {
+					log.Errorf("Unable to process enable request for "+
+						"Channel(%v): %v", c.FundingOutpoint, err)
+				}
 			}
 
 			continue
