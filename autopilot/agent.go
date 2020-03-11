@@ -58,6 +58,10 @@ type Config struct {
 	// when opening channels.
 	Constraints AgentConstraints
 
+	// TrustedNodes is the set of nodes which should be considered as best
+	// candidates to open channel to.
+	TrustedNodes []NodeID
+
 	// TODO(roasbeef): add additional signals from fee rates and revenue of
 	// currently opened channels
 }
@@ -649,12 +653,35 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 
 	log.Debugf("Got scores for %d nodes", len(scores))
 
-	// Now use the score to make a weighted choice which nodes to attempt
-	// to open channels to.
-	scores, err = chooseN(numChans, scores)
-	if err != nil {
-		return fmt.Errorf("Unable to make weighted choice: %v",
-			err)
+	trustedScores := make(map[NodeID]*NodeScore)
+
+	// before trying to choose from all graph nodes, let's check if we have trusted nodes set
+	if len(a.cfg.TrustedNodes) > 0 {
+
+		// let's check if our scores map contains scores for trusted nodes
+		for i := range a.cfg.TrustedNodes {
+			if elem, ok := scores[a.cfg.TrustedNodes[i]]; ok {
+				trustedScores[a.cfg.TrustedNodes[i]] = elem
+			}
+		}
+
+		if len(trustedScores) > 0 {
+			scores, err = chooseN(numChans, trustedScores)
+			if err != nil {
+				return fmt.Errorf("Unable to make weighted choice: %v", err)
+			}
+		}
+
+	}
+
+	// if no trusted nodes, use standart search algorithm
+	if len(a.cfg.TrustedNodes) == 0 || len(trustedScores) == 0 {
+		// Now use the score to make a weighted choice which nodes to attempt
+		// to open channels to.
+		scores, err = chooseN(numChans, scores)
+		if err != nil {
+			return fmt.Errorf("Unable to make weighted choice: %v", err)
+		}
 	}
 
 	chanCandidates := make(map[NodeID]*AttachmentDirective)

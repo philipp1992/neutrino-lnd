@@ -1,6 +1,7 @@
 package lnd
 
 import (
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -65,6 +66,34 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 		return nil, fmt.Errorf("Heuristic weights must sum to 1.0")
 	}
 	return heuristics, nil
+}
+
+func validateAtplTrustedNodes(cfg *autoPilotConfig) ([]autopilot.NodeID, error){
+
+	nodesLen := len(cfg.TrustedNodes)
+	if nodesLen == 0 {
+		return nil, nil
+	}
+
+	trustedNodes := make([]autopilot.NodeID, nodesLen)
+
+	for i := range cfg.TrustedNodes {
+
+		keyBytes, err := hex.DecodeString(cfg.TrustedNodes[i])
+		if err != nil {
+			return nil, err
+		}
+
+		pubKey, err := btcec.ParsePubKey(keyBytes, btcec.S256())
+		if err != nil {
+			return nil, err
+		}
+
+		nodeID := autopilot.NewNodeID(pubKey)
+		trustedNodes[i] = nodeID
+	}
+
+	return trustedNodes, nil
 }
 
 // chanController is an implementation of the autopilot.ChannelController
@@ -159,6 +188,11 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 		return nil, err
 	}
 
+	trustedNodes, err := validateAtplTrustedNodes(cfg)
+	if err != nil {
+		return nil, err
+	}
+
 	weightedAttachment, err := autopilot.NewWeightedCombAttachment(
 		heuristics...,
 	)
@@ -242,6 +276,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 			return false, nil
 		},
 		DisconnectPeer: svr.DisconnectPeer,
+		TrustedNodes: trustedNodes,
 	}
 
 	// Create and return the autopilot.ManagerCfg that administrates this

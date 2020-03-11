@@ -220,6 +220,7 @@ type autoPilotConfig struct {
 	Private        bool               `long:"private" description:"Whether the channels created by the autopilot agent should be private or not. Private channels won't be announced to the network."`
 	MinConfs       int32              `long:"minconfs" description:"The minimum number of confirmations each of your inputs in funding transactions created by the autopilot agent must have."`
 	ConfTarget     uint32             `long:"conftarget" description:"The confirmation target (in blocks) for channels opened by autopilot."`
+	TrustedNodes   []string			  `long:"trustednodes" description:"Initiate connection only to the specified peers"`
 }
 
 type dualFundingConfig struct {
@@ -450,6 +451,7 @@ func loadConfig() (*config, error) {
 			Heuristic: map[string]float64{
 				"preferential": 1.0,
 			},
+			TrustedNodes: make([]string, 0),
 		},
 		DualFunding: &dualFundingConfig{
 			Active: false,
