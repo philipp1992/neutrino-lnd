@@ -1381,26 +1381,13 @@ func (r *ChannelRouter) fetchFundingTx(
 	// First fetch the block hash by the block number encoded, then use
 	// that hash to fetch the block itself.
 	blockNum := int64(chanID.BlockHeight)
-	blockHash, err := r.cfg.Chain.GetBlockHash(blockNum)
-	if err != nil {
-		return nil, err
-	}
-	fundingBlock, err := r.cfg.Chain.GetBlock(blockHash)
+
+	fundingTx, err := r.cfg.Chain.GetRawTxByIndex(blockNum, chanID.TxIndex)
 	if err != nil {
 		return nil, err
 	}
 
-	// As a sanity check, ensure that the advertised transaction index is
-	// within the bounds of the total number of transactions within a
-	// block.
-	numTxns := uint32(len(fundingBlock.Transactions))
-	if chanID.TxIndex > numTxns-1 {
-		return nil, fmt.Errorf("tx_index=#%v is out of range "+
-			"(max_index=%v), network_chan_id=%v", chanID.TxIndex,
-			numTxns-1, chanID)
-	}
-
-	return fundingBlock.Transactions[chanID.TxIndex], nil
+	return fundingTx, nil
 }
 
 // routingMsg couples a routing related routing topology update to the

@@ -50,6 +50,10 @@ func (lw *LightWalletController) GetBlock(blockHash *chainhash.Hash) (*wire.MsgB
 	return lw.client.GetBlock(blockHash)
 }
 
+func (lw *LightWalletController) GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error) {
+	return lw.client.GetRawTxByIndex(blockHeight, txIndex)
+}
+
 func (lw *LightWalletController) LoadCache(startHeight uint32) (bool, error) {
 	return lw.client.LoadSecondLayerCache(startHeight)
 }

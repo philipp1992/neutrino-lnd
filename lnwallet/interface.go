@@ -282,6 +282,9 @@ type BlockChainIO interface {
 	// hash.
 	GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error)
 
+	// GetTxByIndex returns the transaction from block by the given index.
+	GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error)
+
 	// LoadCache loads second layer headers cache on response
 	LoadCache(startHeight uint32) (bool, error)
 

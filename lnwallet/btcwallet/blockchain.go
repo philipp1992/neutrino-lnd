@@ -4,11 +4,9 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightninglabs/neutrino/headerfs"
@@ -159,6 +157,30 @@ func (b *BtcWallet) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) 
 // This method is a part of the lnwallet.BlockChainIO interface.
 func (b *BtcWallet) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
 	return b.chain.GetBlockHash(blockHeight)
+}
+
+func (b *BtcWallet) GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error) {
+	blockHash, err := b.chain.GetBlockHash(blockHeight)
+	if err != nil {
+		return nil, err
+	}
+
+	fundingBlock, err := b.chain.GetBlock(blockHash)
+	if err != nil {
+		return nil, err
+	}
+
+	//As a sanity check, ensure that the advertised transaction index is
+	//within the bounds of the total number of transactions within a
+	//block.
+	numTxns := uint32(len(fundingBlock.Transactions))
+	if txIndex > numTxns-1 {
+		return nil, fmt.Errorf("tx_index=#%v is out of range "+
+			"(max_index=%v), network_chan_id=%v", txIndex,
+			numTxns-1)
+	}
+
+	return fundingBlock.Transactions[txIndex], nil
 }
 
 // no cache for btcwallet

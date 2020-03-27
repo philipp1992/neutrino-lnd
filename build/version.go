@@ -24,7 +24,7 @@ const (
 	appMajor uint = 0
 	appMinor uint = 8
 	appPatch uint = 2
-	appLightWalletPatch = 2
+	appLightWalletPatch = 6
 
 	// appPreRelease MUST only contain characters from semanticAlphabet
 	// per the semantic versioning spec.
