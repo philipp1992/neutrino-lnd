@@ -2343,8 +2343,8 @@ func (f *fundingManager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 		// Otherwise, we'll wait until the funding transaction has
 		// reached 6 confirmations before announcing it.
 		numConfs := uint32(completeChan.NumConfsRequired)
-		if numConfs < 6 {
-			numConfs = 6
+		if numConfs < 3 {
+			numConfs = 3
 		}
 		txid := completeChan.FundingOutpoint.Hash
 		fndgLog.Debugf("Will announce channel %v after ChannelPoint"+
@@ -2846,16 +2846,6 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		msg.pushAmt, msg.chainHash, peerKey.SerializeCompressed(),
 		ourDustLimit, msg.minConfs)
 
-	// First, we'll query the fee estimator for a fee that should get the
-	// commitment transaction confirmed by the next few blocks (conf target
-	// of 3). We target the near blocks here to ensure that we'll be able
-	// to execute a timely unilateral channel closure if needed.
-	commitFeePerKw, err := f.cfg.FeeEstimator.EstimateFeePerKW(3)
-	if err != nil {
-		msg.err <- err
-		return
-	}
-
 	// We set the channel flags to indicate whether we want this channel to
 	// be announced to the network.
 	var channelFlags lnwire.FundingFlag
@@ -2905,7 +2895,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		SubtractFees:     msg.subtractFees,
 		LocalFundingAmt:  localAmt,
 		RemoteFundingAmt: 0,
-		CommitFeePerKw:   commitFeePerKw,
+		CommitFeePerKw:   msg.fundingFeePerKw,
 		FundingFeePerKw:  msg.fundingFeePerKw,
 		PushMSat:         msg.pushAmt,
 		Flags:            channelFlags,
@@ -2948,7 +2938,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 	capacity := reservation.Capacity()
 
 	fndgLog.Infof("Target commit tx sat/kw for pendingID(%x): %v", chanID,
-		int64(commitFeePerKw))
+		int64(msg.fundingFeePerKw))
 
 	// If the remote CSV delay was not set in the open channel request,
 	// we'll use the RequiredRemoteDelay closure to compute the delay we
@@ -3009,7 +2999,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		MaxValueInFlight:      maxValue,
 		ChannelReserve:        chanReserve,
 		HtlcMinimum:           minHtlcIn,
-		FeePerKiloWeight:      uint32(commitFeePerKw),
+		FeePerKiloWeight:      uint32(msg.fundingFeePerKw),
 		CsvDelay:              remoteCsvDelay,
 		MaxAcceptedHTLCs:      maxHtlcs,
 		FundingKey:            ourContribution.MultiSigKey.PubKey,
