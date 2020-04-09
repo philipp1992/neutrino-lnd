@@ -66,16 +66,17 @@ import (
 )
 
 const (
+
 	// maxBtcPaymentMSat is the maximum allowed Bitcoin payment currently
 	// permitted as defined in BOLT-0002.
-	maxBtcPaymentMSat = lnwire.MilliSatoshi(math.MaxUint32)
+	maxBtcPaymentMSat = lnwire.MilliSatoshi(100000000000)
 
 	// maxLtcPaymentMSat is the maximum allowed Litecoin payment currently
 	// permitted.
-	maxLtcPaymentMSat = lnwire.MilliSatoshi(math.MaxUint32) *
+	maxLtcPaymentMSat = lnwire.MilliSatoshi(100000000000) *
 		btcToLtcConversionRate
 
-	maxXsnPaymentMSat = lnwire.MilliSatoshi(math.MaxUint32) *
+	maxXsnPaymentMSat = lnwire.MilliSatoshi(100000000000) *
 		btcToXsnConversionRate
 )
 
@@ -1619,6 +1620,9 @@ func (r *rpcServer) OpenChannel(in *lnrpc.OpenChannelRequest,
 	}
 
 	nodePubKeyBytes = nodePubKey.SerializeCompressed()
+
+	rpcsLog.Debugf("[openchannel]: using fee of %v sat/byte for funding tx",
+		int64(in.SatPerByte))
 
 	// Based on the passed fee related parameters, we'll determine an
 	// appropriate fee rate for the funding transaction.
