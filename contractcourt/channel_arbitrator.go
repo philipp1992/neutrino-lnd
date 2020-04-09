@@ -670,7 +670,7 @@ func (c *ChannelArbitrator) stateStep(
 	// If we're in the default state, then we'll check our set of actions
 	// to see if while we were down, conditions have changed.
 	case StateDefault:
-		log.Debugf("ChannelArbitrator(%v): new block (height=%v) "+
+		log.Tracef("ChannelArbitrator(%v): new block (height=%v) "+
 			"examining active HTLC's", c.cfg.ChanPoint,
 			triggerHeight)
 
@@ -1149,7 +1149,7 @@ func (c *ChannelArbitrator) checkCommitChainActions(height uint32,
 	//  * race condition if adding and we broadcast, etc
 	//  * or would make each instance sync?
 
-	log.Debugf("ChannelArbitrator(%v): checking commit chain actions at "+
+	log.Tracef("ChannelArbitrator(%v): checking commit chain actions at "+
 		"height=%v, in_htlc_count=%v, out_htlc_count=%v",
 		c.cfg.ChanPoint, height,
 		len(htlcs.incomingHTLCs), len(htlcs.outgoingHTLCs))
