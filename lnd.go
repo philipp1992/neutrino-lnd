@@ -46,6 +46,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/macaroons"
 	"github.com/lightningnetwork/lnd/signal"
+	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/walletunlocker"
 	"github.com/lightningnetwork/lnd/watchtower"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
@@ -60,6 +61,25 @@ var (
 	// network.
 	networkDir string
 )
+
+// WalletUnlockerAuthOptions returns a list of DialOptions that can be used to
+// authenticate with the wallet unlocker service.
+//
+// NOTE: This should only be called after the WalletUnlocker listener has
+// signaled it is ready.
+func WalletUnlockerAuthOptions() ([]grpc.DialOption, error) {
+	creds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
+	if err != nil {
+		return nil, fmt.Errorf("unable to read TLS cert: %v", err)
+	}
+
+	// Create a dial options array with the TLS credentials.
+	opts := []grpc.DialOption{
+		grpc.WithTransportCredentials(creds),
+	}
+
+	return opts, nil
+}
 
 // AdminAuthOptions returns a list of DialOptions that can be used to
 // authenticate with the RPC server with admin capabilities.
@@ -100,7 +120,7 @@ func AdminAuthOptions() ([]grpc.DialOption, error) {
 	return opts, nil
 }
 
-// ListnerWithSignal is a net.Listner that has an additional Ready channel that
+// ListenerWithSignal is a net.Listener that has an additional Ready channel that
 // will be closed when a server starts listening.
 type ListenerWithSignal struct {
 	net.Listener
@@ -151,8 +171,9 @@ func Main(lisCfg ListenerCfg) error {
 	}()
 
 	// Show version at startup.
-	ltndLog.Infof("Version: %s, build=%s, logging=%s",
-		build.Version(), build.Deployment, build.LoggingType)
+	ltndLog.Infof("Version: %s commit=%s, build=%s, logging=%s",
+		build.Version(), build.Commit, build.Deployment,
+		build.LoggingType)
 
 	var network string
 	switch {
@@ -204,8 +225,12 @@ func Main(lisCfg ListenerCfg) error {
 		defaultGraphSubDirname,
 		normalizeNetwork(activeNetParams.Name))
 
+	ltndLog.Infof("Opening the main database, this might take a few " +
+		"minutes...")
+
 	// Open the channeldb, which is dedicated to storing channel, and
 	// network related metadata.
+	startOpenTime := time.Now()
 	chanDB, err := channeldb.Open(
 		graphDir,
 		channeldb.OptionSetRejectCacheSize(cfg.Caches.RejectCacheSize),
@@ -218,6 +243,9 @@ func Main(lisCfg ListenerCfg) error {
 		return err
 	}
 	defer chanDB.Close()
+
+	openTime := time.Since(startOpenTime)
+	ltndLog.Infof("Database now open (time_to_open=%v)!", openTime)
 
 	// Only process macaroons if --no-macaroons isn't set.
 	ctx := context.Background()
@@ -448,6 +476,28 @@ func Main(lisCfg ListenerCfg) error {
 		defer towerClientDB.Close()
 	}
 
+	// If tor is active and either v2 or v3 onion services have been specified,
+	// make a tor controller and pass it into both the watchtower server and
+	// the regular lnd server.
+	var torController *tor.Controller
+	if cfg.Tor.Active && (cfg.Tor.V2 || cfg.Tor.V3) {
+		torController = tor.NewController(
+			cfg.Tor.Control, cfg.Tor.TargetIPAddress, cfg.Tor.Password,
+		)
+
+		// Start the tor controller before giving it to any other subsystems.
+		if err := torController.Start(); err != nil {
+			err := fmt.Errorf("unable to initialize tor controller: %v", err)
+			ltndLog.Error(err)
+			return err
+		}
+		defer func() {
+			if err := torController.Stop(); err != nil {
+				ltndLog.Errorf("error stopping tor controller: %v", err)
+			}
+		}()
+	}
+
 	var tower *watchtower.Standalone
 	if cfg.Watchtower.Active {
 		// Segment the watchtower directory by chain and network.
@@ -481,7 +531,7 @@ func Main(lisCfg ListenerCfg) error {
 			return err
 		}
 
-		wtConfig, err := cfg.Watchtower.Apply(&watchtower.Config{
+		wtCfg := &watchtower.Config{
 			BlockFetcher:   activeChainControl.chainIO,
 			DB:             towerDB,
 			EpochRegistrar: activeChainControl.chainNotifier,
@@ -494,7 +544,23 @@ func Main(lisCfg ListenerCfg) error {
 			NodePrivKey: towerPrivKey,
 			PublishTx:   activeChainControl.wallet.PublishTransaction,
 			ChainHash:   *activeNetParams.GenesisHash,
-		}, lncfg.NormalizeAddresses)
+		}
+
+		// If there is a tor controller (user wants auto hidden services), then
+		// store a pointer in the watchtower config.
+		if torController != nil {
+			wtCfg.TorController = torController
+			wtCfg.WatchtowerKeyPath = cfg.Tor.WatchtowerKeyPath
+
+			switch {
+			case cfg.Tor.V2:
+				wtCfg.Type = tor.V2
+			case cfg.Tor.V3:
+				wtCfg.Type = tor.V3
+			}
+		}
+
+		wtConfig, err := cfg.Watchtower.Apply(wtCfg, lncfg.NormalizeAddresses)
 		if err != nil {
 			err := fmt.Errorf("Unable to configure watchtower: %v",
 				err)
@@ -518,6 +584,7 @@ func Main(lisCfg ListenerCfg) error {
 	server, err := newServer(
 		cfg.Listeners, chanDB, towerClientDB, activeChainControl,
 		idPrivKey, walletInitParams.ChansToRestore, chainedAcceptor,
+		torController,
 	)
 	if err != nil {
 		err := fmt.Errorf("Unable to create server: %v", err)
@@ -727,10 +794,25 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 		return nil, nil, "", err
 	}
 
-	// If the certificate expired, delete it and the TLS key and generate a
-	// new pair.
-	if time.Now().After(parsedCert.NotAfter) {
-		ltndLog.Info("TLS certificate is expired, generating a new one")
+	// We check whether the certifcate we have on disk match the IPs and
+	// domains specified by the config. If the extra IPs or domains have
+	// changed from when the certificate was created, we will refresh the
+	// certificate if auto refresh is active.
+	refresh := false
+	if cfg.TLSAutoRefresh {
+		refresh, err = cert.IsOutdated(
+			parsedCert, tlsExtraIPs, tlsExtraDomains,
+		)
+		if err != nil {
+			return nil, nil, "", err
+		}
+	}
+
+	// If the certificate expired or it was outdated, delete it and the TLS
+	// key and generate a new pair.
+	if time.Now().After(parsedCert.NotAfter) || refresh {
+		ltndLog.Info("TLS certificate is expired or outdated, " +
+			"generating a new one")
 
 		err := os.Remove(tlsCertPath)
 		if err != nil {
@@ -752,6 +834,12 @@ func getTLSConfig(tlsCertPath string, tlsKeyPath string, tlsExtraIPs,
 			return nil, nil, "", err
 		}
 		rpcsLog.Infof("Done renewing TLS certificates")
+
+		// Reload the certificate data.
+		certData, _, err = cert.LoadCert(tlsCertPath, tlsKeyPath)
+		if err != nil {
+			return nil, nil, "", err
+		}
 	}
 
 	tlsCfg := cert.TLSConfFromCert(certData)

@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
+	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/netann"
@@ -17,7 +18,7 @@ type mockSigner struct {
 }
 
 func (m *mockSigner) SignMessage(pk *btcec.PublicKey,
-	msg []byte) (*btcec.Signature, error) {
+	msg []byte) (input.Signature, error) {
 
 	if m.err != nil {
 		return nil, m.err
@@ -103,6 +104,7 @@ func TestUpdateDisableFlag(t *testing.T) {
 	t.Parallel()
 
 	for _, tc := range updateDisableTests {
+		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			// Create the initial update, the only fields we are
 			// concerned with in this test are the timestamp and the
@@ -127,7 +129,8 @@ func TestUpdateDisableFlag(t *testing.T) {
 			// disabled or enabled as prescribed in the test case.
 			err := netann.SignChannelUpdate(
 				tc.signer, pubKey, newUpdate,
-				netann.ChannelUpdateSetDisable(tc.disable),
+				netann.ChanUpdSetDisable(tc.disable),
+				netann.ChanUpdSetTimestamp,
 			)
 
 			var fail bool

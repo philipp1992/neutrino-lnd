@@ -7,7 +7,6 @@ import (
 	"math"
 	"time"
 
-	"github.com/coreos/bbolt"
 	sphinx "github.com/lightningnetwork/lightning-onion"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/feature"
@@ -59,27 +58,6 @@ var (
 	// DefaultAprioriHopProbability is the default a priori probability for
 	// a hop.
 	DefaultAprioriHopProbability = float64(0.6)
-
-	// errNoTlvPayload is returned when the destination hop does not support
-	// a tlv payload.
-	errNoTlvPayload = errors.New("destination hop doesn't " +
-		"understand new TLV payloads")
-
-	// errNoPaymentAddr is returned when the destination hop does not
-	// support payment addresses.
-	errNoPaymentAddr = errors.New("destination hop doesn't " +
-		"understand payment addresses")
-
-	// errNoPathFound is returned when a path to the target destination does
-	// not exist in the graph.
-	errNoPathFound = errors.New("unable to find a path to destination")
-
-	// errEdgesDisabled is returned when all possible edges to the target destination are disabled
-	errEdgesDisabled = errors.New("destination hops disabled")
-
-	// errInsufficientLocalBalance is returned when none of the local
-	// channels have enough balance for the payment.
-	errInsufficientBalance = errors.New("insufficient local balance")
 )
 
 // edgePolicyWithSource is a helper struct to keep track of the source node
@@ -96,6 +74,7 @@ type edgePolicyWithSource struct {
 // custom records and payment address.
 type finalHopParams struct {
 	amt         lnwire.MilliSatoshi
+	totalAmt    lnwire.MilliSatoshi
 	cltvDelta   uint16
 	records     record.CustomSet
 	paymentAddr *[32]byte
@@ -199,7 +178,8 @@ func newRoute(sourceVertex route.Vertex,
 			// Otherwise attach the mpp record if it exists.
 			if finalHop.paymentAddr != nil {
 				mpp = record.NewMPP(
-					finalHop.amt, *finalHop.paymentAddr,
+					finalHop.totalAmt,
+					*finalHop.paymentAddr,
 				)
 			}
 		} else {
@@ -274,12 +254,8 @@ func edgeWeight(lockedAmt lnwire.MilliSatoshi, fee lnwire.MilliSatoshi,
 
 // graphParams wraps the set of graph parameters passed to findPath.
 type graphParams struct {
-	// tx can be set to an existing db transaction. If not set, a new
-	// transaction will be started.
-	tx *bbolt.Tx
-
 	// graph is the ChannelGraph to be used during path finding.
-	graph *channeldb.ChannelGraph
+	graph routingGraph
 
 	// additionalEdges is an optional set of edges that should be
 	// considered during path finding, that is not already found in the
@@ -350,13 +326,15 @@ type PathFindingConfig struct {
 	MinProbability float64
 }
 
-// getMaxOutgoingAmt returns the maximum available balance in any of the
-// channels of the given node.
-func getMaxOutgoingAmt(node route.Vertex, outgoingChan *uint64,
-	g *graphParams, tx *bbolt.Tx) (lnwire.MilliSatoshi, error) {
+// getOutgoingBalance returns the maximum available balance in any of the
+// channels of the given node. The second return parameters is the total
+// available balance.
+func getOutgoingBalance(node route.Vertex, outgoingChan *uint64,
+	bandwidthHints map[uint64]lnwire.MilliSatoshi,
+	g routingGraph) (lnwire.MilliSatoshi, lnwire.MilliSatoshi, error) {
 
-	var max lnwire.MilliSatoshi
-	cb := func(_ *bbolt.Tx, edgeInfo *channeldb.ChannelEdgeInfo, outEdge,
+	var max, total lnwire.MilliSatoshi
+	cb := func(edgeInfo *channeldb.ChannelEdgeInfo, outEdge,
 		_ *channeldb.ChannelEdgePolicy) error {
 
 		if outEdge == nil {
@@ -370,44 +348,48 @@ func getMaxOutgoingAmt(node route.Vertex, outgoingChan *uint64,
 			return nil
 		}
 
-		bandwidth, ok := g.bandwidthHints[chanID]
+		bandwidth, ok := bandwidthHints[chanID]
 
-		// If the bandwidth is not available for whatever reason, don't
-		// fail the pathfinding early.
+		// If the bandwidth is not available, use the channel capacity.
+		// This can happen when a channel is added to the graph after
+		// we've already queried the bandwidth hints.
 		if !ok {
-			max = lnwire.MaxMilliSatoshi
-			return nil
+			bandwidth = lnwire.NewMSatFromSatoshis(
+				edgeInfo.Capacity,
+			)
 		}
 
 		if bandwidth > max {
 			max = bandwidth
 		}
 
+		total += bandwidth
+
 		return nil
 	}
 
 	// Iterate over all channels of the to node.
-	err := g.graph.ForEachNodeChannel(tx, node[:], cb)
+	err := g.forEachNodeChannel(node, cb)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
 	}
-	return max, err
+	return max, total, err
 }
 
-// findPath attempts to find a path from the source node within the
-// ChannelGraph to the target node that's capable of supporting a payment of
-// `amt` value. The current approach implemented is modified version of
-// Dijkstra's algorithm to find a single shortest path between the source node
-// and the destination. The distance metric used for edges is related to the
-// time-lock+fee costs along a particular edge. If a path is found, this
-// function returns a slice of ChannelHop structs which encoded the chosen path
-// from the target to the source. The search is performed backwards from
-// destination node back to source. This is to properly accumulate fees
-// that need to be paid along the path and accurately check the amount
-// to forward at every node against the available bandwidth.
+// findPath attempts to find a path from the source node within the ChannelGraph
+// to the target node that's capable of supporting a payment of `amt` value. The
+// current approach implemented is modified version of Dijkstra's algorithm to
+// find a single shortest path between the source node and the destination. The
+// distance metric used for edges is related to the time-lock+fee costs along a
+// particular edge. If a path is found, this function returns a slice of
+// ChannelHop structs which encoded the chosen path from the target to the
+// source. The search is performed backwards from destination node back to
+// source. This is to properly accumulate fees that need to be paid along the
+// path and accurately check the amount to forward at every node against the
+// available bandwidth.
 func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
-	source, target route.Vertex, amt lnwire.MilliSatoshi, finalHtlcExpiry int32) (
-	[]*channeldb.ChannelEdgePolicy, error) {
+	source, target route.Vertex, amt lnwire.MilliSatoshi,
+	finalHtlcExpiry int32) ([]*channeldb.ChannelEdgePolicy, error) {
 
 	log.Infof("trying to find route for amt=%v, src=%v, dst=%v ", amt.ToSatoshis().String(), source.String(), target.String())
 
@@ -430,46 +412,25 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 			"time=%v", nodesVisited, edgesExpanded, timeElapsed)
 	}()
 
-	// Get source node outside of the pathfinding tx, to prevent a deadlock.
-	selfNode, err := g.graph.SourceNode()
-	if err != nil {
-		return nil, err
-	}
-	self := selfNode.PubKeyBytes
-
-	tx := g.tx
-	if tx == nil {
-		tx, err = g.graph.Database().Begin(false)
-		if err != nil {
-			return nil, err
-		}
-		defer tx.Rollback()
-	}
-
 	// If no destination features are provided, we will load what features
 	// we have for the target node from our graph.
 	features := r.DestFeatures
 	if features == nil {
-		targetNode, err := g.graph.FetchLightningNode(tx, target)
-		switch {
-
-		// If the node exists and has features, use them directly.
-		case err == nil:
-			features = targetNode.Features
-
-		// If an error other than the node not existing is hit, abort.
-		case err != channeldb.ErrGraphNodeNotFound:
+		var err error
+		features, err = g.graph.fetchNodeFeatures(target)
+		if err != nil {
 			return nil, err
-
-		// Otherwise, we couldn't find a node announcement, populate a
-		// blank feature vector.
-		default:
-			features = lnwire.EmptyFeatureVector()
 		}
 	}
 
-	// With the destination's feature vector selected, ensure that all
-	// transitive depdencies are set.
+	// Ensure that the destination's features don't include unknown
+	// required features.
+	err := feature.ValidateRequired(features)
+	if err != nil {
+		return nil, err
+	}
+
+	// Ensure that all transitive dependencies are set.
 	err = feature.ValidateDeps(features)
 	if err != nil {
 		return nil, err
@@ -497,13 +458,26 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 	// If we are routing from ourselves, check that we have enough local
 	// balance available.
+	self := g.graph.sourceNode()
+
 	if source == self {
-		max, err := getMaxOutgoingAmt(self, r.OutgoingChannelID, g, tx)
+		max, total, err := getOutgoingBalance(
+			self, r.OutgoingChannelID, g.bandwidthHints, g.graph,
+		)
 		if err != nil {
 			return nil, err
 		}
-		if max < amt {
+
+		// If the total outgoing balance isn't sufficient, it will be
+		// impossible to complete the payment.
+		if total < amt {
 			return nil, errInsufficientBalance
+		}
+
+		// If there is only not enough capacity on a single route, it
+		// may still be possible to complete the payment by splitting.
+		if max < amt {
+			return nil, errNoPathFound
 		}
 	}
 
@@ -580,7 +554,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 		edgesExpanded++
 
-		// Calculate amount that the candidate node would have to sent
+		// Calculate amount that the candidate node would have to send
 		// out.
 		amountToSend := toNodeDist.amountToReceive
 
@@ -591,7 +565,8 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 		log.Trace(newLogClosure(func() string {
 			return fmt.Sprintf("path finding probability: fromnode=%v,"+
-				" tonode=%v, probability=%v", fromVertex, toNodeDist.node,
+				" tonode=%v, amt=%v, probability=%v",
+				fromVertex, toNodeDist.node, amountToSend,
 				edgeProbability)
 		}))
 
@@ -762,31 +737,34 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 
 		// Check cache for features of the fromNode.
 		fromFeatures, ok := featureCache[node]
-		if !ok {
-			targetNode, err := g.graph.FetchLightningNode(tx, node)
-			switch {
-
-			// If the node exists and has valid features, use them.
-			case err == nil:
-				err := feature.ValidateDeps(targetNode.Features)
-				if err == nil {
-					fromFeatures = targetNode.Features
-				}
-
-			// If an error other than the node not existing is hit,
-			// abort.
-			case err != channeldb.ErrGraphNodeNotFound:
-				return nil, err
-
-			// Otherwise, we couldn't find a node announcement,
-			// populate a blank feature vector.
-			default:
-				fromFeatures = lnwire.EmptyFeatureVector()
-			}
-
-			// Update cache.
-			featureCache[node] = fromFeatures
+		if ok {
+			return fromFeatures, nil
 		}
+
+		// Fetch node features fresh from the graph.
+		fromFeatures, err := g.graph.fetchNodeFeatures(node)
+		if err != nil {
+			return nil, err
+		}
+
+		// Don't route through nodes that contain unknown required
+		// features and mark as nil in the cache.
+		err = feature.ValidateRequired(fromFeatures)
+		if err != nil {
+			featureCache[node] = nil
+			return nil, nil
+		}
+
+		// Don't route through nodes that don't properly set all
+		// transitive feature dependencies and mark as nil in the cache.
+		err = feature.ValidateDeps(fromFeatures)
+		if err != nil {
+			featureCache[node] = nil
+			return nil, nil
+		}
+
+		// Update cache.
+		featureCache[node] = fromFeatures
 
 		return fromFeatures, nil
 	}
@@ -800,7 +778,7 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		// Create unified policies for all incoming connections.
 		u := newUnifiedPolicies(self, pivot, r.OutgoingChannelID)
 
-		err := u.addGraphPolicies(g.graph, tx)
+		err := u.addGraphPolicies(g.graph)
 		if err != nil {
 			return nil, err
 		}

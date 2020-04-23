@@ -80,6 +80,16 @@ var (
 			lnwire.PaymentAddrOptional,
 		), lnwire.Features,
 	)
+
+	mppFeatures = lnwire.NewRawFeatureVector(
+		lnwire.TLVOnionPayloadOptional,
+		lnwire.PaymentAddrOptional,
+		lnwire.MPPOptional,
+	)
+
+	unknownRequiredFeatures = lnwire.NewFeatureVector(
+		lnwire.NewRawFeatureVector(100), lnwire.Features,
+	)
 )
 
 var (
@@ -807,10 +817,8 @@ func testBasicGraphPathFindingCase(t *testing.T, graphInstance *testGraphInstanc
 
 	paymentAmt := lnwire.NewMSatFromSatoshis(test.paymentAmt)
 	target := graphInstance.aliasMap[test.target]
-	path, err := findPath(
-		&graphParams{
-			graph: graphInstance.graph,
-		},
+	path, err := dbFindPath(
+		graphInstance.graph, nil, nil,
 		&RestrictParams{
 			FeeLimit:          test.feeLimit,
 			ProbabilitySource: noProbabilitySource,
@@ -1001,11 +1009,8 @@ func TestPathFindingWithAdditionalEdges(t *testing.T) {
 	find := func(r *RestrictParams) (
 		[]*channeldb.ChannelEdgePolicy, error) {
 
-		return findPath(
-			&graphParams{
-				graph:           graph.graph,
-				additionalEdges: additionalEdges,
-			},
+		return dbFindPath(
+			graph.graph, additionalEdges, nil,
 			r, testPathFindingConfig,
 			sourceNode.PubKeyBytes, doge.PubKeyBytes, paymentAmt,
 			0,
@@ -1328,6 +1333,7 @@ func TestNewRoute(t *testing.T) {
 				sourceVertex, testCase.hops, startingHeight,
 				finalHopParams{
 					amt:         testCase.paymentAmount,
+					totalAmt:    testCase.paymentAmount,
 					cltvDelta:   finalHopCLTV,
 					records:     nil,
 					paymentAddr: testCase.paymentAddr,
@@ -1429,10 +1435,8 @@ func TestPathNotAvailable(t *testing.T) {
 	var unknownNode route.Vertex
 	copy(unknownNode[:], unknownNodeBytes)
 
-	_, err = findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, unknownNode, 100, 0,
 	)
@@ -1478,7 +1482,7 @@ func TestDestTLVGraphFallback(t *testing.T) {
 	ctx := newPathFindingTestContext(t, testChannels, "roasbeef")
 	defer ctx.cleanup()
 
-	sourceNode, err := ctx.graphParams.graph.SourceNode()
+	sourceNode, err := ctx.graph.SourceNode()
 	if err != nil {
 		t.Fatalf("unable to fetch source node: %v", err)
 
@@ -1487,10 +1491,8 @@ func TestDestTLVGraphFallback(t *testing.T) {
 	find := func(r *RestrictParams,
 		target route.Vertex) ([]*channeldb.ChannelEdgePolicy, error) {
 
-		return findPath(
-			&graphParams{
-				graph: ctx.graphParams.graph,
-			},
+		return dbFindPath(
+			ctx.graph, nil, nil,
 			r, testPathFindingConfig,
 			sourceNode.PubKeyBytes, target, 100, 0,
 		)
@@ -1587,33 +1589,14 @@ func TestMissingFeatureDep(t *testing.T) {
 	ctx := newPathFindingTestContext(t, testChannels, "roasbeef")
 	defer ctx.cleanup()
 
-	sourceNode, err := ctx.graphParams.graph.SourceNode()
-	if err != nil {
-		t.Fatalf("unable to fetch source node: %v", err)
-
-	}
-
-	find := func(r *RestrictParams,
-		target route.Vertex) ([]*channeldb.ChannelEdgePolicy, error) {
-
-		return findPath(
-			&graphParams{
-				graph: ctx.graphParams.graph,
-			},
-			r, testPathFindingConfig,
-			sourceNode.PubKeyBytes, target, 100, 0,
-		)
-	}
-
 	// Conner's node in the graph has a broken feature vector, since it
 	// signals payment addresses without signaling tlv onions. Pathfinding
 	// should fail since we validate transitive feature dependencies for the
 	// final node.
-	conner := ctx.testGraphInstance.aliasMap["conner"]
+	conner := ctx.keyFromAlias("conner")
+	joost := ctx.keyFromAlias("joost")
 
-	restrictions := *noRestrictions
-
-	_, err = find(&restrictions, conner)
+	_, err := ctx.findPath(conner, 100)
 	if err != feature.NewErrMissingFeatureDep(
 		lnwire.TLVOnionPayloadOptional,
 	) {
@@ -1623,9 +1606,9 @@ func TestMissingFeatureDep(t *testing.T) {
 	// Now, set the TLV and payment addresses features to override the
 	// broken features found in the graph. We should succeed in finding a
 	// path to conner.
-	restrictions.DestFeatures = tlvPayAddrFeatures
+	ctx.restrictParams.DestFeatures = tlvPayAddrFeatures
 
-	path, err := find(&restrictions, conner)
+	path, err := ctx.findPath(conner, 100)
 	if err != nil {
 		t.Fatalf("path should have been found: %v", err)
 	}
@@ -1637,9 +1620,74 @@ func TestMissingFeatureDep(t *testing.T) {
 	// errNoPathFound and not the missing feature dep err above since
 	// intermediate hops are simply skipped if they have invalid feature
 	// vectors, leaving no possible route to joost.
-	joost := ctx.testGraphInstance.aliasMap["joost"]
+	_, err = ctx.findPath(joost, 100)
+	if err != errNoPathFound {
+		t.Fatalf("path shouldn't have been found: %v", err)
+	}
+}
 
-	_, err = find(&restrictions, joost)
+// TestUnknownRequiredFeatures asserts that we fail path finding when the
+// destination requires an unknown required feature, and that we skip
+// intermediaries that signal unknown required features.
+func TestUnknownRequiredFeatures(t *testing.T) {
+	t.Parallel()
+
+	testChannels := []*testChannel{
+		asymmetricTestChannel("roasbeef", "conner", 100000,
+			&testChannelPolicy{
+				Expiry:  144,
+				FeeRate: 400,
+				MinHTLC: 1,
+				MaxHTLC: 100000000,
+			},
+			&testChannelPolicy{
+				Expiry:   144,
+				FeeRate:  400,
+				MinHTLC:  1,
+				MaxHTLC:  100000000,
+				Features: unknownRequiredFeatures,
+			}, 0,
+		),
+		asymmetricTestChannel("conner", "joost", 100000,
+			&testChannelPolicy{
+				Expiry:   144,
+				FeeRate:  400,
+				MinHTLC:  1,
+				MaxHTLC:  100000000,
+				Features: unknownRequiredFeatures,
+			},
+			&testChannelPolicy{
+				Expiry:  144,
+				FeeRate: 400,
+				MinHTLC: 1,
+				MaxHTLC: 100000000,
+			}, 0,
+		),
+	}
+
+	ctx := newPathFindingTestContext(t, testChannels, "roasbeef")
+	defer ctx.cleanup()
+
+	conner := ctx.keyFromAlias("conner")
+	joost := ctx.keyFromAlias("joost")
+
+	// Conner's node in the graph has an unknown required feature (100).
+	// Pathfinding should fail since we check the destination's features for
+	// unknown required features before beginning pathfinding.
+	expErr := feature.NewErrUnknownRequired([]lnwire.FeatureBit{100})
+	_, err := ctx.findPath(conner, 100)
+	if !reflect.DeepEqual(err, expErr) {
+		t.Fatalf("path shouldn't have been found: %v", err)
+	}
+
+	// Now, try to find a route to joost through conner. The destination
+	// features are valid, but conner's feature vector in the graph still
+	// requires feature 100. We expect errNoPathFound and not the error
+	// above since intermediate hops are simply skipped if they have invalid
+	// feature vectors, leaving no possible route to joost. This asserts
+	// that we don't try to route _through_ nodes with unknown required
+	// features.
+	_, err = ctx.findPath(joost, 100)
 	if err != errNoPathFound {
 		t.Fatalf("path shouldn't have been found: %v", err)
 	}
@@ -1665,45 +1713,25 @@ func TestDestPaymentAddr(t *testing.T) {
 	ctx := newPathFindingTestContext(t, testChannels, "roasbeef")
 	defer ctx.cleanup()
 
-	sourceNode, err := ctx.graphParams.graph.SourceNode()
-	if err != nil {
-		t.Fatalf("unable to fetch source node: %v", err)
-
-	}
-
-	find := func(r *RestrictParams,
-		target route.Vertex) ([]*channeldb.ChannelEdgePolicy, error) {
-
-		return findPath(
-			&graphParams{
-				graph: ctx.graphParams.graph,
-			},
-			r, testPathFindingConfig,
-			sourceNode.PubKeyBytes, target, 100, 0,
-		)
-	}
-
-	luoji := ctx.testGraphInstance.aliasMap["luoji"]
-
-	restrictions := *noRestrictions
+	luoji := ctx.keyFromAlias("luoji")
 
 	// Add payment address w/o any invoice features.
-	restrictions.PaymentAddr = &[32]byte{1}
+	ctx.restrictParams.PaymentAddr = &[32]byte{1}
 
 	// Add empty destination features. This should cause us to fail, since
 	// this overrides anything in the graph.
-	restrictions.DestFeatures = lnwire.EmptyFeatureVector()
+	ctx.restrictParams.DestFeatures = lnwire.EmptyFeatureVector()
 
-	_, err = find(&restrictions, luoji)
+	_, err := ctx.findPath(luoji, 100)
 	if err != errNoPaymentAddr {
 		t.Fatalf("path shouldn't have been found: %v", err)
 	}
 
 	// Now, set the TLV and payment address features for the destination. We
 	// should succeed in finding a path to luoji.
-	restrictions.DestFeatures = tlvPayAddrFeatures
+	ctx.restrictParams.DestFeatures = tlvPayAddrFeatures
 
-	path, err := find(&restrictions, luoji)
+	path, err := ctx.findPath(luoji, 100)
 	if err != nil {
 		t.Fatalf("path should have been found: %v", err)
 	}
@@ -1735,14 +1763,12 @@ func TestPathInsufficientCapacity(t *testing.T) {
 	target := graph.aliasMap["sophon"]
 
 	payAmt := lnwire.NewMSatFromSatoshis(btcutil.SatoshiPerBitcoin)
-	_, err = findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
-	if err != errNoPathFound {
+	if err != errInsufficientBalance {
 		t.Fatalf("graph shouldn't be able to support payment: %v", err)
 	}
 }
@@ -1768,10 +1794,8 @@ func TestRouteFailMinHTLC(t *testing.T) {
 	// attempt should fail.
 	target := graph.aliasMap["songoku"]
 	payAmt := lnwire.MilliSatoshi(10)
-	_, err = findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -1867,10 +1891,8 @@ func TestRouteFailDisabledEdge(t *testing.T) {
 	// succeed without issue, and return a single path via phamnuwen
 	target := graph.aliasMap["sophon"]
 	payAmt := lnwire.NewMSatFromSatoshis(105000)
-	_, err = findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -1895,10 +1917,8 @@ func TestRouteFailDisabledEdge(t *testing.T) {
 		t.Fatalf("unable to update edge: %v", err)
 	}
 
-	_, err = findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -1920,10 +1940,8 @@ func TestRouteFailDisabledEdge(t *testing.T) {
 
 	// If we attempt to route through that edge, we should get a failure as
 	// it is no longer eligible.
-	_, err = findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -1954,10 +1972,8 @@ func TestPathSourceEdgesBandwidth(t *testing.T) {
 	// cheapest path.
 	target := graph.aliasMap["sophon"]
 	payAmt := lnwire.NewMSatFromSatoshis(50000)
-	path, err := findPath(
-		&graphParams{
-			graph: graph.graph,
-		},
+	path, err := dbFindPath(
+		graph.graph, nil, nil,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -1977,11 +1993,8 @@ func TestPathSourceEdgesBandwidth(t *testing.T) {
 
 	// Since both these edges has a bandwidth of zero, no path should be
 	// found.
-	_, err = findPath(
-		&graphParams{
-			graph:          graph.graph,
-			bandwidthHints: bandwidths,
-		},
+	_, err = dbFindPath(
+		graph.graph, nil, bandwidths,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -1995,11 +2008,8 @@ func TestPathSourceEdgesBandwidth(t *testing.T) {
 
 	// Now, if we attempt to route again, we should find the path via
 	// phamnuven, as the other source edge won't be considered.
-	path, err = findPath(
-		&graphParams{
-			graph:          graph.graph,
-			bandwidthHints: bandwidths,
-		},
+	path, err = dbFindPath(
+		graph.graph, nil, bandwidths,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -2026,11 +2036,8 @@ func TestPathSourceEdgesBandwidth(t *testing.T) {
 
 	// Since we ignore disable flags for local channels, a path should
 	// still be found.
-	path, err = findPath(
-		&graphParams{
-			graph:          graph.graph,
-			bandwidthHints: bandwidths,
-		},
+	path, err = dbFindPath(
+		graph.graph, nil, bandwidths,
 		noRestrictions, testPathFindingConfig,
 		sourceNode.PubKeyBytes, target, payAmt, 0,
 	)
@@ -2079,7 +2086,8 @@ func TestPathFindSpecExample(t *testing.T) {
 	carol := ctx.aliases["C"]
 	const amt lnwire.MilliSatoshi = 4999999
 	route, err := ctx.router.FindRoute(
-		bobNode.PubKeyBytes, carol, amt, noRestrictions, nil,
+		bobNode.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
+		zpay32.DefaultFinalCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find route: %v", err)
@@ -2134,7 +2142,8 @@ func TestPathFindSpecExample(t *testing.T) {
 
 	// We'll now request a route from A -> B -> C.
 	route, err = ctx.router.FindRoute(
-		source.PubKeyBytes, carol, amt, noRestrictions, nil,
+		source.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
+		zpay32.DefaultFinalCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find routes: %v", err)
@@ -2777,41 +2786,11 @@ func TestRouteToSelf(t *testing.T) {
 	ctx.assertPath(path, []uint64{1, 3, 2})
 }
 
-// TestInsufficientBalance tests that a dedicated error is returned for
-// insufficient local balance.
-func TestInsufficientBalance(t *testing.T) {
-	t.Parallel()
-
-	testChannels := []*testChannel{
-		symmetricTestChannel("source", "target", 100000, &testChannelPolicy{
-			Expiry:      144,
-			FeeBaseMsat: 500,
-		}, 1),
-	}
-
-	ctx := newPathFindingTestContext(t, testChannels, "source")
-	defer ctx.cleanup()
-
-	paymentAmt := lnwire.NewMSatFromSatoshis(100)
-	target := ctx.keyFromAlias("target")
-
-	ctx.graphParams.bandwidthHints = map[uint64]lnwire.MilliSatoshi{
-		1: lnwire.NewMSatFromSatoshis(50),
-	}
-
-	// Find the best path to self. We expect this to be source->a->source,
-	// because a charges the lowest forwarding fee.
-	_, err := ctx.findPath(target, paymentAmt)
-	if err != errInsufficientBalance {
-		t.Fatalf("expected insufficient balance error, but got: %v",
-			err)
-	}
-}
-
 type pathFindingTestContext struct {
 	t                 *testing.T
-	graphParams       graphParams
+	graph             *channeldb.ChannelGraph
 	restrictParams    RestrictParams
+	bandwidthHints    map[uint64]lnwire.MilliSatoshi
 	pathFindingConfig PathFindingConfig
 	testGraphInstance *testGraphInstance
 	source            route.Vertex
@@ -2837,10 +2816,8 @@ func newPathFindingTestContext(t *testing.T, testChannels []*testChannel,
 		testGraphInstance: testGraphInstance,
 		source:            route.Vertex(sourceNode.PubKeyBytes),
 		pathFindingConfig: *testPathFindingConfig,
-		graphParams: graphParams{
-			graph: testGraphInstance.graph,
-		},
-		restrictParams: *noRestrictions,
+		graph:             testGraphInstance.graph,
+		restrictParams:    *noRestrictions,
 	}
 
 	return ctx
@@ -2867,9 +2844,9 @@ func (c *pathFindingTestContext) findPath(target route.Vertex,
 	amt lnwire.MilliSatoshi) ([]*channeldb.ChannelEdgePolicy,
 	error) {
 
-	return findPath(
-		&c.graphParams, &c.restrictParams, &c.pathFindingConfig,
-		c.source, target, amt, 0,
+	return dbFindPath(
+		c.graph, nil, c.bandwidthHints, &c.restrictParams,
+		&c.pathFindingConfig, c.source, target, amt, 0,
 	)
 }
 
@@ -2885,4 +2862,34 @@ func (c *pathFindingTestContext) assertPath(path []*channeldb.ChannelEdgePolicy,
 				"but got %v", i, expected[i], edge.ChannelID)
 		}
 	}
+}
+
+// dbFindPath calls findPath after getting a db transaction from the database
+// graph.
+func dbFindPath(graph *channeldb.ChannelGraph,
+	additionalEdges map[route.Vertex][]*channeldb.ChannelEdgePolicy,
+	bandwidthHints map[uint64]lnwire.MilliSatoshi,
+	r *RestrictParams, cfg *PathFindingConfig,
+	source, target route.Vertex, amt lnwire.MilliSatoshi,
+	finalHtlcExpiry int32) ([]*channeldb.ChannelEdgePolicy, error) {
+
+	routingTx, err := newDbRoutingTx(graph)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		err := routingTx.close()
+		if err != nil {
+			log.Errorf("Error closing db tx: %v", err)
+		}
+	}()
+
+	return findPath(
+		&graphParams{
+			additionalEdges: additionalEdges,
+			bandwidthHints:  bandwidthHints,
+			graph:           routingTx,
+		},
+		r, cfg, source, target, amt, finalHtlcExpiry,
+	)
 }
