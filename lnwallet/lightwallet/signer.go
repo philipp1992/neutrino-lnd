@@ -9,7 +9,6 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
-	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
 // maybeTweakPrivKey examines the single and double tweak parameters on the
@@ -64,7 +63,7 @@ func (lw *LightWalletController) privateKeyForScript(pkScript []byte, signDesc *
 	return privKey, nil
 }
 
-func (lw *LightWalletController) SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) ([]byte, error) {
+func (lw *LightWalletController) SignOutputRaw(tx *wire.MsgTx, signDesc *input.SignDescriptor) (input.Signature, error) {
 	witnessScript := signDesc.WitnessScript
 
 
@@ -93,7 +92,7 @@ func (lw *LightWalletController) SignOutputRaw(tx *wire.MsgTx, signDesc *input.S
 	}
 
 	// Chop off the sighash flag at the end of the signature.
-	return sig[:len(sig)-1], nil
+	return btcec.ParseDERSignature(sig[:len(sig)-1], btcec.S256())
 }
 
 // ComputeInputScript generates a complete InputIndex for the passed
@@ -187,7 +186,7 @@ func (lw *LightWalletController) ComputeInputScript(tx *wire.MsgTx, signDesc *in
 // interface.
 var _ input.Signer = (*LightWalletController)(nil)
 
-func (lw *LightWalletController) SignMessage(pubKey *btcec.PublicKey, msg []byte) (*btcec.Signature, error) {
+func (lw *LightWalletController) SignMessage(pubKey *btcec.PublicKey, msg []byte) (input.Signature, error) {
 
 	privKey, err := lw.keychain.DerivePrivKey(keychain.KeyDescriptor{
 		PubKey: pubKey,
@@ -212,6 +211,6 @@ func (lw *LightWalletController) SignMessage(pubKey *btcec.PublicKey, msg []byte
 }
 
 
-// A compile time check to ensure that BtcWallet implements the MessageSigner
-// interface.
-var _ lnwallet.MessageSigner = (*LightWalletController)(nil)
+//// A compile time check to ensure that BtcWallet implements the MessageSigner
+//// interface.
+//var _ lnwallet.MessageSigner = (*LightWalletController)(nil)
