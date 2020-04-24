@@ -516,7 +516,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 				return nil, err
 			}
 		} else if cfg.Xsncoin.Active && !cfg.Xsncoin.RegTest {
-			ltndLog.Infof("Initializing xsnd backed fee estimator")
+			ltndLog.Infof("Initializing xsnd backed fee estimator in "+
+				"%s mode", bitcoindMode.EstimateMode)
 
 			// Finally, we'll re-initialize the fee estimator, as
 			// if we're using xsnd as a backend, then we can
@@ -524,7 +525,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// coded value.
 			fallBackFeeRate := chainfee.SatPerKVByte(25 * 1000)
 			cc.feeEstimator, err = chainfee.NewBitcoindEstimator(
-				*rpcConfig, fallBackFeeRate.FeePerKWeight(),
+				*rpcConfig, bitcoindMode.EstimateMode,
+				fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
 				return nil, err
