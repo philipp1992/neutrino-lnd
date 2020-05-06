@@ -12,7 +12,7 @@ import (
 // count positively when calculating the scores using preferential attachment.
 // The minimum channel size is calculated as median/minMedianChanSizeFraction,
 // where median is the median channel size of the entire graph.
-const minMedianChanSizeFraction = 10
+const minMedianChanSizeFraction = 20
 
 // PrefAttachment is an implementation of the AttachmentHeuristic interface
 // that implement a non-linear preferential attachment heuristic. This means
