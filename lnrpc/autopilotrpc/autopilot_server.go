@@ -5,6 +5,7 @@ package autopilotrpc
 import (
 	"context"
 	"encoding/hex"
+	"fmt"
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -256,10 +257,14 @@ func (s *Server) SetScores(ctx context.Context,
 func (s *Server) RestartWNewConstraints(ctx context.Context,
 	in *RestartConstraintsRequest) (*RestartConstraintsResponse, error) {
 
+	var err error
+
 	log.Debugf("Restarting autopilot agent with allocation=%v, chanlimit=%d, feeRate=%d sat/byte",
 		in.Allocation, in.ChanLimit, in.SatPerByte)
 
-	var err error
+	if in.Allocation > 1.0 || in.Allocation < 0 {
+		return nil, fmt.Errorf("allocation our of range, expected 0-1, received %v", in.Allocation)
+	}
 
 	// first of all stop agent
 	err = s.manager.StopAgent()
