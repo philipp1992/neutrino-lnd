@@ -9,6 +9,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
@@ -110,15 +111,25 @@ type chanController struct {
 // specified amount. This function should un-block immediately after the
 // funding transaction that marks the channel open has been broadcast.
 func (c *chanController) OpenChannel(target *btcec.PublicKey,
-	amt btcutil.Amount) error {
+	amt btcutil.Amount, feeRate uint32) error {
 
-	// With the connection established, we'll now establish our connection
-	// to the target peer, waiting for the first update before we exit.
-	feePerKw, err := c.server.cc.feeEstimator.EstimateFeePerKW(
-		c.confTarget,
+	var (
+		feePerKw chainfee.SatPerKWeight
+		err error
 	)
-	if err != nil {
-		return err
+
+	// if feeRate is not set or set too high, use dynamic estimation
+	if feeRate < 1 || feeRate >= 100 {
+		// With the connection established, we'll now establish our connection
+		// to the target peer, waiting for the first update before we exit.
+		feePerKw, err = c.server.cc.feeEstimator.EstimateFeePerKW(
+			c.confTarget,
+		)
+		if err != nil {
+			return err
+		}
+	} else { // otherwise, can use user defined static fee
+		feePerKw = chainfee.SatPerKVByte(feeRate * 1000).FeePerKWeight()
 	}
 
 	// Construct the open channel request and send it to the server to begin
@@ -183,6 +194,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 		uint16(cfg.MaxChannels),
 		10,
 		cfg.Allocation,
+		cfg.SatPerByte,
 	)
 	heuristics, err := validateAtplCfg(cfg)
 	if err != nil {

@@ -882,7 +882,7 @@ func (a *Agent) executeDirective(directive AttachmentDirective) {
 	a.pendingMtx.Unlock()
 
 	// We can then begin the funding workflow with this peer.
-	err = a.cfg.ChanController.OpenChannel(pub, directive.ChanAmt)
+	err = a.cfg.ChanController.OpenChannel(pub, directive.ChanAmt, a.cfg.Constraints.FeeRate())
 	if err != nil {
 		log.Warnf("Unable to open channel to %x of %v: %v",
 			pub.SerializeCompressed(), directive.ChanAmt, err)

@@ -31,6 +31,12 @@ service Autopilot {
     if the external scoring heuristic is enabled.
     */
     rpc SetScores (SetScoresRequest) returns (SetScoresResponse);
+
+    /**
+    RestartWNewConstraints is used to restart the autopilot agent
+    with new pilot constraints.
+    */
+    rpc RestartWNewConstraints(RestartConstraintsRequest) returns (RestartConstraintsResponse);
 }
 
 message StatusRequest {
@@ -77,4 +83,13 @@ message SetScoresRequest {
 }
 
 message SetScoresResponse {
+}
+
+message RestartConstraintsRequest {
+    double allocation = 1;
+    uint32 chanLimit = 2;
+    uint32 satPerByte = 3;
+}
+
+message RestartConstraintsResponse {
 }

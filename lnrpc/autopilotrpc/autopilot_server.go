@@ -47,6 +47,13 @@ var (
 			Entity: "offchain",
 			Action: "write",
 		}},
+		"/autopilotrpc.Autopilot/RestartWNewConstraints": {{
+			Entity: "onchain",
+			Action: "write",
+		}, {
+			Entity: "offchain",
+			Action: "write",
+		}},
 	}
 )
 
@@ -241,4 +248,33 @@ func (s *Server) SetScores(ctx context.Context,
 	}
 
 	return &SetScoresResponse{}, nil
+}
+
+// RestartWNewConstraints restarts agent with new constraints, if active.
+//
+// NOTE: Part of the AutopilotServer interface.
+func (s *Server) RestartWNewConstraints(ctx context.Context,
+	in *RestartConstraintsRequest) (*RestartConstraintsResponse, error) {
+
+	log.Debugf("Restarting autopilot agent with allocation=%v, chanlimit=%d, feeRate=%d sat/byte",
+		in.Allocation, in.ChanLimit, in.SatPerByte)
+
+	var err error
+
+	// first of all stop agent
+	err = s.manager.StopAgent()
+	if err != nil {
+		return nil, err
+	}
+
+	// then update constraints
+	s.manager.UpdateCurrentConstraints(in.Allocation, uint16(in.ChanLimit), in.SatPerByte)
+
+	// and restart our agent
+	err = s.manager.StartAgent()
+	if err != nil {
+		return nil, err
+	}
+
+	return &RestartConstraintsResponse{}, nil
 }

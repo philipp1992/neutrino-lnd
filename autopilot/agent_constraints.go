@@ -29,6 +29,12 @@ type AgentConstraints interface {
 	// MaxChanSize returns largest channel that the autopilot agent should
 	// create.
 	MaxChanSize() btcutil.Amount
+
+	// UpdateConstraints updates current autopilot agent constraints
+	UpdateConstraints(allocation float64, chanLimit uint16, feeRate uint32)
+
+	// FeeRate returns current autopilot agent fee rate
+	FeeRate() uint32
 }
 
 // agenConstraints is an implementation of the AgentConstraints interface that
@@ -55,6 +61,8 @@ type agentConstraints struct {
 	// order to control the level of parallelism caused by the autopilot
 	// agent.
 	maxPendingOpens uint16
+
+	satPerByte uint32
 }
 
 // A compile time assertion to ensure agentConstraints satisfies the
@@ -63,7 +71,7 @@ var _ AgentConstraints = (*agentConstraints)(nil)
 
 // NewConstraints returns a new AgentConstraints with the given limits.
 func NewConstraints(minChanSize, maxChanSize btcutil.Amount, chanLimit,
-	maxPendingOpens uint16, allocation float64) AgentConstraints {
+	maxPendingOpens uint16, allocation float64, satPerByte uint32) AgentConstraints {
 
 	return &agentConstraints{
 		minChanSize:     minChanSize,
@@ -71,6 +79,7 @@ func NewConstraints(minChanSize, maxChanSize btcutil.Amount, chanLimit,
 		chanLimit:       chanLimit,
 		allocation:      allocation,
 		maxPendingOpens: maxPendingOpens,
+		satPerByte:      satPerByte,
 	}
 }
 
@@ -148,4 +157,14 @@ func (h *agentConstraints) MinChanSize() btcutil.Amount {
 // Note: part of the AgentConstraints interface.
 func (h *agentConstraints) MaxChanSize() btcutil.Amount {
 	return h.maxChanSize
+}
+
+func (h *agentConstraints) UpdateConstraints(allocation float64, chanLimit uint16, feeRate uint32) {
+	h.allocation = allocation
+	h.chanLimit = chanLimit
+	h.satPerByte = feeRate
+}
+
+func (h *agentConstraints) FeeRate() uint32 {
+	return h.satPerByte
 }

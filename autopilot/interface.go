@@ -210,7 +210,7 @@ type ChannelController interface {
 	// slightly less to account for fees. This function should un-block
 	// immediately after the funding transaction that marks the channel
 	// open has been broadcast.
-	OpenChannel(target *btcec.PublicKey, amt btcutil.Amount) error
+	OpenChannel(target *btcec.PublicKey, amt btcutil.Amount, feeRate uint32) error
 
 	// CloseChannel attempts to close out the target channel.
 	//

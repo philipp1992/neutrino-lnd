@@ -228,7 +228,7 @@ type autoPilotConfig struct {
 	MinConfs       int32              `long:"minconfs" description:"The minimum number of confirmations each of your inputs in funding transactions created by the autopilot agent must have."`
 	ConfTarget     uint32             `long:"conftarget" description:"The confirmation target (in blocks) for channels opened by autopilot."`
 	TrustedNodes   []string			  `long:"trustednodes" description:"Initiate connection only to the specified peers"`
-}
+	SatPerByte 	   uint32			  `long:"satperbyte" description:"Initiate autopilot agent with configurable static fee rate"`}
 
 type dualFundingConfig struct {
 	Active         bool               `long:"active" description:"If the dual channel funding should be active or not."`

@@ -387,3 +387,8 @@ func (m *Manager) SetNodeScores(name string, scores map[NodeID]float64) error {
 
 	return nil
 }
+
+func (m *Manager) UpdateCurrentConstraints(allocation float64, chanLimit uint16, feeRate uint32) {
+	m.cfg.PilotCfg.Constraints.UpdateConstraints(allocation, chanLimit, feeRate)
+}
+
