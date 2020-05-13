@@ -453,61 +453,52 @@ func (r *ChannelRouter) Start() error {
 		}
 	}
 
-	// If AssumeChannelValid is present, then we won't rely on pruning
-	// channels from the graph based on their spentness, but whether they
-	// are considered zombies or not.
-	if r.cfg.AssumeChannelValid {
-		if err := r.pruneZombieChans(); err != nil {
+	// Use our filtered chain view to prune
+	// channels as soon as they are detected as spent on-chain.
+	if err := r.cfg.ChainView.Start(); err != nil {
+		return err
+	}
+
+	// Once the instance is active, we'll fetch the channel we'll
+	// receive notifications over.
+	r.newBlocks = r.cfg.ChainView.FilteredBlocks()
+	r.staleBlocks = r.cfg.ChainView.DisconnectedBlocks()
+
+	// Before we perform our manual block pruning, we'll construct
+	// and apply a fresh chain filter to the active
+	// FilteredChainView instance.  We do this before, as otherwise
+	// we may miss on-chain events as the filter hasn't properly
+	// been applied.
+	channelView, err := r.cfg.Graph.ChannelView()
+	if err != nil && err != channeldb.ErrGraphNoEdgesFound {
+		return err
+	}
+
+	log.Infof("Filtering chain using %v channels active",
+		len(channelView))
+
+	if len(channelView) != 0 {
+		err = r.cfg.ChainView.UpdateFilter(
+			channelView, uint32(bestHeight),
+		)
+		if err != nil {
 			return err
 		}
-	} else {
-		// Otherwise, we'll use our filtered chain view to prune
-		// channels as soon as they are detected as spent on-chain.
-		if err := r.cfg.ChainView.Start(); err != nil {
-			return err
-		}
+	}
 
-		// Once the instance is active, we'll fetch the channel we'll
-		// receive notifications over.
-		r.newBlocks = r.cfg.ChainView.FilteredBlocks()
-		r.staleBlocks = r.cfg.ChainView.DisconnectedBlocks()
+	// Before we begin normal operation of the router, we first need
+	// to synchronize the channel graph to the latest state of the
+	// UTXO set.
+	if err := r.syncGraphWithChain(); err != nil {
+		return err
+	}
 
-		// Before we perform our manual block pruning, we'll construct
-		// and apply a fresh chain filter to the active
-		// FilteredChainView instance.  We do this before, as otherwise
-		// we may miss on-chain events as the filter hasn't properly
-		// been applied.
-		channelView, err := r.cfg.Graph.ChannelView()
-		if err != nil && err != channeldb.ErrGraphNoEdgesFound {
-			return err
-		}
-
-		log.Infof("Filtering chain using %v channels active",
-			len(channelView))
-
-		if len(channelView) != 0 {
-			err = r.cfg.ChainView.UpdateFilter(
-				channelView, uint32(bestHeight),
-			)
-			if err != nil {
-				return err
-			}
-		}
-
-		// Before we begin normal operation of the router, we first need
-		// to synchronize the channel graph to the latest state of the
-		// UTXO set.
-		if err := r.syncGraphWithChain(); err != nil {
-			return err
-		}
-
-		// Finally, before we proceed, we'll prune any unconnected nodes
-		// from the graph in order to ensure we maintain a tight graph
-		// of "useful" nodes.
-		err = r.cfg.Graph.PruneGraphNodes()
-		if err != nil && err != channeldb.ErrGraphNodesNotFound {
-			return err
-		}
+	// Finally, before we proceed, we'll prune any unconnected nodes
+	// from the graph in order to ensure we maintain a tight graph
+	// of "useful" nodes.
+	err = r.cfg.Graph.PruneGraphNodes()
+	if err != nil && err != channeldb.ErrGraphNodesNotFound {
+		return err
 	}
 
 	// If any payments are still in flight, we resume, to make sure their
@@ -693,6 +684,7 @@ func (r *ChannelRouter) syncGraphWithChain() error {
 		if err != nil {
 			return err
 		}
+
 		filterBlock, err := r.cfg.ChainView.FilterBlock(nextHash)
 		if err != nil {
 			return err
