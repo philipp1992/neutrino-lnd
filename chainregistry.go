@@ -310,7 +310,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 				lightWalletMode.RPCHost, rpcPort)
 		}
 
-		// Establish the c	onnection to lightWallet and create the clients
+		// Establish the connection to lightWallet and create the clients
 		// required for our relevant subsystems.
 		lightWalletConn, err := chain.NewLightWalletConn(
 			activeNetParams.Params, lightWalletHost,
@@ -661,8 +661,6 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		cc.chainIO = wc
 		cc.wc = wc
 	}
-
-
 
 	channelConstraints := defaultBtcChannelConstraints
 	if registeredChains.PrimaryChain() == litecoinChain {
