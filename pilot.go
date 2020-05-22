@@ -137,7 +137,7 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 	req := &openChanReq{
 		targetPubkey:    target,
 		chainHash:       *activeNetParams.GenesisHash,
-		subtractFees:    false,
+		subtractFees:    true,
 		localFundingAmt: amt,
 		pushAmt:         0,
 		minHtlcIn:       c.chanMinHtlcIn,
