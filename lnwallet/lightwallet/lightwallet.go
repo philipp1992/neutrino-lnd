@@ -4,6 +4,9 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"strings"
+	"sync"
+
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -15,7 +18,6 @@ import (
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
-	"sync"
 )
 
 type LightWalletController struct{
@@ -163,6 +165,9 @@ func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
 
 	txid, err := lw.client.SendRawTransaction(tx, true)
 	if err != nil {
+		if strings.Contains(err.Error(), "Missing inputs") {
+			return lnwallet.ErrDoubleSpend
+		}
 		return err
 	}
 
