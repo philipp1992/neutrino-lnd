@@ -118,8 +118,8 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 		err error
 	)
 
-	// if feeRate is not set or set too high, use dynamic estimation
-	if feeRate < 1 || feeRate >= 100 {
+	// If feeRate is not set, use dynamic estimation
+	if feeRate < 1 {
 		// With the connection established, we'll now establish our connection
 		// to the target peer, waiting for the first update before we exit.
 		feePerKw, err = c.server.cc.feeEstimator.EstimateFeePerKW(
@@ -130,6 +130,10 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 		}
 	} else { // otherwise, can use user defined static fee
 		feePerKw = chainfee.SatPerKVByte(feeRate * 1000).FeePerKWeight()
+	}
+
+	if feePerKw < chainfee.FeePerKwFloor {
+		feePerKw = chainfee.FeePerKwFloor
 	}
 
 	// Construct the open channel request and send it to the server to begin
