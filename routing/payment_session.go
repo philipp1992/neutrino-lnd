@@ -258,14 +258,14 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 		cleanup()
 
 		switch {
-		case err == errNoPathFound:
+		case err == errNoPathFound: // err == errEdgesDisabled:
 			// Don't split if this is a legacy payment without mpp
 			// record.
 			if p.payment.PaymentAddr == nil {
 				p.log.Debugf("not splitting because payment " +
 					"address is unspecified")
 
-				return nil, errNoPathFound
+					return nil, errNoPathFound
 			}
 
 			// No splitting if this is the last shard.

@@ -400,11 +400,11 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 	nodesVisited := 0
 	edgesExpanded := 0
 
-	// Pathfinding additional flags to be checked
-	var (
-		// edgeDisabled returns whether all edges to destination are disabled from current graph view
-		edgesDisabled = true
-	)
+	//// Pathfinding additional flags to be checked
+	//var (
+	//	// edgeDisabled returns whether all edges to destination are disabled from current graph view
+	//	edgesDisabled = true
+	//)
 
 	defer func() {
 		timeElapsed := time.Since(start)
@@ -816,10 +816,10 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 				continue
 			}
 
-			disabled := unifiedPolicy.getChanDisabledPolicy()
-			if !disabled {
-				edgesDisabled = false
-			}
+			//disabled := unifiedPolicy.getChanDisabledPolicy()
+			//if !disabled {
+			//	edgesDisabled = false
+			//}
 
 			// Get feature vector for fromNode.
 			fromFeatures, err := getGraphFeatures(fromNode)
@@ -862,9 +862,9 @@ func findPath(g *graphParams, r *RestrictParams, cfg *PathFindingConfig,
 		currentNodeWithDist, ok := distance[currentNode]
 		if !ok {
 
-			if edgesDisabled {
-				return nil, errEdgesDisabled
-			}
+			//if edgesDisabled {
+			//	return nil, errEdgesDisabled
+			//}
 
 			// If the node doesn't have a next hop it means we didn't find a path.
 			return nil, errNoPathFound
