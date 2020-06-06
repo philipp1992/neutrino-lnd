@@ -46,7 +46,7 @@ var (
 	// DefaultShardMinAmt is the default amount beyond which we won't try to
 	// further split the payment if no route is found. It is the minimum
 	// amount that we use as the shard size when splitting.
-	DefaultShardMinAmt = lnwire.NewMSatFromSatoshis(10000)
+	DefaultShardMinAmt = lnwire.NewMSatFromSatoshis(1000)
 )
 
 // Error returns the string representation of the noRouteError
