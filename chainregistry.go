@@ -73,6 +73,8 @@ const (
 	defaultLitecoinTimeLockDelta  = 576
 	defaultLitecoinDustLimit      = btcutil.Amount(54600)
 
+	DefaultXsncoinTimeLockDelta = 500
+
 	// defaultBitcoinStaticFeePerKW is the fee rate of 50 sat/vbyte
 	// expressed in sat/kw.
 	defaultBitcoinStaticFeePerKW = chainfee.SatPerKWeight(12500)

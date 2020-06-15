@@ -437,7 +437,7 @@ func loadConfig() (*config, error) {
 			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
 			BaseFee:       DefaultBitcoinBaseFeeMSat,
 			FeeRate:       DefaultBitcoinFeeRate,
-			TimeLockDelta: DefaultBitcoinTimeLockDelta,
+			TimeLockDelta: DefaultXsncoinTimeLockDelta,
 			Node:          "xsnd",
 			},
 		XsndMode: &bitcoindConfig {
