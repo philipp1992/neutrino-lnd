@@ -1758,6 +1758,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 		remoteCsvDelay:  remoteCsvDelay,
 		minConfs:        minConfs,
 		shutdownScript:  script,
+		subtractFees: 	 in.SubtractFees,
 	}, nil
 }
 
