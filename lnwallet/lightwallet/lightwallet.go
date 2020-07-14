@@ -102,7 +102,7 @@ func (lw *LightWalletController) CreateSimpleTx(outputs []*wire.TxOut, feeRate c
 func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int32) ([]*lnwallet.Utxo, error) {
 
 	var addresses []string
-	result, err := lw.client.ChainConn.RPCClient().ListUtxos(4, 9999999, addresses)
+	result, err := lw.client.ChainConn.RPCClient().ListUtxos(3, 9999999, addresses)
 	if err != nil {
 		return nil, err
 	}
@@ -155,10 +155,12 @@ func (lw *LightWalletController) LockedOutpoint(o wire.OutPoint) bool {
 
 func (lw *LightWalletController) LockOutpoint(o wire.OutPoint) {
 	lw.lockedOutpoints[o] = struct{}{}
+	lw.client.LockOutpoint(o)
 }
 
 func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
 	delete(lw.lockedOutpoints, o)
+	lw.client.UnlockOutpoint(o)
 }
 
 func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
