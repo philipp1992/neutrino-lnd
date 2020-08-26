@@ -13,6 +13,7 @@ import (
 	"github.com/lightningnetwork/lnd/queue"
 	"sync"
 	"sync/atomic"
+	"time"
 )
 
 const (
@@ -753,17 +754,33 @@ func (b *LightWalletNotifier) historicalSpendDetails(
 		default:
 		}
 
-		// First, we'll fetch the block for the current height.
-		blockHash, err := b.chainConn.GetBlockHash(int64(height))
+		blockHash, err := retryGetBlockHashAttempt(5, 3, func() (*chainhash.Hash, error) {
+
+			// First, we'll fetch the block for the current height.
+			blockHash, err := b.chainConn.GetBlockHash(int64(height))
+			if err != nil {
+				return nil, fmt.Errorf("unable to retrieve hash for "+
+					"block with height %d: %v", height, err)
+			}
+
+			return blockHash, nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("unable to retrieve hash for "+
-				"block with height %d: %v", height, err)
+			return nil, err
 		}
 
-		block, err := b.chainConn.GetBlock(blockHash)
+		block, err := retryGetBlockAttempt(5, 3, func() (*wire.MsgBlock, error) {
+
+			block, err := b.chainConn.GetBlock(blockHash)
+			if err != nil {
+				return nil, fmt.Errorf("unable to retrieve block "+
+					"with hash %v: %v", blockHash, err)
+			}
+
+			return block, nil
+		})
 		if err != nil {
-			return nil, fmt.Errorf("unable to retrieve block "+
-				"with hash %v: %v", blockHash, err)
+			return nil, err
 		}
 
 		// Then, we'll manually go over every input in every transaction
@@ -942,4 +959,42 @@ func (b *LightWalletNotifier) RegisterBlockEpochNtfn(
 			},
 		}, nil
 	}
+}
+
+// retryGetBlockHashAttempt will try to retry function call for attempts times,
+// useful for network calls which can fail due to internet connection.
+func retryGetBlockHashAttempt(attempts int, sleep time.Duration, f func() (*chainhash.Hash, error)) (hash *chainhash.Hash, err error) {
+	for i := 0; ; i++ {
+		hash, err = f()
+		if err == nil {
+			return hash, nil
+		}
+
+		if i >= (attempts - 1) {
+			break
+		}
+
+		time.Sleep(sleep)
+
+	}
+	return nil, fmt.Errorf("after %d attempts, last error: %s", attempts, err)
+}
+
+// retryGetBlockAttempt will try to retry function call for attempts times,
+// useful for network calls which can fail due to internet connection.
+func retryGetBlockAttempt(attempts int, sleep time.Duration, f func() (*wire.MsgBlock, error)) (block *wire.MsgBlock, err error) {
+	for i := 0; ; i++ {
+		block, err = f()
+		if err == nil {
+			return block, nil
+		}
+
+		if i >= (attempts - 1) {
+			break
+		}
+
+		time.Sleep(sleep)
+
+	}
+	return nil, fmt.Errorf("after %d attempts, last error: %s", attempts, err)
 }
