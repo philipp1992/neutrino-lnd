@@ -31,6 +31,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
@@ -171,7 +172,7 @@ type chainControl struct {
 // full-node, another backed by a running bitcoind full-node, and the other
 // backed by a running neutrino light client instance. When running with a
 // neutrino light client instance, `neutrinoCS` must be non-nil.
-func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
+func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 	privateWalletPw, publicWalletPw []byte, birthday time.Time,
 	recoveryWindow uint32, wallet *wallet.Wallet,
 	neutrinoCS *neutrino.ChainService) (*chainControl, error) {
@@ -179,18 +180,18 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	// Set the RPC config from the "home" chain. Multi-chain isn't yet
 	// active, so we'll restrict usage to a particular chain for now.
 	homeChainConfig := cfg.Bitcoin
-	if registeredChains.PrimaryChain() == litecoinChain {
+	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		homeChainConfig = cfg.Litecoin
 	}
 	if registeredChains.PrimaryChain() == xsncoinChain {
 		homeChainConfig = cfg.Xsncoin
 	}
 	ltndLog.Infof("Primary chain is set to: %v",
-		registeredChains.PrimaryChain())
+		cfg.registeredChains.PrimaryChain())
 
 	cc := &chainControl{}
 
-	switch registeredChains.PrimaryChain() {
+	switch cfg.registeredChains.PrimaryChain() {
 	case bitcoinChain:
 		cc.routingPolicy = htlcswitch.ForwardingPolicy{
 			MinHTLCOut:    cfg.Bitcoin.MinHTLCOut,
@@ -225,8 +226,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			defaultBitcoinStaticFeePerKW, 0,
 		)
 	default:
-		return nil, fmt.Errorf("Default routing policy for chain %v is "+
-			"unknown", registeredChains.PrimaryChain())
+		return nil, fmt.Errorf("default routing policy for chain %v is "+
+			"unknown", cfg.registeredChains.PrimaryChain())
 	}
 
 	walletConfig := &btcwallet.Config{
@@ -235,15 +236,22 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		Birthday:       birthday,
 		RecoveryWindow: recoveryWindow,
 		DataDir:        homeChainConfig.ChainDir,
-		NetParams:      activeNetParams.Params,
-		CoinType:       activeNetParams.CoinType,
+		NetParams:      cfg.ActiveNetParams.Params,
+		CoinType:       cfg.ActiveNetParams.CoinType,
 		Wallet:         wallet,
 	}
 
 	var err error
 
+	heightHintCacheConfig := chainntnfs.CacheConfig{
+		QueryDisable: cfg.HeightHintCacheQueryDisable,
+	}
+	if cfg.HeightHintCacheQueryDisable {
+		ltndLog.Infof("Height Hint Cache Queries disabled")
+	}
+
 	// Initialize the height hint cache within the chain directory.
-	hintCache, err := chainntnfs.NewHeightHintCache(chanDB)
+	hintCache, err := chainntnfs.NewHeightHintCache(heightHintCacheConfig, localDB)
 	if err != nil {
 		return nil, fmt.Errorf("unable to initialize height hint "+
 			"cache: %v", err)
@@ -283,7 +291,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		}
 
 		walletConfig.ChainSource = chain.NewNeutrinoClient(
-			activeNetParams.Params, neutrinoCS,
+			cfg.ActiveNetParams.Params, neutrinoCS,
 		)
 	case "lightwallet":
 		var lightWalletMode *lightWalletConfig
@@ -355,7 +363,6 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 
 			lwKeyRing := keychain.NewLightWalletKeyRing(lwClient.ChainConn.RPCClient())
 			wc, err := lightwallet.New(*walletConfig, lwClient, lwKeyRing)
-
 			if err != nil {
 				return nil, err
 			}
@@ -397,7 +404,8 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		}
 
 	case "bitcoind", "litecoind", "xsnd":
-		var bitcoindMode *bitcoindConfig
+		var bitcoindMode *lncfg.Bitcoind
+
 		switch {
 		case cfg.Bitcoin.Active:
 			bitcoindMode = cfg.BitcoindMode
@@ -419,7 +427,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			// btcd, which picks a different port so that btcwallet
 			// can use the same RPC port as bitcoind. We convert
 			// this back to the btcwallet/bitcoind port.
-			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
+			rpcPort, err := strconv.Atoi(cfg.ActiveNetParams.rpcPort)
 			if err != nil {
 				return nil, err
 			}
@@ -448,10 +456,10 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		// Establish the connection to bitcoind and create the clients
 		// required for our relevant subsystems.
 		bitcoindConn, err := chain.NewBitcoindConn(
-			activeNetParams.Params, bitcoindHost,
+			cfg.ActiveNetParams.Params, bitcoindHost,
 			bitcoindMode.RPCUser, bitcoindMode.RPCPass,
 			bitcoindMode.ZMQPubRawBlock, bitcoindMode.ZMQPubRawTx,
-			100*time.Millisecond,
+			5*time.Second,
 		)
 		if err != nil {
 			return nil, err
@@ -463,7 +471,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		}
 
 		cc.chainNotifier = bitcoindnotify.New(
-			bitcoindConn, activeNetParams.Params, hintCache, hintCache,
+			bitcoindConn, cfg.ActiveNetParams.Params, hintCache, hintCache,
 		)
 		cc.chainView = chainview.NewBitcoindFilteredChainView(bitcoindConn)
 		walletConfig.ChainSource = bitcoindConn.NewBitcoindClient()
@@ -544,7 +552,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		// connection. If a raw cert was specified in the config, then
 		// we'll set that directly. Otherwise, we attempt to read the
 		// cert from the path specified in the config.
-		var btcdMode *btcdConfig
+		var btcdMode *lncfg.Btcd
 		switch {
 		case cfg.Bitcoin.Active:
 			btcdMode = cfg.BtcdMode
@@ -580,7 +588,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			btcdHost = btcdMode.RPCHost
 		} else {
 			btcdHost = fmt.Sprintf("%v:%v", btcdMode.RPCHost,
-				activeNetParams.rpcPort)
+				cfg.ActiveNetParams.rpcPort)
 		}
 
 		btcdUser := btcdMode.RPCUser
@@ -596,7 +604,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 			DisableAutoReconnect: false,
 		}
 		cc.chainNotifier, err = btcdnotify.New(
-			rpcConfig, activeNetParams.Params, hintCache, hintCache,
+			rpcConfig, cfg.ActiveNetParams.Params, hintCache, hintCache,
 		)
 		if err != nil {
 			return nil, err
@@ -612,7 +620,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 
 		// Create a special websockets rpc client for btcd which will be used
 		// by the wallet for notifications, calls, etc.
-		chainRPC, err := chain.NewRPCClient(activeNetParams.Params, btcdHost,
+		chainRPC, err := chain.NewRPCClient(cfg.ActiveNetParams.Params, btcdHost,
 			btcdUser, btcdPass, rpcCert, false, 20)
 		if err != nil {
 			return nil, err
@@ -665,14 +673,19 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 	}
 
 	channelConstraints := defaultBtcChannelConstraints
-	if registeredChains.PrimaryChain() == litecoinChain {
+	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		channelConstraints = defaultLtcChannelConstraints
 	}
+
+	keyRing := keychain.NewBtcWalletKeyRing(
+		wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
+	)
+	cc.keyRing = keyRing
 
 	// Create, and start the lnwallet, which handles the core payment
 	// channel logic, and exposes control via proxy state machines.
 	walletCfg := lnwallet.Config{
-		Database:           chanDB,
+		Database:           remoteDB,
 		Notifier:           cc.chainNotifier,
 		WalletController:   cc.wc,
 		Signer:             cc.signer,
@@ -680,7 +693,7 @@ func newChainControlFromConfig(cfg *config, chanDB *channeldb.DB,
 		SecretKeyRing:      cc.keyRing,
 		ChainIO:            cc.chainIO,
 		DefaultConstraints: channelConstraints,
-		NetParams:          *activeNetParams.Params,
+		NetParams:          *cfg.ActiveNetParams.Params,
 	}
 	lnWallet, err := lnwallet.NewLightningWallet(walletCfg)
 	if err != nil {
@@ -880,13 +893,15 @@ func (c *chainRegistry) NumActiveChains() uint32 {
 
 // initNeutrinoBackend inits a new instance of the neutrino light client
 // backend given a target chain directory to store the chain state.
-func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error) {
+func initNeutrinoBackend(cfg *Config, chainDir string) (*neutrino.ChainService,
+	func(), error) {
+
 	// First we'll open the database file for neutrino, creating the
 	// database if needed. We append the normalized network name here to
 	// match the behavior of btcwallet.
 	dbPath := filepath.Join(
 		chainDir,
-		normalizeNetwork(activeNetParams.Name),
+		normalizeNetwork(cfg.ActiveNetParams.Name),
 	)
 
 	// Ensure that the neutrino db path exists.
@@ -915,7 +930,7 @@ func initNeutrinoBackend(chainDir string) (*neutrino.ChainService, func(), error
 	config := neutrino.Config{
 		DataDir:      dbPath,
 		Database:     db,
-		ChainParams:  *activeNetParams.Params,
+		ChainParams:  *cfg.ActiveNetParams.Params,
 		AddPeers:     cfg.NeutrinoMode.AddPeers,
 		ConnectPeers: cfg.NeutrinoMode.ConnectPeers,
 		Dialer: func(addr net.Addr) (net.Conn, error) {

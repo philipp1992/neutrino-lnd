@@ -15,6 +15,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/davecgh/go-spew/spew"
+	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/shachain"
@@ -33,7 +34,13 @@ func TestOpenWithCreate(t *testing.T) {
 
 	// Next, open thereby creating channeldb for the first time.
 	dbPath := filepath.Join(tempDirName, "cdb")
-	cdb, err := Open(dbPath)
+	backend, cleanup, err := kvdb.GetTestBackend(dbPath, "cdb")
+	if err != nil {
+		t.Fatalf("unable to get test db backend: %v", err)
+	}
+	defer cleanup()
+
+	cdb, err := CreateWithBackend(backend)
 	if err != nil {
 		t.Fatalf("unable to create channeldb: %v", err)
 	}
@@ -44,6 +51,16 @@ func TestOpenWithCreate(t *testing.T) {
 	// The path should have been successfully created.
 	if !fileExists(dbPath) {
 		t.Fatalf("channeldb failed to create data directory")
+	}
+
+	// Now, reopen the same db in dry run migration mode. Since we have not
+	// applied any migrations, this should ignore the flag and not fail.
+	cdb, err = Open(dbPath, OptionDryRunMigration(true))
+	if err != nil {
+		t.Fatalf("unable to create channeldb: %v", err)
+	}
+	if err := cdb.Close(); err != nil {
+		t.Fatalf("unable to close channeldb: %v", err)
 	}
 }
 
@@ -63,7 +80,13 @@ func TestWipe(t *testing.T) {
 
 	// Next, open thereby creating channeldb for the first time.
 	dbPath := filepath.Join(tempDirName, "cdb")
-	cdb, err := Open(dbPath)
+	backend, cleanup, err := kvdb.GetTestBackend(dbPath, "cdb")
+	if err != nil {
+		t.Fatalf("unable to get test db backend: %v", err)
+	}
+	defer cleanup()
+
+	cdb, err := CreateWithBackend(backend)
 	if err != nil {
 		t.Fatalf("unable to create channeldb: %v", err)
 	}
@@ -92,7 +115,7 @@ func TestFetchClosedChannelForID(t *testing.T) {
 
 	const numChans = 101
 
-	cdb, cleanUp, err := makeTestDB()
+	cdb, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
@@ -163,7 +186,7 @@ func TestFetchClosedChannelForID(t *testing.T) {
 func TestAddrsForNode(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := makeTestDB()
+	cdb, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
@@ -224,7 +247,7 @@ func TestAddrsForNode(t *testing.T) {
 func TestFetchChannel(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := makeTestDB()
+	cdb, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
@@ -328,7 +351,7 @@ func genRandomChannelShell() (*ChannelShell, error) {
 func TestRestoreChannelShells(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := makeTestDB()
+	cdb, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
@@ -340,19 +363,6 @@ func TestRestoreChannelShells(t *testing.T) {
 	channelShell, err := genRandomChannelShell()
 	if err != nil {
 		t.Fatalf("unable to gen channel shell: %v", err)
-	}
-
-	graph := cdb.ChannelGraph()
-
-	// Before we can restore the channel, we'll need to make a source node
-	// in the graph as the channel edge we create will need to have a
-	// origin.
-	testNode, err := createTestVertex(cdb)
-	if err != nil {
-		t.Fatalf("unable to create test node: %v", err)
-	}
-	if err := graph.SetSourceNode(testNode); err != nil {
-		t.Fatalf("unable to set source node: %v", err)
 	}
 
 	// With the channel shell constructed, we'll now insert it into the
@@ -388,7 +398,7 @@ func TestRestoreChannelShells(t *testing.T) {
 	if err != ErrNoRestoredChannelMutation {
 		t.Fatalf("able to mutate restored channel")
 	}
-	err = channel.AdvanceCommitChainTail(nil)
+	err = channel.AdvanceCommitChainTail(nil, nil)
 	if err != ErrNoRestoredChannelMutation {
 		t.Fatalf("able to mutate restored channel")
 	}
@@ -426,25 +436,6 @@ func TestRestoreChannelShells(t *testing.T) {
 		t.Fatalf("addr mismach: expected %v, got %v",
 			linkNode.Addresses, channelShell.NodeAddrs)
 	}
-
-	// Finally, we'll ensure that the edge for the channel was properly
-	// inserted.
-	chanInfos, err := graph.FetchChanInfos(
-		[]uint64{channelShell.Chan.ShortChannelID.ToUint64()},
-	)
-	if err != nil {
-		t.Fatalf("unable to find edges: %v", err)
-	}
-
-	if len(chanInfos) != 1 {
-		t.Fatalf("wrong amount of chan infos: expected %v got %v",
-			len(chanInfos), 1)
-	}
-
-	// We should only find a single edge.
-	if chanInfos[0].Policy1 != nil && chanInfos[0].Policy2 != nil {
-		t.Fatalf("only a single edge should be inserted: %v", err)
-	}
 }
 
 // TestAbandonChannel tests that the AbandonChannel method is able to properly
@@ -454,7 +445,7 @@ func TestRestoreChannelShells(t *testing.T) {
 func TestAbandonChannel(t *testing.T) {
 	t.Parallel()
 
-	cdb, cleanUp, err := makeTestDB()
+	cdb, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}
@@ -627,7 +618,7 @@ func TestFetchChannels(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			t.Parallel()
 
-			cdb, cleanUp, err := makeTestDB()
+			cdb, cleanUp, err := MakeTestDB()
 			if err != nil {
 				t.Fatalf("unable to make test "+
 					"database: %v", err)
@@ -696,7 +687,7 @@ func TestFetchChannels(t *testing.T) {
 
 // TestFetchHistoricalChannel tests lookup of historical channels.
 func TestFetchHistoricalChannel(t *testing.T) {
-	cdb, cleanUp, err := makeTestDB()
+	cdb, cleanUp, err := MakeTestDB()
 	if err != nil {
 		t.Fatalf("unable to make test database: %v", err)
 	}

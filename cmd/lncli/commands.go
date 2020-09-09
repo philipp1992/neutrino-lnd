@@ -14,7 +14,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -26,7 +25,6 @@ import (
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/walletunlocker"
 	"github.com/urfave/cli"
-	"golang.org/x/crypto/ssh/terminal"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )
@@ -194,6 +192,11 @@ func estimateFees(ctx *cli.Context) error {
 	return nil
 }
 
+var txLabelFlag = cli.StringFlag{
+	Name:  "label",
+	Usage: "(optional) a label for the transaction",
+}
+
 var sendCoinsCommand = cli.Command{
 	Name:      "sendcoins",
 	Category:  "On-chain",
@@ -216,7 +219,7 @@ var sendCoinsCommand = cli.Command{
 		cli.BoolFlag{
 			Name: "sweepall",
 			Usage: "if set, then the amount field will be ignored, " +
-				"and all the wallet will attempt to sweep all " +
+				"and the wallet will attempt to sweep all " +
 				"outputs within the wallet to the target " +
 				"address",
 		},
@@ -236,6 +239,7 @@ var sendCoinsCommand = cli.Command{
 				"sat/byte that should be used when crafting " +
 				"the transaction",
 		},
+		txLabelFlag,
 	},
 	Action: actionDecorator(sendCoins),
 }
@@ -295,6 +299,7 @@ func sendCoins(ctx *cli.Context) error {
 		TargetConf: int32(ctx.Int64("conf_target")),
 		SatPerByte: ctx.Int64("sat_per_byte"),
 		SendAll:    ctx.Bool("sweepall"),
+		Label:      ctx.String(txLabelFlag.Name),
 	}
 	txid, err := client.SendCoins(ctxb, req)
 	if err != nil {
@@ -450,6 +455,7 @@ var sendManyCommand = cli.Command{
 			Usage: "(optional) a manual fee expressed in sat/byte that should be " +
 				"used when crafting the transaction",
 		},
+		txLabelFlag,
 	},
 	Action: actionDecorator(sendMany),
 }
@@ -475,6 +481,7 @@ func sendMany(ctx *cli.Context) error {
 		AddrToAmount: amountToAddr,
 		TargetConf:   int32(ctx.Int64("conf_target")),
 		SatPerByte:   ctx.Int64("sat_per_byte"),
+		Label:        ctx.String(txLabelFlag.Name),
 	})
 	if err != nil {
 		return err
@@ -635,7 +642,7 @@ var closeChannelCommand = cli.Command{
 			Name: "delivery_addr",
 			Usage: "(optional) an address to deliver funds " +
 				"upon cooperative channel closing, may only " +
-				"be used if an upfront shutdown addresss is not" +
+				"be used if an upfront shutdown address is not " +
 				"already set",
 		},
 	},
@@ -852,7 +859,7 @@ func closeAllChannels(ctx *cli.Context) error {
 					"The closing transaction will need %d "+
 					"confirmations before the funds can be "+
 					"spent. (yes/no): ", channel.RemotePubkey,
-					channel.ChannelPoint, channel.CsvDelay)
+					channel.ChannelPoint, channel.LocalConstraints.CsvDelay)
 
 				confirmed := promptForConfirmation(msg)
 
@@ -1331,14 +1338,12 @@ mnemonicCheck:
 		// Additionally, the user may have a passphrase, that will also
 		// need to be provided so the daemon can properly decipher the
 		// cipher seed.
-		fmt.Printf("Input your cipher seed passphrase (press enter if " +
-			"your seed doesn't have a passphrase): ")
-		passphrase, err := terminal.ReadPassword(int(syscall.Stdin))
+		aezeedPass, err = readPassword("Input your cipher seed " +
+			"passphrase (press enter if your seed doesn't have a " +
+			"passphrase): ")
 		if err != nil {
 			return err
 		}
-
-		aezeedPass = []byte(passphrase)
 
 		for {
 			fmt.Println()
@@ -1451,12 +1456,10 @@ func capturePassword(instruction string, optional bool,
 	validate func([]byte) error) ([]byte, error) {
 
 	for {
-		fmt.Printf(instruction)
-		password, err := terminal.ReadPassword(int(syscall.Stdin))
+		password, err := readPassword(instruction)
 		if err != nil {
 			return nil, err
 		}
-		fmt.Println()
 
 		// Do not require users to repeat password if
 		// it is optional and they are not using one.
@@ -1472,21 +1475,16 @@ func capturePassword(instruction string, optional bool,
 			continue
 		}
 
-		fmt.Println("Confirm password:")
-		passwordConfirmed, err := terminal.ReadPassword(
-			int(syscall.Stdin),
-		)
+		passwordConfirmed, err := readPassword("Confirm password: ")
 		if err != nil {
 			return nil, err
 		}
-		fmt.Println()
 
 		if bytes.Equal(password, passwordConfirmed) {
 			return password, nil
 		}
 
-		fmt.Println("Passwords don't match, " +
-			"please try again")
+		fmt.Println("Passwords don't match, please try again")
 		fmt.Println()
 	}
 }
@@ -1549,13 +1547,7 @@ func unlock(ctx *cli.Context) error {
 	// terminal to be a real tty and will fail if a string is piped into
 	// lncli.
 	default:
-		fmt.Printf("Input wallet password: ")
-
-		// The variable syscall.Stdin is of a different type in the
-		// Windows API that's why we need the explicit cast. And of
-		// course the linter doesn't like it either.
-		pw, err = terminal.ReadPassword(int(syscall.Stdin)) // nolint:unconvert
-		fmt.Println()
+		pw, err = readPassword("Input wallet password: ")
 	}
 	if err != nil {
 		return err
@@ -1616,26 +1608,20 @@ func changePassword(ctx *cli.Context) error {
 	client, cleanUp := getWalletUnlockerClient(ctx)
 	defer cleanUp()
 
-	fmt.Printf("Input current wallet password: ")
-	currentPw, err := terminal.ReadPassword(int(syscall.Stdin))
+	currentPw, err := readPassword("Input current wallet password: ")
 	if err != nil {
 		return err
 	}
-	fmt.Println()
 
-	fmt.Printf("Input new wallet password: ")
-	newPw, err := terminal.ReadPassword(int(syscall.Stdin))
+	newPw, err := readPassword("Input new wallet password: ")
 	if err != nil {
 		return err
 	}
-	fmt.Println()
 
-	fmt.Printf("Confirm new wallet password: ")
-	confirmPw, err := terminal.ReadPassword(int(syscall.Stdin))
+	confirmPw, err := readPassword("Confirm new wallet password: ")
 	if err != nil {
 		return err
 	}
-	fmt.Println()
 
 	if !bytes.Equal(newPw, confirmPw) {
 		return fmt.Errorf("passwords don't match")
@@ -1712,6 +1698,27 @@ func getInfo(ctx *cli.Context) error {
 
 	req := &lnrpc.GetInfoRequest{}
 	resp, err := client.GetInfo(ctxb, req)
+	if err != nil {
+		return err
+	}
+
+	printRespJSON(resp)
+	return nil
+}
+
+var getRecoveryInfoCommand = cli.Command{
+	Name:   "getrecoveryinfo",
+	Usage:  "Display information about an ongoing recovery attempt.",
+	Action: actionDecorator(getRecoveryInfo),
+}
+
+func getRecoveryInfo(ctx *cli.Context) error {
+	ctxb := context.Background()
+	client, cleanUp := getClient(ctx)
+	defer cleanUp()
+
+	req := &lnrpc.GetRecoveryInfoRequest{}
+	resp, err := client.GetRecoveryInfo(ctxb, req)
 	if err != nil {
 		return err
 	}
@@ -2295,11 +2302,37 @@ func debugLevel(ctx *cli.Context) error {
 }
 
 var listChainTxnsCommand = cli.Command{
-	Name:        "listchaintxns",
-	Category:    "On-chain",
-	Usage:       "List transactions from the wallet.",
-	Description: "List all transactions an address of the wallet was involved in.",
-	Action:      actionDecorator(listChainTxns),
+	Name:     "listchaintxns",
+	Category: "On-chain",
+	Usage:    "List transactions from the wallet.",
+	Flags: []cli.Flag{
+		cli.Int64Flag{
+			Name: "start_height",
+			Usage: "the block height from which to list " +
+				"transactions, inclusive",
+		},
+		cli.Int64Flag{
+			Name: "end_height",
+			Usage: "the block height until which to list " +
+				"transactions, inclusive, to get transactions " +
+				"until the chain tip, including unconfirmed, " +
+				"set this value to -1",
+		},
+	},
+	Description: `
+	List all transactions an address of the wallet was involved in.
+
+	This call will return a list of wallet related transactions that paid
+	to an address our wallet controls, or spent utxos that we held. The
+	start_height and end_height flags can be used to specify an inclusive
+	block range over which to query for transactions. If the end_height is
+	less than the start_height, transactions will be queried in reverse.
+	To get all transactions until the chain tip, including unconfirmed
+	transactions (identifiable with BlockHeight=0), set end_height to -1.
+	By default, this call will get all transactions our wallet was involved
+	in, including unconfirmed transactions. 
+`,
+	Action: actionDecorator(listChainTxns),
 }
 
 func listChainTxns(ctx *cli.Context) error {
@@ -2307,8 +2340,16 @@ func listChainTxns(ctx *cli.Context) error {
 	client, cleanUp := getClient(ctx)
 	defer cleanUp()
 
-	resp, err := client.GetTransactions(ctxb, &lnrpc.GetTransactionsRequest{})
+	req := &lnrpc.GetTransactionsRequest{}
 
+	if ctx.IsSet("start_height") {
+		req.StartHeight = int32(ctx.Int64("start_height"))
+	}
+	if ctx.IsSet("end_height") {
+		req.EndHeight = int32(ctx.Int64("end_height"))
+	}
+
+	resp, err := client.GetTransactions(ctxb, req)
 	if err != nil {
 		return err
 	}
@@ -2665,9 +2706,12 @@ var forwardingHistoryCommand = cli.Command{
 	Query the HTLC switch's internal forwarding log for all completed
 	payment circuits (HTLCs) over a particular time range (--start_time and
 	--end_time). The start and end times are meant to be expressed in
-	seconds since the Unix epoch. If --start_time isn't provided,
-	then 24 hours ago is used.  If --end_time isn't provided,
-	then the current time is used.
+	seconds since the Unix epoch.
+	Alternatively negative time ranges can be used, e.g. "-3d". Supports
+	s(seconds), m(minutes), h(ours), d(ays), w(eeks), M(onths), y(ears).
+	Month equals 30.44 days, year equals 365.25 days.
+	If --start_time isn't provided, then 24 hours ago is used. If
+	--end_time isn't provided, then the current time is used.
 
 	The max number of events returned is 50k. The default number is 100,
 	callers can use the --max_events param to modify this value.
@@ -2677,15 +2721,15 @@ var forwardingHistoryCommand = cli.Command{
 	entry. Using this callers can manually paginate within a time slice.
 	`,
 	Flags: []cli.Flag{
-		cli.Int64Flag{
+		cli.StringFlag{
 			Name: "start_time",
-			Usage: "the starting time for the query, expressed in " +
-				"seconds since the unix epoch",
+			Usage: "the starting time for the query " +
+				`as unix timestamp or relative e.g. "-1w"`,
 		},
-		cli.Int64Flag{
+		cli.StringFlag{
 			Name: "end_time",
-			Usage: "the end time for the query, expressed in " +
-				"seconds since the unix epoch",
+			Usage: "the end time for the query " +
+				`as unix timestamp or relative e.g. "-1w"`,
 		},
 		cli.Int64Flag{
 			Name:  "index_offset",
@@ -2710,30 +2754,33 @@ func forwardingHistory(ctx *cli.Context) error {
 		err                    error
 	)
 	args := ctx.Args()
+	now := time.Now()
 
 	switch {
 	case ctx.IsSet("start_time"):
-		startTime = ctx.Uint64("start_time")
+		startTime, err = parseTime(ctx.String("start_time"), now)
 	case args.Present():
-		startTime, err = strconv.ParseUint(args.First(), 10, 64)
-		if err != nil {
-			return fmt.Errorf("unable to decode start_time %v", err)
-		}
+		startTime, err = parseTime(args.First(), now)
 		args = args.Tail()
 	default:
 		now := time.Now()
 		startTime = uint64(now.Add(-time.Hour * 24).Unix())
 	}
+	if err != nil {
+		return fmt.Errorf("unable to decode start_time: %v", err)
+	}
 
 	switch {
 	case ctx.IsSet("end_time"):
-		endTime = ctx.Uint64("end_time")
+		endTime, err = parseTime(ctx.String("end_time"), now)
 	case args.Present():
-		endTime, err = strconv.ParseUint(args.First(), 10, 64)
-		if err != nil {
-			return fmt.Errorf("unable to decode end_time: %v", err)
-		}
+		endTime, err = parseTime(args.First(), now)
 		args = args.Tail()
+	default:
+		endTime = uint64(now.Unix())
+	}
+	if err != nil {
+		return fmt.Errorf("unable to decode end_time: %v", err)
 	}
 
 	switch {

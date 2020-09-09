@@ -22,6 +22,7 @@ import (
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -126,6 +127,8 @@ type reservationWithCtx struct {
 	// Constraints we require for the remote.
 	remoteCsvDelay uint16
 	remoteMinHtlc  lnwire.MilliSatoshi
+	remoteMaxValue lnwire.MilliSatoshi
+	remoteMaxHtlcs uint16
 
 	updateMtx   sync.RWMutex
 	lastUpdated time.Time
@@ -230,6 +233,10 @@ func newSerializedKey(pubKey *btcec.PublicKey) serializedPubKey {
 // within the configuration MUST be non-nil for the FundingManager to carry out
 // its duties.
 type fundingConfig struct {
+	// NoWumboChans indicates if we're to reject all incoming wumbo channel
+	// requests, and also reject all outgoing wumbo channel requests.
+	NoWumboChans bool
+
 	// IDKey is the PublicKey that is used to identify this node within the
 	// Lightning Network.
 	IDKey *btcec.PublicKey
@@ -240,7 +247,11 @@ type fundingConfig struct {
 
 	// PublishTransaction facilitates the process of broadcasting a
 	// transaction to the network.
-	PublishTransaction func(*wire.MsgTx) error
+	PublishTransaction func(*wire.MsgTx, string) error
+
+	// UpdateLabel updates the label that a transaction has in our wallet,
+	// overwriting any existing labels.
+	UpdateLabel func(chainhash.Hash, string) error
 
 	// FeeEstimator calculates appropriate fee rates based on historical
 	// transaction information.
@@ -373,6 +384,14 @@ type fundingConfig struct {
 	// NotifyPendingOpenChannelEvent informs the ChannelNotifier when channels
 	// enter a pending state.
 	NotifyPendingOpenChannelEvent func(wire.OutPoint, *channeldb.OpenChannel)
+
+	// EnableUpfrontShutdown specifies whether the upfront shutdown script
+	// is enabled.
+	EnableUpfrontShutdown bool
+
+	// RegisteredChains keeps track of all chains that have been registered
+	// with the daemon.
+	RegisteredChains *chainRegistry
 }
 
 // fundingManager acts as an orchestrator/bridge between the wallet's
@@ -548,13 +567,40 @@ func (f *fundingManager) start() error {
 			if chanType.IsSingleFunder() && chanType.HasFundingTx() &&
 				channel.IsInitiator {
 
-				err := f.cfg.PublishTransaction(
-					channel.FundingTxn,
+				var fundingTxBuf bytes.Buffer
+				err := channel.FundingTxn.Serialize(&fundingTxBuf)
+				if err != nil {
+					fndgLog.Errorf("Unable to serialize "+
+						"funding transaction %v: %v",
+						channel.FundingTxn.TxHash(), err)
+
+					// Clear the buffer of any bytes that
+					// were written before the serialization
+					// error to prevent logging an
+					// incomplete transaction.
+					fundingTxBuf.Reset()
+				}
+
+				fndgLog.Debugf("Rebroadcasting funding tx for "+
+					"ChannelPoint(%v): %x",
+					channel.FundingOutpoint,
+					fundingTxBuf.Bytes())
+
+				// Set a nil short channel ID at this stage
+				// because we do not know it until our funding
+				// tx confirms.
+				label := labels.MakeLabel(
+					labels.LabelTypeChannelOpen, nil,
+				)
+
+				err = f.cfg.PublishTransaction(
+					channel.FundingTxn, label,
 				)
 				if err != nil {
 					fndgLog.Errorf("Unable to rebroadcast "+
-						"funding tx for "+
+						"funding tx %x for "+
 						"ChannelPoint(%v): %v",
+						fundingTxBuf.Bytes(),
 						channel.FundingOutpoint, err)
 				}
 			}
@@ -1164,13 +1210,24 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 	msg := fmsg.msg
 	amt := msg.FundingAmount
 
-	// We count the number of pending channels for this peer. This is the
-	// sum of the active reservations and the channels pending open in the
-	// database.
+	// We get all pending channels for this peer. This is the list of the
+	// active reservations and the channels pending open in the database.
 	f.resMtx.RLock()
-	numPending := len(f.activeReservations[peerIDKey])
+	reservations := f.activeReservations[peerIDKey]
+
+	// We don't count reservations that were created from a canned funding
+	// shim. The user has registered the shim and therefore expects this
+	// channel to arrive.
+	numPending := 0
+	for _, res := range reservations {
+		if !res.reservation.IsCannedShim() {
+			numPending++
+		}
+	}
 	f.resMtx.RUnlock()
 
+	// Also count the channels that are already pending. There we don't know
+	// the underlying intent anymore, unfortunately.
 	channels, err := f.cfg.Wallet.Cfg.Database.FetchOpenChannels(peerPubKey)
 	if err != nil {
 		f.failFundingFlow(
@@ -1180,7 +1237,13 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 	}
 
 	for _, c := range channels {
-		if c.IsPending {
+		// Pending channels that have a non-zero thaw height were also
+		// created through a canned funding shim. Those also don't
+		// count towards the DoS protection limit.
+		//
+		// TODO(guggero): Properly store the funding type (wallet, shim,
+		// PSBT) on the channel so we don't need to use the thaw height.
+		if c.IsPending && c.ThawHeight == 0 {
 			numPending++
 		}
 	}
@@ -1211,8 +1274,9 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 	}
 
 	// We'll reject any request to create a channel that's above the
-	// current soft-limit for channel size.
-	if msg.FundingAmount > MaxFundingAmount {
+	// current soft-limit for channel size, but only if we're rejecting all
+	// wumbo channel initiations.
+	if f.cfg.NoWumboChans && msg.FundingAmount > MaxFundingAmount {
 		f.failFundingFlow(
 			fmsg.peer, fmsg.msg.PendingChannelID,
 			lnwire.ErrChanTooLarge,
@@ -1327,7 +1391,7 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 	// A nil address is set in place of user input, because this channel open
 	// was not initiated by the user.
 	shutdown, err := getUpfrontShutdownScript(
-		fmsg.peer, nil,
+		f.cfg.EnableUpfrontShutdown, fmsg.peer, nil,
 		func() (lnwire.DeliveryAddress, error) {
 			addr, err := f.cfg.Wallet.NewAddress(lnwallet.WitnessPubKey, false)
 			if err != nil {
@@ -1353,7 +1417,7 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 	// Generate our required constraints for the remote party.
 	remoteCsvDelay := f.cfg.RequiredRemoteDelay(amt)
 	chanReserve := f.cfg.RequiredRemoteChanReserve(amt, msg.DustLimit)
-	maxValue := f.cfg.RequiredRemoteMaxValue(amt)
+	remoteMaxValue := f.cfg.RequiredRemoteMaxValue(amt)
 	maxHtlcs := f.cfg.RequiredRemoteMaxHTLCs(amt)
 	minHtlc := f.cfg.DefaultMinHtlcIn
 
@@ -1369,6 +1433,8 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 		chanAmt:        amt,
 		remoteCsvDelay: remoteCsvDelay,
 		remoteMinHtlc:  minHtlc,
+		remoteMaxValue: remoteMaxValue,
+		remoteMaxHtlcs: maxHtlcs,
 		err:            make(chan error, 1),
 		peer:           fmsg.peer,
 	}
@@ -1386,7 +1452,7 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 		ChannelConfig: &channeldb.ChannelConfig{
 			ChannelConstraints: channeldb.ChannelConstraints{
 				DustLimit:        msg.DustLimit,
-				MaxPendingAmount: maxValue,
+				MaxPendingAmount: remoteMaxValue,
 				ChanReserve:      chanReserve,
 				MinHTLC:          minHtlc,
 				MaxAcceptedHtlcs: maxHtlcs,
@@ -1428,7 +1494,7 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 	fundingAccept := lnwire.AcceptChannel{
 		PendingChannelID:      msg.PendingChannelID,
 		DustLimit:             ourContribution.DustLimit,
-		MaxValueInFlight:      maxValue,
+		MaxValueInFlight:      remoteMaxValue,
 		ChannelReserve:        chanReserve,
 		MinAcceptDepth:        uint32(numConfsReq),
 		HtlcMinimum:           minHtlc,
@@ -1442,6 +1508,7 @@ func (f *fundingManager) handleFundingOpen(fmsg *fundingOpenMsg) {
 		FirstCommitmentPoint:  ourContribution.FirstCommitmentPoint,
 		UpfrontShutdownScript: ourContribution.UpfrontShutdown,
 	}
+
 	if err := fmsg.peer.SendMessage(true, &fundingAccept); err != nil {
 		fndgLog.Errorf("unable to send funding response to peer: %v", err)
 		f.failFundingFlow(fmsg.peer, msg.PendingChannelID, err)
@@ -1517,8 +1584,6 @@ func (f *fundingManager) handleFundingAccept(fmsg *fundingAcceptMsg) {
 	// here so we can properly commit their accepted constraints to the
 	// reservation.
 	chanReserve := f.cfg.RequiredRemoteChanReserve(resCtx.chanAmt, msg.DustLimit)
-	maxValue := f.cfg.RequiredRemoteMaxValue(resCtx.chanAmt)
-	maxHtlcs := f.cfg.RequiredRemoteMaxHTLCs(resCtx.chanAmt)
 
 	// The remote node has responded with their portion of the channel
 	// contribution. At this point, we can process their contribution which
@@ -1529,10 +1594,10 @@ func (f *fundingManager) handleFundingAccept(fmsg *fundingAcceptMsg) {
 		ChannelConfig: &channeldb.ChannelConfig{
 			ChannelConstraints: channeldb.ChannelConstraints{
 				DustLimit:        msg.DustLimit,
-				MaxPendingAmount: maxValue,
+				MaxPendingAmount: resCtx.remoteMaxValue,
 				ChanReserve:      chanReserve,
 				MinHTLC:          resCtx.remoteMinHtlc,
-				MaxAcceptedHtlcs: maxHtlcs,
+				MaxAcceptedHtlcs: resCtx.remoteMaxHtlcs,
 				CsvDelay:         resCtx.remoteCsvDelay,
 			},
 			MultiSigKey: keychain.KeyDescriptor{
@@ -1934,7 +1999,7 @@ func (f *fundingManager) handleFundingSigned(fmsg *fundingSignedMsg) {
 	delete(f.signedReservations, fmsg.msg.ChanID)
 	f.resMtx.Unlock()
 	if !ok {
-		err := fmt.Errorf("Unable to find signed reservation for "+
+		err := fmt.Errorf("unable to find signed reservation for "+
 			"chan_id=%x", fmsg.msg.ChanID)
 		fndgLog.Warnf(err.Error())
 		f.failFundingFlow(fmsg.peer, fmsg.msg.ChanID, err)
@@ -1988,14 +2053,30 @@ func (f *fundingManager) handleFundingSigned(fmsg *fundingSignedMsg) {
 	// if we actually have the funding transaction.
 	if completeChan.ChanType.HasFundingTx() {
 		fundingTx := completeChan.FundingTxn
+		var fundingTxBuf bytes.Buffer
+		if err := fundingTx.Serialize(&fundingTxBuf); err != nil {
+			fndgLog.Errorf("Unable to serialize funding "+
+				"transaction %v: %v", fundingTx.TxHash(), err)
 
-		fndgLog.Infof("Broadcasting funding tx for ChannelPoint(%v): %v",
-			completeChan.FundingOutpoint, spew.Sdump(fundingTx))
+			// Clear the buffer of any bytes that were written
+			// before the serialization error to prevent logging an
+			// incomplete transaction.
+			fundingTxBuf.Reset()
+		}
 
-		err = f.cfg.PublishTransaction(fundingTx)
+		fndgLog.Infof("Broadcasting funding tx for ChannelPoint(%v): %x",
+			completeChan.FundingOutpoint, fundingTxBuf.Bytes())
+
+		// Set a nil short channel ID at this stage because we do not
+		// know it until our funding tx confirms.
+		label := labels.MakeLabel(
+			labels.LabelTypeChannelOpen, nil,
+		)
+
+		err = f.cfg.PublishTransaction(fundingTx, label)
 		if err != nil {
-			fndgLog.Errorf("Unable to broadcast funding tx for "+
-				"ChannelPoint(%v): %v",
+			fndgLog.Errorf("Unable to broadcast funding tx %x for "+
+				"ChannelPoint(%v): %v", fundingTxBuf.Bytes(),
 				completeChan.FundingOutpoint, err)
 
 			// We failed to broadcast the funding transaction, but
@@ -2332,6 +2413,25 @@ func (f *fundingManager) handleFundingConfirmation(
 		fndgLog.Errorf("unable to report short chan id: %v", err)
 	}
 
+	// If we opened the channel, and lnd's wallet published our funding tx
+	// (which is not the case for some channels) then we update our
+	// transaction label with our short channel ID, which is known now that
+	// our funding transaction has confirmed. We do not label transactions
+	// we did not publish, because our wallet has no knowledge of them.
+	if completeChan.IsInitiator && completeChan.ChanType.HasFundingTx() {
+		shortChanID := completeChan.ShortChanID()
+		label := labels.MakeLabel(
+			labels.LabelTypeChannelOpen, &shortChanID,
+		)
+
+		err = f.cfg.UpdateLabel(
+			completeChan.FundingOutpoint.Hash, label,
+		)
+		if err != nil {
+			fndgLog.Errorf("unable to update label: %v", err)
+		}
+	}
+
 	// Close the discoverySignal channel, indicating to a separate
 	// goroutine that the channel now is marked as open in the database
 	// and that it is acceptable to process funding locked messages
@@ -2567,7 +2667,7 @@ func (f *fundingManager) annAfterSixConfs(completeChan *channeldb.OpenChannel,
 			completeChan.FundingBroadcastHeight,
 		)
 		if err != nil {
-			return fmt.Errorf("Unable to register for "+
+			return fmt.Errorf("unable to register for "+
 				"confirmation of ChannelPoint(%v): %v",
 				completeChan.FundingOutpoint, err)
 		}
@@ -2730,8 +2830,9 @@ func (f *fundingManager) handleFundingLocked(fmsg *fundingLockedMsg) {
 
 	if err := fmsg.peer.AddNewChannel(channel, f.quit); err != nil {
 		fndgLog.Errorf("Unable to add new channel %v with peer %x: %v",
+			channel.FundingOutpoint,
 			fmsg.peer.IdentityKey().SerializeCompressed(),
-			channel.FundingOutpoint, err)
+			err)
 	}
 }
 
@@ -2985,7 +3086,8 @@ func (f *fundingManager) initFundingWorkflow(peer lnpeer.Peer, req *openChanReq)
 // our peer does support the feature, we will return the user provided script
 // if non-zero, or a freshly generated script if our node is configured to set
 // upfront shutdown scripts automatically.
-func getUpfrontShutdownScript(peer lnpeer.Peer, script lnwire.DeliveryAddress,
+func getUpfrontShutdownScript(enableUpfrontShutdown bool, peer lnpeer.Peer,
+	script lnwire.DeliveryAddress,
 	getScript func() (lnwire.DeliveryAddress, error)) (lnwire.DeliveryAddress,
 	error) {
 
@@ -3014,7 +3116,7 @@ func getUpfrontShutdownScript(peer lnpeer.Peer, script lnwire.DeliveryAddress,
 
 	// If we do not have setting of upfront shutdown script enabled, return
 	// an empty script.
-	if !cfg.EnableUpfrontShutdown {
+	if !enableUpfrontShutdown {
 		return nil, nil
 	}
 
@@ -3030,11 +3132,13 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		localAmt       = msg.localFundingAmt
 		minHtlcIn      = msg.minHtlcIn
 		remoteCsvDelay = msg.remoteCsvDelay
+		maxValue       = msg.maxValueInFlight
+		maxHtlcs       = msg.maxHtlcs
 	)
 
 	// We'll determine our dust limit depending on which chain is active.
 	var ourDustLimit btcutil.Amount
-	switch registeredChains.PrimaryChain() {
+	switch f.cfg.RegisteredChains.PrimaryChain() {
 	case bitcoinChain:
 		ourDustLimit = lnwallet.DefaultDustLimit()
 	case litecoinChain:
@@ -3078,7 +3182,8 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 	// address from the wallet if our node is configured to set shutdown
 	// address by default).
 	shutdown, err := getUpfrontShutdownScript(
-		msg.peer, msg.openChanReq.shutdownScript,
+		f.cfg.EnableUpfrontShutdown, msg.peer,
+		msg.openChanReq.shutdownScript,
 		func() (lnwire.DeliveryAddress, error) {
 			addr, err := f.cfg.Wallet.NewAddress(
 				lnwallet.WitnessPubKey, false,
@@ -3152,6 +3257,15 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		minHtlcIn = f.cfg.DefaultMinHtlcIn
 	}
 
+	// If no max value was specified, use the default one.
+	if maxValue == 0 {
+		maxValue = f.cfg.RequiredRemoteMaxValue(capacity)
+	}
+
+	if maxHtlcs == 0 {
+		maxHtlcs = f.cfg.RequiredRemoteMaxHTLCs(capacity)
+	}
+
 	// If a pending channel map for this peer isn't already created, then
 	// we create one, ultimately allowing us to track this pending
 	// reservation within the target peer.
@@ -3165,6 +3279,8 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		chanAmt:        capacity,
 		remoteCsvDelay: remoteCsvDelay,
 		remoteMinHtlc:  minHtlcIn,
+		remoteMaxValue: maxValue,
+		remoteMaxHtlcs: maxHtlcs,
 		reservation:    reservation,
 		peer:           msg.peer,
 		updates:        msg.updates,
@@ -3184,8 +3300,6 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 	// policy to determine of required commitment constraints for the
 	// remote party.
 	chanReserve := f.cfg.RequiredRemoteChanReserve(capacity, ourDustLimit)
-	maxValue := f.cfg.RequiredRemoteMaxValue(capacity)
-	maxHtlcs := f.cfg.RequiredRemoteMaxHTLCs(capacity)
 
 	fndgLog.Infof("Starting funding workflow with %v for pending_id(%x), "+
 		"committype=%v", msg.peer.Address(), chanID, commitType)
@@ -3212,7 +3326,7 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		UpfrontShutdownScript: shutdown,
 	}
 	if err := msg.peer.SendMessage(true, &fundingOpen); err != nil {
-		e := fmt.Errorf("Unable to send funding request message: %v",
+		e := fmt.Errorf("unable to send funding request message: %v",
 			err)
 		fndgLog.Errorf(e.Error())
 
@@ -3226,34 +3340,6 @@ func (f *fundingManager) handleInitFundingMsg(msg *initFundingMsg) {
 		msg.err <- e
 		return
 	}
-}
-
-// waitUntilChannelOpen is designed to prevent other lnd subsystems from
-// sending new update messages to a channel before the channel is fully
-// opened.
-func (f *fundingManager) waitUntilChannelOpen(targetChan lnwire.ChannelID,
-	quit <-chan struct{}) error {
-
-	f.barrierMtx.RLock()
-	barrier, ok := f.newChanBarriers[targetChan]
-	f.barrierMtx.RUnlock()
-	if ok {
-		fndgLog.Tracef("waiting for chan barrier signal for ChanID(%v)",
-			targetChan)
-
-		select {
-		case <-barrier:
-		case <-quit:
-			return ErrFundingManagerShuttingDown
-		case <-f.quit:
-			return ErrFundingManagerShuttingDown
-		}
-
-		fndgLog.Tracef("barrier for ChanID(%v) closed", targetChan)
-		return nil
-	}
-
-	return nil
 }
 
 // processFundingError sends a message to the fundingManager allowing it to
@@ -3489,7 +3575,7 @@ func (f *fundingManager) getChannelOpeningState(chanPoint *wire.OutPoint) (
 
 	var state channelOpeningState
 	var shortChanID lnwire.ShortChannelID
-	err := kvdb.View(f.cfg.Wallet.Cfg.Database, func(tx kvdb.ReadTx) error {
+	err := kvdb.View(f.cfg.Wallet.Cfg.Database, func(tx kvdb.RTx) error {
 
 		bucket := tx.ReadBucket(channelOpeningStateBucket)
 		if bucket == nil {
@@ -3524,7 +3610,7 @@ func (f *fundingManager) deleteChannelOpeningState(chanPoint *wire.OutPoint) err
 	return kvdb.Update(f.cfg.Wallet.Cfg.Database, func(tx kvdb.RwTx) error {
 		bucket := tx.ReadWriteBucket(channelOpeningStateBucket)
 		if bucket == nil {
-			return fmt.Errorf("Bucket not found")
+			return fmt.Errorf("bucket not found")
 		}
 
 		var outpointBytes bytes.Buffer

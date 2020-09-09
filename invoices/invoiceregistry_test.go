@@ -1,6 +1,7 @@
 package invoices
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -9,6 +10,8 @@ import (
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // TestSettleInvoice tests settling of an invoice and related notifications.
@@ -16,7 +19,8 @@ func TestSettleInvoice(t *testing.T) {
 	ctx := newTestContext(t)
 	defer ctx.cleanup()
 
-	allSubscriptions := ctx.registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
@@ -26,7 +30,7 @@ func TestSettleInvoice(t *testing.T) {
 	}
 	defer subscription.Cancel()
 
-	if subscription.hash != testInvoicePaymentHash {
+	if subscription.invoiceRef.PayHash() != testInvoicePaymentHash {
 		t.Fatalf("expected subscription for provided hash")
 	}
 
@@ -216,16 +220,20 @@ func TestSettleInvoice(t *testing.T) {
 	}
 }
 
-// TestCancelInvoice tests cancelation of an invoice and related notifications.
-func TestCancelInvoice(t *testing.T) {
+func testCancelInvoice(t *testing.T, gc bool) {
 	ctx := newTestContext(t)
 	defer ctx.cleanup()
 
-	allSubscriptions := ctx.registry.SubscribeNotifications(0, 0)
+	// If set to true, then also delete the invoice from the DB after
+	// cancellation.
+	ctx.registry.cfg.GcCanceledInvoicesOnTheFly = gc
+
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Try to cancel the not yet existing invoice. This should fail.
-	err := ctx.registry.CancelInvoice(testInvoicePaymentHash)
+	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
 	if err != channeldb.ErrInvoiceNotFound {
 		t.Fatalf("expected ErrInvoiceNotFound, but got %v", err)
 	}
@@ -237,7 +245,7 @@ func TestCancelInvoice(t *testing.T) {
 	}
 	defer subscription.Cancel()
 
-	if subscription.hash != testInvoicePaymentHash {
+	if subscription.invoiceRef.PayHash() != testInvoicePaymentHash {
 		t.Fatalf("expected subscription for provided hash")
 	}
 
@@ -294,13 +302,26 @@ func TestCancelInvoice(t *testing.T) {
 		t.Fatal("no update received")
 	}
 
+	if gc {
+		// Check that the invoice has been deleted from the db.
+		_, err = ctx.cdb.LookupInvoice(
+			channeldb.InvoiceRefByHash(testInvoicePaymentHash),
+		)
+		require.Error(t, err)
+	}
+
 	// We expect no cancel notification to be sent to all invoice
 	// subscribers (backwards compatibility).
 
-	// Try to cancel again.
+	// Try to cancel again. Expect that we report ErrInvoiceNotFound if the
+	// invoice has been garbage collected (since the invoice has been
+	// deleted when it was canceled), and no error otherwise.
 	err = ctx.registry.CancelInvoice(testInvoicePaymentHash)
-	if err != nil {
-		t.Fatal("expected cancelation of a canceled invoice to succeed")
+
+	if gc {
+		require.Error(t, err, channeldb.ErrInvoiceNotFound)
+	} else {
+		require.NoError(t, err)
 	}
 
 	// Notify arrival of a new htlc paying to this invoice. This should
@@ -322,10 +343,31 @@ func TestCancelInvoice(t *testing.T) {
 		t.Fatalf("expected acceptHeight %v, but got %v",
 			testCurrentHeight, failResolution.AcceptHeight)
 	}
-	if failResolution.Outcome != ResultInvoiceAlreadyCanceled {
-		t.Fatalf("expected expiry too soon, got: %v",
-			failResolution.Outcome)
+
+	// If the invoice has been deleted (or not present) then we expect the
+	// outcome to be ResultInvoiceNotFound instead of when the invoice is
+	// in our database in which case we expect ResultInvoiceAlreadyCanceled.
+	if gc {
+		require.Equal(t, failResolution.Outcome, ResultInvoiceNotFound)
+	} else {
+		require.Equal(t,
+			failResolution.Outcome,
+			ResultInvoiceAlreadyCanceled,
+		)
 	}
+}
+
+// TestCancelInvoice tests cancelation of an invoice and related notifications.
+func TestCancelInvoice(t *testing.T) {
+	// Test cancellation both with garbage collection (meaning that canceled
+	// invoice will be deleted) and without (meain it'll be kept).
+	t.Run("garbage collect", func(t *testing.T) {
+		testCancelInvoice(t, true)
+	})
+
+	t.Run("no garbage collect", func(t *testing.T) {
+		testCancelInvoice(t, false)
+	})
 }
 
 // TestSettleHoldInvoice tests settling of a hold invoice and related
@@ -352,7 +394,8 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 	defer registry.Stop()
 
-	allSubscriptions := registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	// Subscribe to the not yet existing invoice.
@@ -362,7 +405,7 @@ func TestSettleHoldInvoice(t *testing.T) {
 	}
 	defer subscription.Cancel()
 
-	if subscription.hash != testInvoicePaymentHash {
+	if subscription.invoiceRef.PayHash() != testInvoicePaymentHash {
 		t.Fatalf("expected subscription for provided hash")
 	}
 
@@ -651,7 +694,8 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 
 	ctx.registry.cfg.AcceptKeySend = keySendEnabled
 
-	allSubscriptions := ctx.registry.SubscribeNotifications(0, 0)
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
 	defer allSubscriptions.Cancel()
 
 	hodlChan := make(chan interface{}, 1)
@@ -720,15 +764,113 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 		return
 	}
 
-	// Otherwise we expect no error and a settle resolution for the htlc.
-	settleResolution, ok := resolution.(*HtlcSettleResolution)
-	if !ok {
-		t.Fatalf("expected settle resolution, got: %T",
-			resolution)
+	checkResolution := func(res HtlcResolution, pimg lntypes.Preimage) {
+		// Otherwise we expect no error and a settle res for the htlc.
+		settleResolution, ok := res.(*HtlcSettleResolution)
+		assert.True(t, ok)
+		assert.Equal(t, settleResolution.Preimage, pimg)
 	}
-	if settleResolution.Preimage != preimage {
-		t.Fatalf("expected settle with matching preimage")
+	checkSubscription := func() {
+		// We expect a new invoice notification to be sent out.
+		newInvoice := <-allSubscriptions.NewInvoices
+		assert.Equal(t, newInvoice.State, channeldb.ContractOpen)
+
+		// We expect a settled notification to be sent out.
+		settledInvoice := <-allSubscriptions.SettledInvoices
+		assert.Equal(t, settledInvoice.State, channeldb.ContractSettled)
 	}
+
+	checkResolution(resolution, preimage)
+	checkSubscription()
+
+	// Replay the same keysend payment. We expect an identical resolution,
+	// but no event should be generated.
+	resolution, err = ctx.registry.NotifyExitHopHtlc(
+		hash, amt, expiry,
+		testCurrentHeight, getCircuitKey(10), hodlChan, keySendPayload,
+	)
+	assert.Nil(t, err)
+	checkResolution(resolution, preimage)
+
+	select {
+	case <-allSubscriptions.NewInvoices:
+		t.Fatalf("replayed keysend should not generate event")
+	case <-time.After(time.Second):
+	}
+
+	// Finally, test that we can properly fulfill a second keysend payment
+	// with a unique preiamge.
+	preimage2 := lntypes.Preimage{1, 2, 3, 4}
+	hash2 := preimage2.Hash()
+
+	keySendPayload2 := &mockPayload{
+		customRecords: map[uint64][]byte{
+			record.KeySendType: preimage2[:],
+		},
+	}
+
+	resolution, err = ctx.registry.NotifyExitHopHtlc(
+		hash2, amt, expiry,
+		testCurrentHeight, getCircuitKey(20), hodlChan, keySendPayload2,
+	)
+	assert.Nil(t, err)
+
+	checkResolution(resolution, preimage2)
+	checkSubscription()
+}
+
+// TestHoldKeysend tests receiving a spontaneous payment that is held.
+func TestHoldKeysend(t *testing.T) {
+	t.Run("settle", func(t *testing.T) {
+		testHoldKeysend(t, false)
+	})
+	t.Run("timeout", func(t *testing.T) {
+		testHoldKeysend(t, true)
+	})
+}
+
+// testHoldKeysend is the inner test function that tests hold-keysend.
+func testHoldKeysend(t *testing.T, timeoutKeysend bool) {
+	defer timeout()()
+
+	const holdDuration = time.Minute
+
+	ctx := newTestContext(t)
+	defer ctx.cleanup()
+
+	ctx.registry.cfg.AcceptKeySend = true
+	ctx.registry.cfg.KeysendHoldTime = holdDuration
+
+	allSubscriptions, err := ctx.registry.SubscribeNotifications(0, 0)
+	assert.Nil(t, err)
+	defer allSubscriptions.Cancel()
+
+	hodlChan := make(chan interface{}, 1)
+
+	amt := lnwire.MilliSatoshi(1000)
+	expiry := uint32(testCurrentHeight + 20)
+
+	// Create key for keysend.
+	preimage := lntypes.Preimage{1, 2, 3}
+	hash := preimage.Hash()
+
+	// Try to settle invoice with a valid keysend htlc.
+	keysendPayload := &mockPayload{
+		customRecords: map[uint64][]byte{
+			record.KeySendType: preimage[:],
+		},
+	}
+
+	resolution, err := ctx.registry.NotifyExitHopHtlc(
+		hash, amt, expiry,
+		testCurrentHeight, getCircuitKey(10), hodlChan, keysendPayload,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// No immediate resolution is expected.
+	require.Nil(t, resolution, "expected hold resolution")
 
 	// We expect a new invoice notification to be sent out.
 	newInvoice := <-allSubscriptions.NewInvoices
@@ -737,12 +879,43 @@ func testKeySend(t *testing.T, keySendEnabled bool) {
 			newInvoice.State)
 	}
 
+	// We expect no further invoice notifications yet (on the all invoices
+	// subscription).
+	select {
+	case <-allSubscriptions.NewInvoices:
+		t.Fatalf("no invoice update expected")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	if timeoutKeysend {
+		// Advance the clock to just past the hold duration.
+		ctx.clock.SetTime(ctx.clock.Now().Add(
+			holdDuration + time.Millisecond),
+		)
+
+		// Expect the keysend payment to be failed.
+		res := <-hodlChan
+		failResolution, ok := res.(*HtlcFailResolution)
+		require.Truef(
+			t, ok, "expected fail resolution, got: %T",
+			resolution,
+		)
+		require.Equal(
+			t, ResultCanceled, failResolution.Outcome,
+			"expected keysend payment to be failed",
+		)
+
+		return
+	}
+
+	// Settle keysend payment manually.
+	require.Nil(t, ctx.registry.SettleHodlInvoice(
+		*newInvoice.Terms.PaymentPreimage,
+	))
+
 	// We expect a settled notification to be sent out.
 	settledInvoice := <-allSubscriptions.SettledInvoices
-	if settledInvoice.State != channeldb.ContractSettled {
-		t.Fatalf("expected state ContractOpen, but got %v",
-			settledInvoice.State)
-	}
+	assert.Equal(t, settledInvoice.State, channeldb.ContractSettled)
 }
 
 // TestMppPayment tests settling of an invoice with multiple partial payments.
@@ -941,4 +1114,79 @@ func TestInvoiceExpiryWithRegistry(t *testing.T) {
 			t.Fatalf("expected canceled invoice, got: %v", invoice.State)
 		}
 	}
+}
+
+// TestOldInvoiceRemovalOnStart tests that we'll attempt to remove old canceled
+// invoices upon start while keeping all settled ones.
+func TestOldInvoiceRemovalOnStart(t *testing.T) {
+	t.Parallel()
+
+	testClock := clock.NewTestClock(testTime)
+	cdb, cleanup, err := newTestChannelDB(testClock)
+	defer cleanup()
+
+	require.NoError(t, err)
+
+	cfg := RegistryConfig{
+		FinalCltvRejectDelta:        testFinalCltvRejectDelta,
+		Clock:                       testClock,
+		GcCanceledInvoicesOnStartup: true,
+	}
+
+	expiryWatcher := NewInvoiceExpiryWatcher(cfg.Clock)
+	registry := NewRegistry(cdb, expiryWatcher, &cfg)
+
+	// First prefill the Channel DB with some pre-existing expired invoices.
+	const numExpired = 5
+	const numPending = 0
+	existingInvoices := generateInvoiceExpiryTestData(
+		t, testTime, 0, numExpired, numPending,
+	)
+
+	i := 0
+	for paymentHash, invoice := range existingInvoices.expiredInvoices {
+		// Mark half of the invoices as settled, the other hald as
+		// canceled.
+		if i%2 == 0 {
+			invoice.State = channeldb.ContractSettled
+		} else {
+			invoice.State = channeldb.ContractCanceled
+		}
+
+		_, err := cdb.AddInvoice(invoice, paymentHash)
+		require.NoError(t, err)
+		i++
+	}
+
+	// Collect all settled invoices for our expectation set.
+	var expected []channeldb.Invoice
+
+	// Perform a scan query to collect all invoices.
+	query := channeldb.InvoiceQuery{
+		IndexOffset:    0,
+		NumMaxInvoices: math.MaxUint64,
+	}
+
+	response, err := cdb.QueryInvoices(query)
+	require.NoError(t, err)
+
+	// Save all settled invoices for our expectation set.
+	for _, invoice := range response.Invoices {
+		if invoice.State == channeldb.ContractSettled {
+			expected = append(expected, invoice)
+		}
+	}
+
+	// Start the registry which should collect and delete all canceled
+	// invoices upon start.
+	err = registry.Start()
+	require.NoError(t, err, "cannot start the registry")
+
+	// Perform a scan query to collect all invoices.
+	response, err = cdb.QueryInvoices(query)
+	require.NoError(t, err)
+
+	// Check that we really only kept the settled invoices after the
+	// registry start.
+	require.Equal(t, expected, response.Invoices)
 }

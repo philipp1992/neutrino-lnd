@@ -1979,7 +1979,10 @@ func TestInterfaces(t *testing.T) {
 		if err != nil {
 			t.Fatalf("unable to create db: %v", err)
 		}
-		hintCache, err := chainntnfs.NewHeightHintCache(db)
+		testCfg := chainntnfs.CacheConfig{
+			QueryDisable: false,
+		}
+		hintCache, err := chainntnfs.NewHeightHintCache(testCfg, db)
 		if err != nil {
 			t.Fatalf("unable to create height hint cache: %v", err)
 		}

@@ -33,6 +33,10 @@ If you are using a wallet that can fund a PSBT directly (currently not possible
 with bitcoind), you can use this PSBT that contains the same address and amount:
 %s
 
+!!! WARNING !!!
+DO NOT PUBLISH the finished transaction by yourself or with another tool.
+lnd MUST publish it in the proper funding flow order OR THE FUNDS CAN BE LOST!
+
 Paste the funded PSBT here to continue the funding flow.
 Base64 encoded PSBT: `
 
@@ -159,6 +163,20 @@ var openChannelCommand = cli.Command{
 				"as a base and add the new channel output to " +
 				"it instead of creating a new, empty one.",
 		},
+		cli.BoolFlag{
+			Name: "no_publish",
+			Usage: "when using the interactive PSBT mode to open " +
+				"multiple channels in a batch, this flag " +
+				"instructs lnd to not publish the full batch " +
+				"transaction just yet. For safety reasons " +
+				"this flag should be set for each of the " +
+				"batch's transactions except the very last",
+		},
+		cli.Uint64Flag{
+			Name: "remote_max_value_in_flight_msat",
+			Usage: "(optional) the maximum value in msat that " +
+				"can be pending within the channel at any given time",
+		},
 	},
 	Action: actionDecorator(openChannel),
 }
@@ -180,13 +198,14 @@ func openChannel(ctx *cli.Context) error {
 
 	minConfs := int32(ctx.Uint64("min_confs"))
 	req := &lnrpc.OpenChannelRequest{
-		TargetConf:       int32(ctx.Int64("conf_target")),
-		SatPerByte:       ctx.Int64("sat_per_byte"),
-		MinHtlcMsat:      ctx.Int64("min_htlc_msat"),
-		RemoteCsvDelay:   uint32(ctx.Uint64("remote_csv_delay")),
-		MinConfs:         minConfs,
-		SpendUnconfirmed: minConfs == 0,
-		CloseAddress:     ctx.String("close_address"),
+		TargetConf:                 int32(ctx.Int64("conf_target")),
+		SatPerByte:                 ctx.Int64("sat_per_byte"),
+		MinHtlcMsat:                ctx.Int64("min_htlc_msat"),
+		RemoteCsvDelay:             uint32(ctx.Uint64("remote_csv_delay")),
+		MinConfs:                   minConfs,
+		SpendUnconfirmed:           minConfs == 0,
+		CloseAddress:               ctx.String("close_address"),
+		RemoteMaxValueInFlightMsat: ctx.Uint64("remote_max_value_in_flight_msat"),
 	}
 
 	switch {
@@ -259,6 +278,10 @@ func openChannel(ctx *cli.Context) error {
 	// large to also fit into this already long function.
 	if ctx.Bool("psbt") {
 		return openChannelPsbt(ctx, client, req)
+	}
+	if !ctx.Bool("psbt") && ctx.Bool("no_publish") {
+		return fmt.Errorf("the --no_publish flag can only be used in " +
+			"combination with the --psbt flag")
 	}
 
 	stream, err := client.OpenChannel(ctxb, req)
@@ -378,6 +401,7 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 			PsbtShim: &lnrpc.PsbtShim{
 				PendingChanId: pendingChanID[:],
 				BasePsbt:      basePsbtBytes,
+				NoPublish:     ctx.Bool("no_publish"),
 			},
 		},
 	}
@@ -390,7 +414,10 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 	if err != nil {
 		return fmt.Errorf("opening stream to server failed: %v", err)
 	}
-	signal.Intercept()
+
+	if err := signal.Intercept(); err != nil {
+		return err
+	}
 
 	// We also need to spawn a goroutine that reads from the server. This
 	// will copy the messages to the channel as long as they come in or add

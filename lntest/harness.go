@@ -211,12 +211,13 @@ func (n *NetworkHarness) SetUp(lndArgs []string) error {
 	// Now block until both wallets have fully synced up.
 	expectedBalance := int64(btcutil.SatoshiPerBitcoin * 10)
 	balReq := &lnrpc.WalletBalanceRequest{}
-	balanceTicker := time.Tick(time.Millisecond * 50)
+	balanceTicker := time.NewTicker(time.Millisecond * 50)
+	defer balanceTicker.Stop()
 	balanceTimeout := time.After(time.Second * 30)
 out:
 	for {
 		select {
-		case <-balanceTicker:
+		case <-balanceTicker.C:
 			aliceResp, err := n.Alice.WalletBalance(ctxb, balReq)
 			if err != nil {
 				return err
@@ -402,7 +403,9 @@ func (n *NetworkHarness) connect(ctx context.Context,
 tryconnect:
 	if _, err := a.ConnectPeer(ctx, req); err != nil {
 		// If the chain backend is still syncing, retry.
-		if err == lnd.ErrServerNotActive {
+		if strings.Contains(err.Error(), lnd.ErrServerNotActive.Error()) ||
+			strings.Contains(err.Error(), "i/o timeout") {
+
 			select {
 			case <-time.After(100 * time.Millisecond):
 				goto tryconnect
@@ -684,7 +687,7 @@ func (n *NetworkHarness) SaveProfilesPages() {
 
 	for _, node := range n.activeNodes {
 		if err := saveProfilesPage(node); err != nil {
-			fmt.Println(err)
+			fmt.Printf("Error: %v\n", err)
 		}
 	}
 }
@@ -698,16 +701,16 @@ func saveProfilesPage(node *HarnessNode) error {
 		),
 	)
 	if err != nil {
-		return fmt.Errorf("Failed to get profile page "+
-			"(node_id=%d, name=%s): %v\n",
+		return fmt.Errorf("failed to get profile page "+
+			"(node_id=%d, name=%s): %v",
 			node.NodeID, node.Cfg.Name, err)
 	}
 	defer resp.Body.Close()
 
 	body, err := ioutil.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("Failed to read profile page "+
-			"(node_id=%d, name=%s): %v\n",
+		return fmt.Errorf("failed to read profile page "+
+			"(node_id=%d, name=%s): %v",
 			node.NodeID, node.Cfg.Name, err)
 	}
 
@@ -718,16 +721,16 @@ func saveProfilesPage(node *HarnessNode) error {
 
 	logFile, err := os.Create(fileName)
 	if err != nil {
-		return fmt.Errorf("Failed to create file for profile page "+
-			"(node_id=%d, name=%s): %v\n",
+		return fmt.Errorf("failed to create file for profile page "+
+			"(node_id=%d, name=%s): %v",
 			node.NodeID, node.Cfg.Name, err)
 	}
 	defer logFile.Close()
 
 	_, err = logFile.Write(body)
 	if err != nil {
-		return fmt.Errorf("Failed to save profile page "+
-			"(node_id=%d, name=%s): %v\n",
+		return fmt.Errorf("failed to save profile page "+
+			"(node_id=%d, name=%s): %v",
 			node.NodeID, node.Cfg.Name, err)
 	}
 	return nil
@@ -852,6 +855,11 @@ type OpenChannelParams struct {
 	// MinHtlc is the htlc_minimum_msat value set when opening the channel.
 	MinHtlc lnwire.MilliSatoshi
 
+	// RemoteMaxHtlcs is the remote_max_htlcs value set when opening the
+	// channel, restricting the number of concurrent HTLCs the remote party
+	// can add to a commitment.
+	RemoteMaxHtlcs uint16
+
 	// FundingShim is an optional funding shim that the caller can specify
 	// in order to modify the channel funding workflow.
 	FundingShim *lnrpc.FundingShim
@@ -871,10 +879,10 @@ func (n *NetworkHarness) OpenChannel(ctx context.Context,
 	// prevents any funding workflows from being kicked off if the chain
 	// isn't yet synced.
 	if err := srcNode.WaitForBlockchainSync(ctx); err != nil {
-		return nil, fmt.Errorf("Unable to sync srcNode chain: %v", err)
+		return nil, fmt.Errorf("unable to sync srcNode chain: %v", err)
 	}
 	if err := destNode.WaitForBlockchainSync(ctx); err != nil {
-		return nil, fmt.Errorf("Unable to sync destNode chain: %v", err)
+		return nil, fmt.Errorf("unable to sync destNode chain: %v", err)
 	}
 
 	minConfs := int32(1)
@@ -890,6 +898,7 @@ func (n *NetworkHarness) OpenChannel(ctx context.Context,
 		MinConfs:           minConfs,
 		SpendUnconfirmed:   p.SpendUnconfirmed,
 		MinHtlcMsat:        int64(p.MinHtlc),
+		RemoteMaxHtlcs:     uint32(p.RemoteMaxHtlcs),
 		FundingShim:        p.FundingShim,
 	}
 
@@ -940,10 +949,10 @@ func (n *NetworkHarness) OpenPendingChannel(ctx context.Context,
 
 	// Wait until srcNode and destNode have blockchain synced
 	if err := srcNode.WaitForBlockchainSync(ctx); err != nil {
-		return nil, fmt.Errorf("Unable to sync srcNode chain: %v", err)
+		return nil, fmt.Errorf("unable to sync srcNode chain: %v", err)
 	}
 	if err := destNode.WaitForBlockchainSync(ctx); err != nil {
-		return nil, fmt.Errorf("Unable to sync destNode chain: %v", err)
+		return nil, fmt.Errorf("unable to sync destNode chain: %v", err)
 	}
 
 	openReq := &lnrpc.OpenChannelRequest{
@@ -1127,7 +1136,8 @@ func (n *NetworkHarness) CloseChannel(ctx context.Context,
 		// within the network.
 		closeResp, err := closeRespStream.Recv()
 		if err != nil {
-			errChan <- err
+			errChan <- fmt.Errorf("unable to recv() from close "+
+				"stream: %v", err)
 			return
 		}
 		pendingClose, ok := closeResp.Update.(*lnrpc.CloseStatusUpdate_ClosePending)
@@ -1139,11 +1149,13 @@ func (n *NetworkHarness) CloseChannel(ctx context.Context,
 
 		closeTxid, err := chainhash.NewHash(pendingClose.ClosePending.Txid)
 		if err != nil {
-			errChan <- err
+			errChan <- fmt.Errorf("unable to decode closeTxid: "+
+				"%v", err)
 			return
 		}
 		if err := n.WaitForTxBroadcast(ctx, *closeTxid); err != nil {
-			errChan <- err
+			errChan <- fmt.Errorf("error while waiting for "+
+				"broadcast tx: %v", err)
 			return
 		}
 		fin <- closeTxid
@@ -1152,9 +1164,6 @@ func (n *NetworkHarness) CloseChannel(ctx context.Context,
 	// Wait until either the deadline for the context expires, an error
 	// occurs, or the channel close update is received.
 	select {
-	case <-ctx.Done():
-		return nil, nil, fmt.Errorf("timeout reached before channel close " +
-			"initiated")
 	case err := <-errChan:
 		return nil, nil, err
 	case closeTxid := <-fin:
@@ -1201,9 +1210,14 @@ func (n *NetworkHarness) WaitForChannelClose(ctx context.Context,
 }
 
 // AssertChannelExists asserts that an active channel identified by the
-// specified channel point exists from the point-of-view of the node.
+// specified channel point exists from the point-of-view of the node. It takes
+// an optional set of check functions which can be used to make further
+// assertions using channel's values. These functions are responsible for
+// failing the test themselves if they do not pass.
+// nolint: interfacer
 func (n *NetworkHarness) AssertChannelExists(ctx context.Context,
-	node *HarnessNode, chanPoint *wire.OutPoint) error {
+	node *HarnessNode, chanPoint *wire.OutPoint,
+	checks ...func(*lnrpc.Channel)) error {
 
 	req := &lnrpc.ListChannelsRequest{}
 
@@ -1215,12 +1229,20 @@ func (n *NetworkHarness) AssertChannelExists(ctx context.Context,
 
 		for _, channel := range resp.Channels {
 			if channel.ChannelPoint == chanPoint.String() {
-				if channel.Active {
-					return nil
+				// First check whether our channel is active,
+				// failing early if it is not.
+				if !channel.Active {
+					return fmt.Errorf("channel %s inactive",
+						chanPoint)
 				}
 
-				return fmt.Errorf("channel %s inactive",
-					chanPoint)
+				// Apply any additional checks that we would
+				// like to verify.
+				for _, check := range checks {
+					check(channel)
+				}
+
+				return nil
 			}
 		}
 

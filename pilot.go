@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/autopilot"
+	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -19,7 +20,7 @@ import (
 // configuration is sane. Currently it checks that the heuristic configuration
 // makes sense. In case the config is valid, it will return a list of
 // WeightedHeuristics that can be combined for use with the autopilot agent.
-func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
+func validateAtplCfg(cfg *lncfg.AutoPilot) ([]*autopilot.WeightedHeuristic,
 	error) {
 
 	var (
@@ -41,7 +42,7 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 		a, ok := autopilot.AvailableHeuristics[name]
 		if !ok {
 			// No heuristic matching this config option was found.
-			return nil, fmt.Errorf("Heuristic %v not available. %v",
+			return nil, fmt.Errorf("heuristic %v not available. %v",
 				name, availStr)
 		}
 
@@ -60,11 +61,11 @@ func validateAtplCfg(cfg *autoPilotConfig) ([]*autopilot.WeightedHeuristic,
 
 	// Check found heuristics. We must have at least one to operate.
 	if len(heuristics) == 0 {
-		return nil, fmt.Errorf("No active heuristics. %v", availStr)
+		return nil, fmt.Errorf("no active heuristics: %v", availStr)
 	}
 
 	if sum != 1.0 {
-		return nil, fmt.Errorf("Heuristic weights must sum to 1.0")
+		return nil, fmt.Errorf("heuristic weights must sum to 1.0")
 	}
 	return heuristics, nil
 }
@@ -105,6 +106,7 @@ type chanController struct {
 	minConfs      int32
 	confTarget    uint32
 	chanMinHtlcIn lnwire.MilliSatoshi
+	netParams     bitcoinNetParams
 }
 
 // OpenChannel opens a channel to a target peer, with a capacity of the
@@ -139,16 +141,17 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 	// Construct the open channel request and send it to the server to begin
 	// the funding workflow.
 	req := &openChanReq{
-		targetPubkey:    target,
-		chainHash:       *activeNetParams.GenesisHash,
-		subtractFees:    true,
-		localFundingAmt: amt,
-		pushAmt:         0,
-		minHtlcIn:       c.chanMinHtlcIn,
-		fundingFeePerKw: feePerKw,
-		private:         c.private,
-		remoteCsvDelay:  0,
-		minConfs:        c.minConfs,
+		targetPubkey:     target,
+		chainHash:        *c.netParams.GenesisHash,
+		subtractFees:     true,
+		localFundingAmt:  amt,
+		pushAmt:          0,
+		minHtlcIn:        c.chanMinHtlcIn,
+		fundingFeePerKw:  feePerKw,
+		private:          c.private,
+		remoteCsvDelay:   0,
+		minConfs:         c.minConfs,
+		maxValueInFlight: 0,
 	}
 
 	updateStream, errChan := c.server.OpenChannel(req)
@@ -182,8 +185,9 @@ var _ autopilot.ChannelController = (*chanController)(nil)
 // Agent instance based on the passed configuration structs. The agent and all
 // interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
-func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
-	*autopilot.ManagerCfg, error) {
+func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
+	chainCfg *lncfg.Chain, netParams bitcoinNetParams) (*autopilot.ManagerCfg,
+	error) {
 
 	atplLog.Infof("Instantiating autopilot with active=%v, "+
 		"max_channels=%d, allocation=%f, min_chan_size=%d, "+
@@ -219,7 +223,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 
 	// With the heuristic itself created, we can now populate the remainder
 	// of the items that the autopilot agent needs to perform its duties.
-	self := svr.identityPriv.PubKey()
+	self := svr.identityECDH.PubKey()
 	pilotCfg := autopilot.Config{
 		Self:      self,
 		Heuristic: weightedAttachment,
@@ -229,11 +233,12 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 			minConfs:      cfg.MinConfs,
 			confTarget:    cfg.ConfTarget,
 			chanMinHtlcIn: chainCfg.MinHTLCIn,
+			netParams:     netParams,
 		},
 		WalletBalance: func() (btcutil.Amount, error) {
 			return svr.cc.wallet.ConfirmedBalance(cfg.MinConfs)
 		},
-		Graph:       autopilot.ChannelGraphFromDatabase(svr.chanDB.ChannelGraph()),
+		Graph:       autopilot.ChannelGraphFromDatabase(svr.localChanDB.ChannelGraph()),
 		Constraints: atplConstraints,
 		ConnectToPeer: func(target *btcec.PublicKey, addrs []net.Addr) (bool, error) {
 			// First, we'll check if we're already connected to the
@@ -254,7 +259,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 
 			lnAddr := &lnwire.NetAddress{
 				IdentityKey: target,
-				ChainNet:    activeNetParams.Net,
+				ChainNet:    netParams.Net,
 			}
 
 			// We'll attempt to successively connect to each of the
@@ -305,7 +310,7 @@ func initAutoPilot(svr *server, cfg *autoPilotConfig, chainCfg *chainConfig) (
 			// We'll fetch the current state of open
 			// channels from the database to use as initial
 			// state for the auto-pilot agent.
-			activeChannels, err := svr.chanDB.FetchAllChannels()
+			activeChannels, err := svr.remoteChanDB.FetchAllChannels()
 			if err != nil {
 				return nil, err
 			}

@@ -23,11 +23,9 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/routing/route"
-	"github.com/lightningnetwork/lnd/zpay32"
 )
 
 const (
@@ -35,12 +33,6 @@ const (
 	// the tests. The basic graph consists of 5 nodes with 5 channels
 	// connecting them.
 	basicGraphFilePath = "testdata/basic_graph.json"
-
-	// excessiveHopsGraphFilePath is a file path which stores the JSON dump
-	// of a graph which was previously triggering an erroneous excessive
-	// hops error. The error has since been fixed, but a test case
-	// exercising it is kept around to guard against regressions.
-	excessiveHopsGraphFilePath = "testdata/excessive_hops.json"
 
 	// specExampleFilePath is a file path which stores an example which
 	// implementations will use in order to ensure that they're calculating
@@ -443,8 +435,7 @@ func createTestGraphFromChannels(testChannels []*testChannel, source string) (
 	addNodeWithAlias := func(alias string, features *lnwire.FeatureVector) (
 		*channeldb.LightningNode, error) {
 
-		keyBytes := make([]byte, 32)
-		keyBytes = []byte{
+		keyBytes := []byte{
 			0, 0, 0, 0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0, 0, 0,
 			0, 0, 0, 0, 0, 0, 0, 0,
@@ -1597,9 +1588,7 @@ func TestMissingFeatureDep(t *testing.T) {
 	joost := ctx.keyFromAlias("joost")
 
 	_, err := ctx.findPath(conner, 100)
-	if err != feature.NewErrMissingFeatureDep(
-		lnwire.TLVOnionPayloadOptional,
-	) {
+	if err != errMissingDependentFeature {
 		t.Fatalf("path shouldn't have been found: %v", err)
 	}
 
@@ -1674,9 +1663,8 @@ func TestUnknownRequiredFeatures(t *testing.T) {
 	// Conner's node in the graph has an unknown required feature (100).
 	// Pathfinding should fail since we check the destination's features for
 	// unknown required features before beginning pathfinding.
-	expErr := feature.NewErrUnknownRequired([]lnwire.FeatureBit{100})
 	_, err := ctx.findPath(conner, 100)
-	if !reflect.DeepEqual(err, expErr) {
+	if !reflect.DeepEqual(err, errUnknownRequiredFeature) {
 		t.Fatalf("path shouldn't have been found: %v", err)
 	}
 
@@ -2087,7 +2075,7 @@ func TestPathFindSpecExample(t *testing.T) {
 	const amt lnwire.MilliSatoshi = 4999999
 	route, err := ctx.router.FindRoute(
 		bobNode.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find route: %v", err)
@@ -2111,14 +2099,14 @@ func TestPathFindSpecExample(t *testing.T) {
 		t.Fatalf("wrong hop fee: got %v, expected %v", fee, 0)
 	}
 
-	// The CLTV expiry should be the current height plus 9 (the expiry for
+	// The CLTV expiry should be the current height plus 18 (the expiry for
 	// the B -> C channel.
 	if route.TotalTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			route.TotalTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 
 	// Next, we'll set A as the source node so we can assert that we create
@@ -2143,7 +2131,7 @@ func TestPathFindSpecExample(t *testing.T) {
 	// We'll now request a route from A -> B -> C.
 	route, err = ctx.router.FindRoute(
 		source.PubKeyBytes, carol, amt, noRestrictions, nil, nil,
-		zpay32.DefaultFinalCLTVDelta,
+		MinCLTVDelta,
 	)
 	if err != nil {
 		t.Fatalf("unable to find routes: %v", err)
@@ -2156,15 +2144,16 @@ func TestPathFindSpecExample(t *testing.T) {
 	}
 
 	// The total amount should factor in a fee of 10199 and also use a CLTV
-	// delta total of 29 (20 + 9),
+	// delta total of 38 (20 + 18),
 	expectedAmt := lnwire.MilliSatoshi(5010198)
 	if route.TotalAmount != expectedAmt {
 		t.Fatalf("wrong amount: got %v, expected %v",
 			route.TotalAmount, expectedAmt)
 	}
-	if route.TotalTimeLock != startingHeight+29 {
+	expectedDelta := uint32(20 + MinCLTVDelta)
+	if route.TotalTimeLock != startingHeight+expectedDelta {
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
-			route.TotalTimeLock, startingHeight+29)
+			route.TotalTimeLock, startingHeight+expectedDelta)
 	}
 
 	// Ensure that the hops of the route are properly crafted.
@@ -2199,11 +2188,11 @@ func TestPathFindSpecExample(t *testing.T) {
 	// The outgoing CLTV value itself should be the current height plus 30
 	// to meet Carol's requirements.
 	if route.Hops[0].OutgoingTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			route.Hops[0].OutgoingTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 
 	// For B -> C, we assert that the final hop also has the proper
@@ -2214,11 +2203,11 @@ func TestPathFindSpecExample(t *testing.T) {
 			lastHop.AmtToForward, amt)
 	}
 	if lastHop.OutgoingTimeLock !=
-		startingHeight+zpay32.DefaultFinalCLTVDelta {
+		startingHeight+MinCLTVDelta {
 
 		t.Fatalf("wrong total time lock: got %v, expecting %v",
 			lastHop.OutgoingTimeLock,
-			startingHeight+zpay32.DefaultFinalCLTVDelta)
+			startingHeight+MinCLTVDelta)
 	}
 }
 
@@ -2254,26 +2243,39 @@ func TestNewRouteFromEmptyHops(t *testing.T) {
 func TestRestrictOutgoingChannel(t *testing.T) {
 	t.Parallel()
 
+	// Define channel id constants
+	const (
+		chanSourceA      = 1
+		chanATarget      = 4
+		chanSourceB1     = 2
+		chanSourceB2     = 3
+		chanBTarget      = 5
+		chanSourceTarget = 6
+	)
+
 	// Set up a test graph with three possible paths from roasbeef to
-	// target. The path through channel 2 is the highest cost path.
+	// target. The path through chanSourceB1 is the highest cost path.
 	testChannels := []*testChannel{
 		symmetricTestChannel("roasbeef", "a", 100000, &testChannelPolicy{
 			Expiry: 144,
-		}, 1),
+		}, chanSourceA),
 		symmetricTestChannel("a", "target", 100000, &testChannelPolicy{
 			Expiry:  144,
 			FeeRate: 400,
-		}, 4),
+		}, chanATarget),
 		symmetricTestChannel("roasbeef", "b", 100000, &testChannelPolicy{
 			Expiry: 144,
-		}, 2),
+		}, chanSourceB1),
 		symmetricTestChannel("roasbeef", "b", 100000, &testChannelPolicy{
 			Expiry: 144,
-		}, 3),
+		}, chanSourceB2),
 		symmetricTestChannel("b", "target", 100000, &testChannelPolicy{
 			Expiry:  144,
 			FeeRate: 800,
-		}, 5),
+		}, chanBTarget),
+		symmetricTestChannel("roasbeef", "target", 100000, &testChannelPolicy{
+			Expiry: 144,
+		}, chanSourceTarget),
 	}
 
 	ctx := newPathFindingTestContext(t, testChannels, "roasbeef")
@@ -2286,32 +2288,36 @@ func TestRestrictOutgoingChannel(t *testing.T) {
 
 	paymentAmt := lnwire.NewMSatFromSatoshis(100)
 	target := ctx.keyFromAlias("target")
-	outgoingChannelID := uint64(2)
+	outgoingChannelID := uint64(chanSourceB1)
 
 	// Find the best path given the restriction to only use channel 2 as the
 	// outgoing channel.
-	ctx.restrictParams.OutgoingChannelID = &outgoingChannelID
+	ctx.restrictParams.OutgoingChannelIDs = []uint64{outgoingChannelID}
 	path, err := ctx.findPath(target, paymentAmt)
 	if err != nil {
 		t.Fatalf("unable to find path: %v", err)
 	}
-	route, err := newRoute(
-		ctx.source, path, startingHeight,
-		finalHopParams{
-			amt:       paymentAmt,
-			cltvDelta: finalHopCLTV,
-			records:   nil,
-		},
-	)
-	if err != nil {
-		t.Fatalf("unable to create path: %v", err)
+
+	// Assert that the route starts with channel chanSourceB1, in line with
+	// the specified restriction.
+	if path[0].ChannelID != chanSourceB1 {
+		t.Fatalf("expected route to pass through channel %v, "+
+			"but channel %v was selected instead", chanSourceB1,
+			path[0].ChannelID)
 	}
 
-	// Assert that the route starts with channel 2, in line with the
-	// specified restriction.
-	if route.Hops[0].ChannelID != 2 {
-		t.Fatalf("expected route to pass through channel 2, "+
-			"but channel %v was selected instead", route.Hops[0].ChannelID)
+	// If a direct channel to target is allowed as well, that channel is
+	// expected to be selected because the routing fees are zero.
+	ctx.restrictParams.OutgoingChannelIDs = []uint64{
+		chanSourceB1, chanSourceTarget,
+	}
+	path, err = ctx.findPath(target, paymentAmt)
+	if err != nil {
+		t.Fatalf("unable to find path: %v", err)
+	}
+	if path[0].ChannelID != chanSourceTarget {
+		t.Fatalf("expected route to pass through channel %v",
+			chanSourceTarget)
 	}
 }
 
@@ -2774,7 +2780,7 @@ func TestRouteToSelf(t *testing.T) {
 
 	outgoingChanID := uint64(1)
 	lastHop := ctx.keyFromAlias("b")
-	ctx.restrictParams.OutgoingChannelID = &outgoingChanID
+	ctx.restrictParams.OutgoingChannelIDs = []uint64{outgoingChanID}
 	ctx.restrictParams.LastHop = &lastHop
 
 	// Find the best path to self given that we want to go out via channel 1
