@@ -656,23 +656,6 @@ func (*UnimplementedAutopilotServer) RestartWNewConstraints(ctx context.Context,
 	return nil, status.Errorf(codes.Unimplemented, "method RestartWNewConstraints not implemented")
 }
 
-// UnimplementedAutopilotServer can be embedded to have forward compatible implementations.
-type UnimplementedAutopilotServer struct {
-}
-
-func (*UnimplementedAutopilotServer) Status(ctx context.Context, req *StatusRequest) (*StatusResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method Status not implemented")
-}
-func (*UnimplementedAutopilotServer) ModifyStatus(ctx context.Context, req *ModifyStatusRequest) (*ModifyStatusResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ModifyStatus not implemented")
-}
-func (*UnimplementedAutopilotServer) QueryScores(ctx context.Context, req *QueryScoresRequest) (*QueryScoresResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method QueryScores not implemented")
-}
-func (*UnimplementedAutopilotServer) SetScores(ctx context.Context, req *SetScoresRequest) (*SetScoresResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method SetScores not implemented")
-}
-
 func RegisterAutopilotServer(s *grpc.Server, srv AutopilotServer) {
 	s.RegisterService(&_Autopilot_serviceDesc, srv)
 }

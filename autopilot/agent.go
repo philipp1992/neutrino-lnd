@@ -685,6 +685,7 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 		if err != nil {
 			return fmt.Errorf("Unable to make weighted choice: %v", err)
 		}
+	}
 
 	chanCandidates := make(map[NodeID]*AttachmentDirective)
 	for nID := range scores {
