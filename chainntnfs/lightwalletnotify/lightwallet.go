@@ -170,6 +170,11 @@ func (b *LightWalletNotifier) Stop() error {
 	return nil
 }
 
+// Started returns true if this instance has been started, and false otherwise.
+func (b *LightWalletNotifier) Started() bool {
+	return atomic.LoadInt32(&b.started) != 0
+}
+
 // mock currently unused variables
 func Mock(vals ...interface{}) {
 	for _, val := range vals {
