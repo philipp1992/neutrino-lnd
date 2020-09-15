@@ -188,6 +188,18 @@ func (*mockChainIO) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) 
 	return nil, nil
 }
 
+func (m *mockChainIO) LoadCache(startHeight uint32) (bool, error) {
+	return true, nil
+}
+
+func (m *mockChainIO) GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error) {
+	return nil, nil
+}
+
+// FreeCache releases second layer headers cache on response
+func (m *mockChainIO) FreeCache() error {
+	return nil
+}
 var _ lnwallet.BlockChainIO = (*mockChainIO)(nil)
 
 type mockWalletController struct {
