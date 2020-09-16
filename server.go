@@ -1528,8 +1528,9 @@ func (s *server) Start() error {
 		// configure the set of active bootstrappers, and launch a
 		// dedicated goroutine to maintain a set of persistent
 		// connections.
-		if !cfg.NoNetBootstrap && !(cfg.Bitcoin.SimNet || cfg.Litecoin.SimNet) &&
-			!(cfg.Bitcoin.RegTest || cfg.Litecoin.RegTest || cfg.Xsncoin.RegTest) {
+		if !s.cfg.NoNetBootstrap &&
+			!(s.cfg.Bitcoin.SimNet || s.cfg.Litecoin.SimNet) &&
+			!(s.cfg.Bitcoin.RegTest || s.cfg.Litecoin.RegTest) {
 
 			bootstrappers, err := initNetworkBootstrappers(s)
 			if err != nil {

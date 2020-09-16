@@ -2,7 +2,6 @@ package lnd
 
 import (
 	"context"
-	"github.com/lightningnetwork/lnd/dualfunding"
 	"github.com/btcsuite/btcd/connmgr"
 	"github.com/btcsuite/btclog"
 	"github.com/lightninglabs/neutrino"
@@ -83,7 +82,6 @@ var (
 	utxnLog = addLndPkgLogger("UTXN")
 	brarLog = addLndPkgLogger("BRAR")
 	atplLog = addLndPkgLogger("ATPL")
-        dchnLog = build.NewSubLogger("DCHN", logWriter.GenSubLogger)
 )
 
 // SetupLoggers initializes all package-global logger variables.

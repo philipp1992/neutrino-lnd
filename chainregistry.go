@@ -183,7 +183,7 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		homeChainConfig = cfg.Litecoin
 	}
-	if registeredChains.PrimaryChain() == xsncoinChain {
+	if cfg.registeredChains.PrimaryChain() == xsncoinChain {
 		homeChainConfig = cfg.Xsncoin
 	}
 	ltndLog.Infof("Primary chain is set to: %v",
@@ -294,7 +294,7 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			cfg.ActiveNetParams.Params, neutrinoCS,
 		)
 	case "lightwallet":
-		var lightWalletMode *lightWalletConfig
+		var lightWalletMode *lncfg.LightWalletConfig
 		lightWalletMode = cfg.LightWalletMode
 
 		// Otherwise, we'll be speaking directly via RPC and ZMQ to a
@@ -310,7 +310,7 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			// btcd, which picks a different port so that btcwallet
 			// can use the same RPC port as bitcoind. We convert
 			// this back to the btcwallet/bitcoind port.
-			rpcPort, err := strconv.Atoi(activeNetParams.rpcPort)
+			rpcPort, err := strconv.Atoi(cfg.ActiveNetParams.rpcPort)
 
 			if err != nil {
 				return nil, err
@@ -323,7 +323,7 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 		// Establish the connection to lightWallet and create the clients
 		// required for our relevant subsystems.
 		lightWalletConn, err := chain.NewLightWalletConn(
-			activeNetParams.Params, lightWalletHost,
+			cfg.ActiveNetParams.Params, lightWalletHost,
 			lightWalletMode.RPCUser, lightWalletMode.RPCPass,
 			lightWalletMode.ZMQPubRawHeader, 100*time.Millisecond,
 		)
@@ -350,7 +350,7 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 		// along with the wallet's ChainSource, which are all backed by
 		// the neutrino light client.
 		cc.chainNotifier = lightwalletnotify.New(
-			lightWalletConn, activeNetParams.Params,
+			lightWalletConn, cfg.ActiveNetParams.Params,
 			hintCache, hintCache,
 		)
 
@@ -655,22 +655,16 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			homeChainConfig.Node)
 	}
 
-	if cc.wc == nil {
-		wc, err := btcwallet.New(*walletConfig)
-		if err != nil {
-			fmt.Printf("unable to create wallet controller: %v\n", err)
-			return nil, err
-		}
-		keyRing := keychain.NewBtcWalletKeyRing(
-			wc.InternalWallet(), activeNetParams.CoinType,
-		)
-		// Select the default channel constraints for the primary chain.
-		cc.keyRing = keyRing
-		cc.msgSigner = wc
-		cc.signer = wc
-		cc.chainIO = wc
-		cc.wc = wc
+	wc, err := btcwallet.New(*walletConfig)
+	if err != nil {
+		fmt.Printf("unable to create wallet controller: %v\n", err)
+		return nil, err
 	}
+
+	cc.msgSigner = wc
+	cc.signer = wc
+	cc.chainIO = wc
+	cc.wc = wc
 
 	channelConstraints := defaultBtcChannelConstraints
 	if cfg.registeredChains.PrimaryChain() == litecoinChain {

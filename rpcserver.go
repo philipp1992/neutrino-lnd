@@ -72,21 +72,6 @@ import (
 	"gopkg.in/macaroon-bakery.v2/bakery"
 )
 
-const (
-
-	// maxBtcPaymentMSat is the maximum allowed Bitcoin payment currently
-	// permitted as defined in BOLT-0002.
-	maxBtcPaymentMSat = lnwire.MilliSatoshi(100000000000)
-
-	// maxLtcPaymentMSat is the maximum allowed Litecoin payment currently
-	// permitted.
-	maxLtcPaymentMSat = lnwire.MilliSatoshi(100000000000) *
-		btcToLtcConversionRate
-
-	maxXsnPaymentMSat = lnwire.MilliSatoshi(100000000000) *
-		btcToXsnConversionRate
-)
-
 var (
 	// readPermissions is a slice of all entities that allow read
 	// permissions for authorization purposes, all lowercase.
@@ -4619,8 +4604,8 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 	if r.cfg.registeredChains.PrimaryChain() == litecoinChain {
 		defaultDelta = r.cfg.Litecoin.TimeLockDelta
 	}
-	if registeredChains.PrimaryChain() == xsncoinChain {
-		defaultDelta = cfg.Xsncoin.TimeLockDelta
+	if r.cfg.registeredChains.PrimaryChain() == xsncoinChain {
+		defaultDelta = r.cfg.Xsncoin.TimeLockDelta
 	}
 
 	addInvoiceCfg := &invoicesrpc.AddInvoiceConfig{

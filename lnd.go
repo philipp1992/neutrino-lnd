@@ -8,7 +8,6 @@ import (
 	"context"
 	"crypto/tls"
 	"fmt"
-	"github.com/lightningnetwork/lnd/dualfunding"
 	"io/ioutil"
 	"net"
 	"net/http"
@@ -717,41 +716,6 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	}
 	defer server.Stop()
 
-
-	pendingChannelsEventSource, err := New(server.pendingChannelOpened)
-
-	if err != nil {
-		err := fmt.Errorf("Unable to create pending channels event source: %v", err)
-		ltndLog.Error(err)
-		return err
-	}
-
-	pendingChannelsEventSource.Start()
-	defer pendingChannelsEventSource.Stop()
-
-	// Dual Channels Funding Manager
-	if cfg.DualFunding.Active {
-		dfConfig, err := initDualFunding(server, pendingChannelsEventSource, graphDir)
-		if err != nil {
-			err := fmt.Errorf("Unable to initialize dual channel manager: %v", err)
-			ltndLog.Error(err)
-			return err
-		}
-
-		dualChanManager, err := dualfunding.NewDualChannelManager(dfConfig)
-		if err != nil {
-			err := fmt.Errorf("Unable to create dualChannel manager: %v", err)
-			ltndLog.Error(err)
-			return err
-		}
-		if err := dualChanManager.Start(); err != nil {
-			err := fmt.Errorf("Unable to start dualchannel manager: %v", err)
-			ltndLog.Error(err)
-			return err
-		}
-		defer dualChanManager.Stop()
-	}
-
 	// Now that the server has started, if the autopilot mode is currently
 	// active, then we'll start the autopilot agent immediately. It will be
 	// stopped together with the autopilot service.
@@ -1002,7 +966,7 @@ func waitForWalletPassword(cfg *Config, restEndpoints []net.Addr,
 		chainConfig = cfg.Litecoin
 	}
 
-	if registeredChains.PrimaryChain() == xsncoinChain {
+	if cfg.registeredChains.PrimaryChain() == xsncoinChain {
 		chainConfig = cfg.Xsncoin
 	}
 

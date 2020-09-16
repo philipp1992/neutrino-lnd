@@ -138,3 +138,60 @@ func (b *LightWalletKeyRing) ScalarMult(keyDesc KeyDescriptor,
 
 	return h[:], nil
 }
+
+// ECDH performs a scalar multiplication (ECDH-like operation) between the
+// target key descriptor and remote public key. The output returned will be
+// the sha256 of the resulting shared point serialized in compressed format. If
+// k is our private key, and P is the public key, we perform the following
+// operation:
+//
+//  sx := k*P s := sha256(sx.SerializeCompressed())
+//
+// NOTE: This is part of the keychain.ECDHRing interface.
+func (b *LightWalletKeyRing) ECDH(keyDesc KeyDescriptor,
+	pub *btcec.PublicKey) ([32]byte, error) {
+
+	privKey, err := b.DerivePrivKey(keyDesc)
+	if err != nil {
+		return [32]byte{}, err
+	}
+
+	s := &btcec.PublicKey{}
+	x, y := btcec.S256().ScalarMult(pub.X, pub.Y, privKey.D.Bytes())
+	s.X = x
+	s.Y = y
+
+	h := sha256.Sum256(s.SerializeCompressed())
+
+	return h, nil
+}
+
+// SignDigest signs the given SHA256 message digest with the private key
+// described in the key descriptor.
+//
+// NOTE: This is part of the keychain.DigestSignerRing interface.
+func (b *LightWalletKeyRing) SignDigest(keyDesc KeyDescriptor,
+	digest [32]byte) (*btcec.Signature, error) {
+
+	privKey, err := b.DerivePrivKey(keyDesc)
+	if err != nil {
+		return nil, err
+	}
+	return privKey.Sign(digest[:])
+}
+
+// SignDigestCompact signs the given SHA256 message digest with the private key
+// described in the key descriptor and returns the signature in the compact,
+// public key recoverable format.
+//
+// NOTE: This is part of the keychain.DigestSignerRing interface.
+func (b *LightWalletKeyRing) SignDigestCompact(keyDesc KeyDescriptor,
+	digest [32]byte) ([]byte, error) {
+
+	privKey, err := b.DerivePrivKey(keyDesc)
+	if err != nil {
+		return nil, err
+	}
+	return btcec.SignCompact(btcec.S256(), privKey, digest[:], true)
+}
+

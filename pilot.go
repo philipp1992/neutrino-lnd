@@ -70,7 +70,7 @@ func validateAtplCfg(cfg *lncfg.AutoPilot) ([]*autopilot.WeightedHeuristic,
 	return heuristics, nil
 }
 
-func validateAtplTrustedNodes(cfg *autoPilotConfig) ([]autopilot.NodeID, error){
+func validateAtplTrustedNodes(cfg *lncfg.AutoPilot) ([]autopilot.NodeID, error){
 
 	nodesLen := len(cfg.TrustedNodes)
 	if nodesLen == 0 {
