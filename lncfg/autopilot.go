@@ -11,4 +11,6 @@ type AutoPilot struct {
 	Private        bool               `long:"private" description:"Whether the channels created by the autopilot agent should be private or not. Private channels won't be announced to the network."`
 	MinConfs       int32              `long:"minconfs" description:"The minimum number of confirmations each of your inputs in funding transactions created by the autopilot agent must have."`
 	ConfTarget     uint32             `long:"conftarget" description:"The confirmation target (in blocks) for channels opened by autopilot."`
+	TrustedNodes   []string			  `long:"trustednodes" description:"Initiate connection only to the specified peers"`
+	SatPerByte 	   uint32			  `long:"feerate" description:"Initiate autopilot agent with configurable static fee rate"`
 }
