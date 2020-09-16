@@ -148,99 +148,10 @@ var (
 	defaultBitcoindEstimateMode = "CONSERVATIVE"
 	bitcoindEstimateModes       = [2]string{"ECONOMICAL", defaultBitcoindEstimateMode}
 
-//<<<<<<< HEAD
-//)
-//
-//type chainConfig struct {
-//	Active   bool   `long:"active" description:"If the chain should be active or not."`
-//	ChainDir string `long:"chaindir" description:"The directory to store the chain's data within."`
-//
-//	Node string `long:"node" description:"The blockchain interface to use." choice:"xsnd" choice:"btcd" choice:"bitcoind" choice:"neutrino" choice:"ltcd" choice:"litecoind" choice:"lightwallet"`
-//
-//	MainNet  bool `long:"mainnet" description:"Use the main network"`
-//	TestNet3 bool `long:"testnet" description:"Use the test network"`
-//	SimNet   bool `long:"simnet" description:"Use the simulation test network"`
-//	RegTest  bool `long:"regtest" description:"Use the regression test network"`
-//
-//	DefaultNumChanConfs int                 `long:"defaultchanconfs" description:"The default number of confirmations a channel must have before it's considered open. If this is not set, we will scale the value according to the channel size."`
-//	DefaultRemoteDelay  int                 `long:"defaultremotedelay" description:"The default number of blocks we will require our channel counterparty to wait before accessing its funds in case of unilateral close. If this is not set, we will scale the value according to the channel size."`
-//	MinHTLCIn           lnwire.MilliSatoshi `long:"minhtlc" description:"The smallest HTLC we are willing to accept on our channels, in millisatoshi"`
-//	MinHTLCOut          lnwire.MilliSatoshi `long:"minhtlcout" description:"The smallest HTLC we are willing to send out on our channels, in millisatoshi"`
-//	BaseFee             lnwire.MilliSatoshi `long:"basefee" description:"The base fee in millisatoshi we will charge for forwarding payments on our channels"`
-//	FeeRate             lnwire.MilliSatoshi `long:"feerate" description:"The fee rate used when forwarding payments on our channels. The total fee charged is basefee + (amount * feerate / 1000000), where amount is the forwarded amount."`
-//	TimeLockDelta       uint32              `long:"timelockdelta" description:"The CLTV delta we will subtract from a forwarded HTLC's timelock value"`
-//}
-//
-//type neutrinoConfig struct {
-//	AddPeers           []string      `short:"a" long:"addpeer" description:"Add a peer to connect with at startup"`
-//	ConnectPeers       []string      `long:"connect" description:"Connect only to the specified peers at startup"`
-//	MaxPeers           int           `long:"maxpeers" description:"Max number of inbound and outbound peers"`
-//	BanDuration        time.Duration `long:"banduration" description:"How long to ban misbehaving peers.  Valid time units are {s, m, h}.  Minimum 1 second"`
-//	BanThreshold       uint32        `long:"banthreshold" description:"Maximum allowed ban score before disconnecting and banning misbehaving peers."`
-//	FeeURL             string        `long:"feeurl" description:"Optional URL for fee estimation. If a URL is not specified, static fees will be used for estimation."`
-//	AssertFilterHeader string        `long:"assertfilterheader" description:"Optional filter header in height:hash format to assert the state of neutrino's filter header chain on startup. If the assertion does not hold, then the filter header chain will be re-synced from the genesis block."`
-//}
-//
-//type btcdConfig struct {
-//	Dir        string `long:"dir" description:"The base directory that contains the node's data, logs, configuration file, etc."`
-//	RPCHost    string `long:"rpchost" description:"The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used."`
-//	RPCUser    string `long:"rpcuser" description:"Username for RPC connections"`
-//	RPCPass    string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
-//	RPCCert    string `long:"rpccert" description:"File containing the daemon's certificate file"`
-//	RawRPCCert string `long:"rawrpccert" description:"The raw bytes of the daemon's PEM-encoded certificate chain which will be used to authenticate the RPC connection."`
-//}
-//
-//type bitcoindConfig struct {
-//	Dir            string `long:"dir" description:"The base directory that contains the node's data, logs, configuration file, etc."`
-//	RPCHost        string `long:"rpchost" description:"The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used."`
-//	RPCUser        string `long:"rpcuser" description:"Username for RPC connections"`
-//	RPCPass        string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
-//	ZMQPubRawBlock string `long:"zmqpubrawblock" description:"The address listening for ZMQ connections to deliver raw block notifications"`
-//	ZMQPubRawTx    string `long:"zmqpubrawtx" description:"The address listening for ZMQ connections to deliver raw transaction notifications"`
-//	EstimateMode   string `long:"estimatemode" description:"The fee estimate mode. Must be either ECONOMICAL or CONSERVATIVE."`
-//}
-//
-//type lightWalletConfig struct {
-//	Dir             string `long:"dir" description:"The base directory that contains the node's data, logs, configuration file, etc."`
-//	RPCHost         string `long:"rpchost" description:"The daemon's rpc listening address. If a port is omitted, then the default port for the selected chain parameters will be used."`
-//	RPCUser         string `long:"rpcuser" description:"Username for RPC connections"`
-//	RPCPass         string `long:"rpcpass" default-mask:"-" description:"Password for RPC connections"`
-//	ZMQPubRawHeader string `long:"zmqpubrawheader" description:"The address listening for ZMQ connections to deliver raw header notifications"`
-//	UseWalletBackend bool  `long:"usewalletbackend" description:"Use light wallet as lnwallet backend"`
-//}
-//
-//type autoPilotConfig struct {
-//	Active         bool               `long:"active" description:"If the autopilot agent should be active or not."`
-//	Heuristic      map[string]float64 `long:"heuristic" description:"Heuristic to activate, and the weight to give it during scoring."`
-//	MaxChannels    int                `long:"maxchannels" description:"The maximum number of channels that should be created"`
-//	Allocation     float64            `long:"allocation" description:"The percentage of total funds that should be committed to automatic channel establishment"`
-//	MinChannelSize int64              `long:"minchansize" description:"The smallest channel that the autopilot agent should create"`
-//	MaxChannelSize int64              `long:"maxchansize" description:"The largest channel that the autopilot agent should create"`
-//	Private        bool               `long:"private" description:"Whether the channels created by the autopilot agent should be private or not. Private channels won't be announced to the network."`
-//	MinConfs       int32              `long:"minconfs" description:"The minimum number of confirmations each of your inputs in funding transactions created by the autopilot agent must have."`
-//	ConfTarget     uint32             `long:"conftarget" description:"The confirmation target (in blocks) for channels opened by autopilot."`
-//	TrustedNodes   []string			  `long:"trustednodes" description:"Initiate connection only to the specified peers"`
-//	SatPerByte 	   uint32			  `long:"feerate" description:"Initiate autopilot agent with configurable static fee rate"`}
-//
 //type dualFundingConfig struct {
 //	Active         bool               `long:"active" description:"If the dual channel funding should be active or not."`
 //}
 //
-//type torConfig struct {
-//	Active            bool   `long:"active" description:"Allow outbound and inbound connections to be routed through Tor"`
-//	SOCKS             string `long:"socks" description:"The host:port that Tor's exposed SOCKS5 proxy is listening on"`
-//	DNS               string `long:"dns" description:"The DNS server as host:port that Tor will use for SRV queries - NOTE must have TCP resolution enabled"`
-//	StreamIsolation   bool   `long:"streamisolation" description:"Enable Tor stream isolation by randomizing user credentials for each connection."`
-//	Control           string `long:"control" description:"The host:port that Tor is listening on for Tor control connections"`
-//	TargetIPAddress   string `long:"targetipaddress" description:"IP address that Tor should use as the target of the hidden service"`
-//	Password          string `long:"password" description:"The password used to arrive at the HashedControlPassword for the control port. If provided, the HASHEDPASSWORD authentication method will be used instead of the SAFECOOKIE one."`
-//	V2                bool   `long:"v2" description:"Automatically set up a v2 onion service to listen for inbound connections"`
-//	V3                bool   `long:"v3" description:"Automatically set up a v3 onion service to listen for inbound connections"`
-//	PrivateKeyPath    string `long:"privatekeypath" description:"The path to the private key of the onion service being created"`
-//	WatchtowerKeyPath string `long:"watchtowerkeypath" description:"The path to the private key of the watchtower onion service being created"`
-//}
-//=======
-
 	defaultSphinxDbName = "sphinxreplay.db"
 )
 
@@ -303,18 +214,18 @@ type Config struct {
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
 	BackupFilePath     string `long:"backupfilepath" description:"The target location of the channel backup file"`
 
-	Bitcoin      *lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
-	BtcdMode     *lncfg.Btcd     `group:"btcd" namespace:"btcd"`
-	BitcoindMode *lncfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
-	NeutrinoMode *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
-        LightWalletMode *lightWalletConfig `group:"lightwallet" namespace:"lightwallet"`
-	Litecoin      *lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
-	LtcdMode      *lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
-	LitecoindMode *lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
-	Xsncoin      *chainConfig    `group:"Xsncoin" namespace:"xsncoin"`
-	XsndMode 	 *bitcoindConfig `group:"xsnd" namespace:"xsnd"`
+	Bitcoin      	*lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
+	BtcdMode     	*lncfg.Btcd     `group:"btcd" namespace:"btcd"`
+	BitcoindMode 	*lncfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
+	NeutrinoMode 	*lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
+	LightWalletMode *lncfg.LightWalletConfig `group:"lightwallet" namespace:"lightwallet"`
+	Litecoin      	*lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
+	LtcdMode      	*lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
+	LitecoindMode 	*lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
+	Xsncoin      	*lncfg.Chain    `group:"Xsncoin" namespace:"xsncoin"`
+	XsndMode 	 	*lncfg.Bitcoind `group:"xsnd" namespace:"xsnd"`
 
-	DualFunding *dualFundingConfig `group:"DualFunding" namespace:"dualfunding"`
+	//DualFunding *dualFundingConfig `group:"DualFunding" namespace:"dualfunding"`
 	Autopilot *lncfg.AutoPilot `group:"Autopilot" namespace:"autopilot"`
 
 	Tor *lncfg.Tor `group:"Tor" namespace:"tor"`
@@ -454,7 +365,7 @@ func DefaultConfig() Config {
 			RPCHost:      defaultRPCHost,
 			EstimateMode: defaultBitcoindEstimateMode,
 		},
-		Xsncoin: &chainConfig {
+		Xsncoin: &lncfg.Chain {
 			MinHTLCIn:     defaultBitcoinMinHTLCInMSat,
 			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
 			BaseFee:       DefaultBitcoinBaseFeeMSat,
@@ -462,11 +373,11 @@ func DefaultConfig() Config {
 			TimeLockDelta: DefaultXsncoinTimeLockDelta,
 			Node:          "xsnd",
 			},
-		XsndMode: &bitcoindConfig {
+		XsndMode: &lncfg.Bitcoind {
 			Dir:     defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
 		},
-		LightWalletMode: &lightWalletConfig {
+		LightWalletMode: &lncfg.LightWalletConfig {
 			Dir: defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
 			UseWalletBackend: false,
@@ -492,9 +403,9 @@ func DefaultConfig() Config {
 			},
 			TrustedNodes: make([]string, 0),
 		},
-		DualFunding: &dualFundingConfig{
-			Active: false,
-		},
+		//DualFunding: &dualFundingConfig{
+		//	Active: false,
+		//},
 		PaymentsExpirationGracePeriod: defaultPaymentsExpirationGracePeriod,
 		TrickleDelay:                  defaultTrickleDelay,
 		ChanStatusSampleInterval:      defaultChanStatusSampleInterval,
@@ -686,8 +597,8 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 	cfg.Tor.PrivateKeyPath = CleanAndExpandPath(cfg.Tor.PrivateKeyPath)
 	cfg.Tor.WatchtowerKeyPath = CleanAndExpandPath(cfg.Tor.WatchtowerKeyPath)
 	cfg.Watchtower.TowerDir = CleanAndExpandPath(cfg.Watchtower.TowerDir)
-        cfg.XsndMode.Dir = cleanAndExpandPath(cfg.XsndMode.Dir)
-        cfg.LightWalletMode.Dir = cleanAndExpandPath(cfg.LightWalletMode.Dir)
+	cfg.XsndMode.Dir = CleanAndExpandPath(cfg.XsndMode.Dir)
+	cfg.LightWalletMode.Dir = CleanAndExpandPath(cfg.LightWalletMode.Dir)
 
 	// Ensure that the user didn't attempt to specify negative values for
 	// any of the autopilot params.
@@ -962,7 +873,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 			err := parseRPCParams(
 				cfg.Litecoin, cfg.LightWalletMode, litecoinChain, funcName,
-			)
+				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
 					"credentials for bitcoin testnet: %v", err)
@@ -990,7 +901,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 		numNets := 0
 		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node == "lightwallet" {
 			numNets++
-			activeNetParams = btcLightWalletParams
+			cfg.ActiveNetParams = btcLightWalletParams
 		}
 		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node != "lightwallet"{
 			numNets++
@@ -1002,7 +913,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 		}
 		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node == "lightwallet" {
 			numNets++
-			activeNetParams = btcLightWalletRegtestParams
+			cfg.ActiveNetParams = btcLightWalletRegtestParams
 		}
 		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node != "lightwallet"{
 			numNets++
@@ -1029,13 +940,6 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 			err := fmt.Errorf(str, funcName)
 			return nil, err
 		}
-
-		//if cfg.Bitcoin.Node == "neutrino" && cfg.Bitcoin.MainNet {
-		//	str := "%s: neutrino isn't yet supported for " +
-		//		"bitcoin's mainnet"
-		//	err := fmt.Errorf(str, funcName)
-		//	return nil, err
-		//}
 
 		if cfg.Bitcoin.TimeLockDelta < minTimeLockDelta {
 			return nil, fmt.Errorf("timelockdelta must be at least %v",
@@ -1079,7 +983,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 			err := parseRPCParams(
 				cfg.Bitcoin, cfg.LightWalletMode, bitcoinChain, funcName,
-			)
+				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
 					"credentials for bitcoin testnet: %v", err)
@@ -1097,7 +1001,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 		// Finally we'll register the bitcoin chain as our current
 		// primary chain.
-		registeredChains.RegisterPrimaryChain(bitcoinChain)
+		cfg.registeredChains.RegisterPrimaryChain(bitcoinChain)
 
 	case cfg.Xsncoin.Active:
 		// Multiple networks can't be selected simultaneously.  Count
@@ -1148,7 +1052,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 		// throughout the codebase we required chaincfg.Params. So as a
 		// temporary hack, we'll mutate the default net params for
 		// bitcoin with the litecoin specific information.
-		applyStakenetParams(&activeNetParams, &xsnParams)
+		applyStakenetParams(&cfg.ActiveNetParams, &xsnParams)
 
 		if cfg.Xsncoin.TimeLockDelta < minTimeLockDelta {
 			return nil, fmt.Errorf("timelockdelta must be at least %v",
@@ -1164,7 +1068,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 			err := parseRPCParams(
 				cfg.Xsncoin, cfg.XsndMode, xsncoinChain, funcName,
-			)
+				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
 					"credentials for xsnd: %v", err)
@@ -1179,7 +1083,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 			err := parseRPCParams(
 				cfg.Xsncoin, cfg.LightWalletMode, xsncoinChain, funcName,
-			)
+				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
 					"credentials for xsncoin lw mode: %v", err)
@@ -1198,9 +1102,8 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 		// Finally we'll register the bitcoin chain as our current
 		// primary chain.
-		registeredChains.RegisterPrimaryChain(xsncoinChain)
+		cfg.registeredChains.RegisterPrimaryChain(xsncoinChain)
 		MaxFundingAmount = maxXsnFundingAmount
-		MaxPaymentMSat = maxXsnPaymentMSat
 	}
 
 	// Ensure that the user didn't attempt to specify negative values for
