@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg"
@@ -14,6 +15,7 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
+	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
@@ -90,7 +92,7 @@ func (lw *LightWalletController) IsOurAddress(a btcutil.Address) bool {
 }
 
 func (lw *LightWalletController) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight) (*wire.MsgTx, error) {
+	feeRate chainfee.SatPerKWeight, label string) (*wire.MsgTx, error) {
 	panic("implement me")
 }
 
@@ -141,7 +143,8 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 	return utxos, nil
 }
 
-func (lw *LightWalletController) ListTransactionDetails() ([]*lnwallet.TransactionDetail, error) {
+func (lw *LightWalletController) ListTransactionDetails(startHeight,
+	endHeight int32) ([]*lnwallet.TransactionDetail, error) {
 	panic("implement list")
 	return nil, nil
 }
@@ -163,8 +166,7 @@ func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
 	lw.client.UnlockOutpoint(o)
 }
 
-func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx) error {
-
+func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx, label string) error {
 	txid, err := lw.client.SendRawTransaction(tx, true)
 	if err != nil {
 		if strings.Contains(err.Error(), "Missing inputs") {
@@ -332,6 +334,133 @@ func (lw *LightWalletController) Stop() error {
 
 func (lw *LightWalletController) BackEnd() string {
 	panic("implement me")
+}
+
+// GetRecoveryInfo returns a boolean indicating whether the wallet is started
+// in recovery mode. It also returns a float64, ranging from 0 to 1,
+// representing the recovery progress made so far.
+//
+// This is a part of the WalletController interface.
+func (b *LightWalletController) GetRecoveryInfo() (bool, float64, error) {
+	//isRecoveryMode := true
+	//progress := float64(0)
+	//
+	//// A zero value in RecoveryWindow indicates there is no trigger of
+	//// recovery mode.
+	//if b.cfg.RecoveryWindow == 0 {
+	//	isRecoveryMode = false
+	//	return isRecoveryMode, progress, nil
+	//}
+	//
+	//// Query the wallet's birthday block height from db.
+	//var birthdayBlock waddrmgr.BlockStamp
+	//err := walletdb.View(b.db, func(tx walletdb.ReadTx) error {
+	//	var err error
+	//	addrmgrNs := tx.ReadBucket(waddrmgrNamespaceKey)
+	//	birthdayBlock, _, err = b.wallet.Manager.BirthdayBlock(addrmgrNs)
+	//	if err != nil {
+	//		return err
+	//	}
+	//	return nil
+	//})
+	//
+	//if err != nil {
+	//	// The wallet won't start until the backend is synced, thus the birthday
+	//	// block won't be set and this particular error will be returned. We'll
+	//	// catch this error and return a progress of 0 instead.
+	//	if waddrmgr.IsError(err, waddrmgr.ErrBirthdayBlockNotSet) {
+	//		return isRecoveryMode, progress, nil
+	//	}
+	//
+	//	return isRecoveryMode, progress, err
+	//}
+	//
+	//// Grab the best chain state the wallet is currently aware of.
+	//syncState := b.wallet.Manager.SyncedTo()
+	//
+	//// Next, query the chain backend to grab the info about the tip of the
+	//// main chain.
+	////
+	//// NOTE: The actual recovery process is handled by the btcsuite/btcwallet.
+	//// The process purposefully doesn't update the best height. It might create
+	//// a small difference between the height queried here and the height used
+	//// in the recovery process, ie, the bestHeight used here might be greater,
+	//// showing the recovery being unfinished while it's actually done. However,
+	//// during a wallet rescan after the recovery, the wallet's synced height
+	//// will catch up and this won't be an issue.
+	//_, bestHeight, err := b.cfg.ChainSource.GetBestBlock()
+	//if err != nil {
+	//	return isRecoveryMode, progress, err
+	//}
+	//
+	//// The birthday block height might be greater than the current synced height
+	//// in a newly restored wallet, and might be greater than the chain tip if a
+	//// rollback happens. In that case, we will return zero progress here.
+	//if syncState.Height < birthdayBlock.Height ||
+	//	bestHeight < birthdayBlock.Height {
+	//	return isRecoveryMode, progress, nil
+	//}
+	//
+	//// progress is the ratio of the [number of blocks processed] over the [total
+	//// number of blocks] needed in a recovery mode, ranging from 0 to 1, in
+	//// which,
+	//// - total number of blocks is the current chain's best height minus the
+	////   wallet's birthday height plus 1.
+	//// - number of blocks processed is the wallet's synced height minus its
+	////   birthday height plus 1.
+	//// - If the wallet is born very recently, the bestHeight can be equal to
+	////   the birthdayBlock.Height, and it will recovery instantly.
+	//progress = float64(syncState.Height-birthdayBlock.Height+1) /
+	//	float64(bestHeight-birthdayBlock.Height+1)
+	//
+	//return isRecoveryMode, progress, nil
+	panic("implement me")
+}
+
+// LabelTransaction adds a label to a transaction. If the tx already
+// has a label, this call will fail unless the overwrite parameter
+// is set. Labels must not be empty, and they are limited to 500 chars.
+//
+// Note: it is part of the WalletController interface.
+func (b *LightWalletController) LabelTransaction(hash chainhash.Hash, label string,
+	overwrite bool) error {
+
+	panic("implement me")
+	//return b.wallet.LabelTransaction(hash, label, overwrite)
+}
+
+// LeaseOutput locks an output to the given ID, preventing it from being
+// available for any future coin selection attempts. The absolute time of the
+// lock's expiration is returned. The expiration of the lock can be extended by
+// successive invocations of this call. Outputs can be unlocked before their
+// expiration through `ReleaseOutput`.
+//
+// If the output is not known, wtxmgr.ErrUnknownOutput is returned. If the
+// output has already been locked to a different ID, then
+// wtxmgr.ErrOutputAlreadyLocked is returned.
+//
+// NOTE: This method requires the global coin selection lock to be held.
+func (b *LightWalletController) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) (time.Time,
+	error) {
+
+	// Make sure we don't attempt to double lock an output that's been
+	// locked by the in-memory implementation.
+	//if b.wallet.LockedOutpoint(op) {
+	//	return time.Time{}, wtxmgr.ErrOutputAlreadyLocked
+	//}
+	//
+	//return b.wallet.LeaseOutput(id, op)
+	panic("implement me")
+}
+
+// ReleaseOutput unlocks an output, allowing it to be available for coin
+// selection if it remains unspent. The ID should match the one used to
+// originally lock the output.
+//
+// NOTE: This method requires the global coin selection lock to be held.
+func (b *LightWalletController) ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error {
+	panic("implement me")
+	//return b.wallet.ReleaseOutput(id, op)
 }
 
 func New(cfg btcwallet.Config, 	client *chain.LightWalletClient, keychain *keychain.LightWalletKeyRing) (*LightWalletController, error) {
