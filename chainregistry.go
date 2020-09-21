@@ -386,7 +386,7 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			HTTPPostMode:         true,
 		}
 
-		ltndLog.Infof("Initializing lightwallet backed fee estimator")
+		ltndLog.Infof("Initializing lightwallet backend fee estimator")
 
 		// Finally, we'll re-initialize the fee estimator, as
 		// if we're using lightwallet as a backend, then we can
@@ -655,26 +655,27 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			homeChainConfig.Node)
 	}
 
-	wc, err := btcwallet.New(*walletConfig)
-	if err != nil {
-		fmt.Printf("unable to create wallet controller: %v\n", err)
-		return nil, err
+	if cc.wc == nil {
+		wc, err := btcwallet.New(*walletConfig)
+		if err != nil {
+			fmt.Printf("unable to create wallet controller: %v\n", err)
+			return nil, err
+		}
+
+		cc.msgSigner = wc
+		cc.signer = wc
+		cc.chainIO = wc
+		cc.wc = wc
+
+		keyRing := keychain.NewBtcWalletKeyRing(
+			wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
+		)
+		cc.keyRing = keyRing
 	}
-
-	cc.msgSigner = wc
-	cc.signer = wc
-	cc.chainIO = wc
-	cc.wc = wc
-
 	channelConstraints := defaultBtcChannelConstraints
 	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		channelConstraints = defaultLtcChannelConstraints
 	}
-
-	keyRing := keychain.NewBtcWalletKeyRing(
-		wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
-	)
-	cc.keyRing = keyRing
 
 	// Create, and start the lnwallet, which handles the core payment
 	// channel logic, and exposes control via proxy state machines.
