@@ -4,7 +4,6 @@ import (
 	"bytes"
 	crand "crypto/rand"
 	"encoding/binary"
-	"fmt"
 	"io"
 	"io/ioutil"
 	"math/rand"
@@ -13,18 +12,15 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
-	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/btcsuite/btcwallet/wallet/txauthor"
-	"github.com/btcsuite/btcwallet/wtxmgr"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
@@ -587,8 +583,8 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 		os.RemoveAll(alicePath)
 	}
 
-	aliceSigner := &mockSigner{aliceKeyPriv}
-	bobSigner := &mockSigner{bobKeyPriv}
+	aliceSigner := &mock.SingleSigner{Privkey: aliceKeyPriv}
+	bobSigner := &mock.SingleSigner{Privkey: bobKeyPriv}
 
 	alicePool := lnwallet.NewSigPool(1, aliceSigner)
 	channelAlice, err := lnwallet.NewLightningChannel(
@@ -608,13 +604,13 @@ func createTestPeer(notifier chainntnfs.ChainNotifier,
 	}
 	_ = bobPool.Start()
 
-	chainIO := &mockChainIO{
-		bestHeight: broadcastHeight,
+	chainIO := &mock.ChainIO{
+		BestHeight: broadcastHeight,
 	}
 	wallet := &lnwallet.LightningWallet{
-		WalletController: &mockWalletController{
-			rootKey:       aliceKeyPriv,
-			publishedTxns: publTx,
+		WalletController: &mock.WalletController{
+			RootKey:               aliceKeyPriv,
+			PublishedTransactions: publTx,
 		},
 	}
 

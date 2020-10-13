@@ -5961,6 +5961,12 @@ type AnchorResolution struct {
 
 	// CommitAnchor is the anchor outpoint on the commit tx.
 	CommitAnchor wire.OutPoint
+
+	// CommitFee is the fee of the commit tx.
+	CommitFee btcutil.Amount
+
+	// CommitWeight is the weight of the commit tx.
+	CommitWeight int64
 }
 
 // LocalForceCloseSummary describes the final commitment state before the
@@ -6179,20 +6185,15 @@ func (lc *LightningChannel) CreateCloseProposal(proposedFee btcutil.Amount,
 		return nil, nil, 0, ErrChanClosing
 	}
 
-	// Subtract the proposed fee from the appropriate balance, taking care
-	// not to persist the adjusted balance, as the feeRate may change
+	// Get the final balances after subtracting the proposed fee, taking
+	// care not to persist the adjusted balance, as the feeRate may change
 	// during the channel closing process.
-	localCommit := lc.channelState.LocalCommitment
-	ourBalance := localCommit.LocalBalance.ToSatoshis()
-	theirBalance := localCommit.RemoteBalance.ToSatoshis()
-
-	// We'll make sure we account for the complete balance by adding the
-	// current dangling commitment fee to the balance of the initiator.
-	commitFee := localCommit.CommitFee
-	if lc.channelState.IsInitiator {
-		ourBalance = ourBalance - proposedFee + commitFee
-	} else {
-		theirBalance = theirBalance - proposedFee + commitFee
+	ourBalance, theirBalance, err := CoopCloseBalance(
+		lc.channelState.ChanType, lc.channelState.IsInitiator,
+		proposedFee, lc.channelState.LocalCommitment,
+	)
+	if err != nil {
+		return nil, nil, 0, err
 	}
 
 	closeTx := CreateCooperativeCloseTx(
@@ -6248,20 +6249,13 @@ func (lc *LightningChannel) CompleteCooperativeClose(
 		return nil, 0, ErrChanClosing
 	}
 
-	// Subtract the proposed fee from the appropriate balance, taking care
-	// not to persist the adjusted balance, as the feeRate may change
-	// during the channel closing process.
-	localCommit := lc.channelState.LocalCommitment
-	ourBalance := localCommit.LocalBalance.ToSatoshis()
-	theirBalance := localCommit.RemoteBalance.ToSatoshis()
-
-	// We'll make sure we account for the complete balance by adding the
-	// current dangling commitment fee to the balance of the initiator.
-	commitFee := localCommit.CommitFee
-	if lc.channelState.IsInitiator {
-		ourBalance = ourBalance - proposedFee + commitFee
-	} else {
-		theirBalance = theirBalance - proposedFee + commitFee
+	// Get the final balances after subtracting the proposed fee.
+	ourBalance, theirBalance, err := CoopCloseBalance(
+		lc.channelState.ChanType, lc.channelState.IsInitiator,
+		proposedFee, lc.channelState.LocalCommitment,
+	)
+	if err != nil {
+		return nil, 0, err
 	}
 
 	// Create the transaction used to return the current settled balance
@@ -6411,9 +6405,24 @@ func NewAnchorResolution(chanState *channeldb.OpenChannel,
 		HashType: txscript.SigHashAll,
 	}
 
+	// Calculate commit tx weight. This commit tx doesn't yet include the
+	// witness spending the funding output, so we add the (worst case)
+	// weight for that too.
+	utx := btcutil.NewTx(commitTx)
+	weight := blockchain.GetTransactionWeight(utx) +
+		input.WitnessCommitmentTxWeight
+
+	// Calculate commit tx fee.
+	fee := chanState.Capacity
+	for _, out := range commitTx.TxOut {
+		fee -= btcutil.Amount(out.Value)
+	}
+
 	return &AnchorResolution{
 		CommitAnchor:         *outPoint,
 		AnchorSignDescriptor: *signDesc,
+		CommitWeight:         weight,
+		CommitFee:            fee,
 	}, nil
 }
 

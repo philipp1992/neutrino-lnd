@@ -1,7 +1,6 @@
 language: go
 cache:
   directories:
-    - ~/bitcoin/bitcoin-0.19.1/bin
     - $DOWNLOAD_CACHE
     - $GOCACHE
     - $GOPATH/pkg/mod
@@ -17,12 +16,13 @@ git:
   depth: false
 
 go:
-  - "1.14.x"
+  - "1.15.x"
 
 env:
   global:
     - GOCACHE=$HOME/.go-build
     - DOWNLOAD_CACHE=$HOME/download_cache
+    - BITCOIN_VERSION=0.20.1
 
 sudo: required
 
@@ -44,18 +44,23 @@ jobs:
         # in a GitHub Workflow.
         - make unit pkg=... case=_NONE_
 
-        # Step 3: Lint go code. Limit to 1 worker to reduce memory usage.
-        - make lint workers=1
+        # Step 3: Lint go code. Invoke GC more often to reduce memory usage.
+        - GOGC=30 make lint
 
     - stage: Integration Test
       name: Btcd Integration
       script:
         - make itest
 
-    - name: Bitcoind Integration
+    - name: Bitcoind Integration (txindex enabled)
       script:
         - bash ./scripts/install_bitcoind.sh
         - make itest backend=bitcoind
+
+    - name: Bitcoind Integration (txindex disabled)
+      script:
+        - bash ./scripts/install_bitcoind.sh
+        - make itest backend="bitcoind notxindex"
 
     - name: Neutrino Integration
       script:
@@ -75,7 +80,7 @@ jobs:
       before_install:
         - choco upgrade --no-progress -y make netcat curl findutils
         - export MAKE=mingw32-make
-      after_script:
+      after_failure:
         - |-
           case $TRAVIS_OS_NAME in
             windows)
@@ -84,7 +89,7 @@ jobs:
               ;;
           esac
 
-after_script:
+after_failure:
   - |-
     case $TRAVIS_OS_NAME in
       windows)

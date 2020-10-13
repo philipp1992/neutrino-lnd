@@ -11,6 +11,7 @@ import (
 	"io/ioutil"
 	"net"
 	"net/http"
+	_ "net/http/pprof" // Blank import to set up profiling HTTP handlers.
 	"os"
 	"path/filepath"
 	"runtime/pprof"
@@ -18,19 +19,15 @@ import (
 	"sync"
 	"time"
 
-	// Blank import to set up profiling HTTP handlers.
-	_ "net/http/pprof"
-
-	"gopkg.in/macaroon-bakery.v2/bakery"
-	"gopkg.in/macaroon.v2"
-
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials"
-
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/wallet"
 	proxy "github.com/grpc-ecosystem/grpc-gateway/runtime"
 	"github.com/lightninglabs/neutrino"
+	"golang.org/x/crypto/acme/autocert"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials"
+	"gopkg.in/macaroon-bakery.v2/bakery"
+	"gopkg.in/macaroon.v2"
 
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
@@ -145,6 +142,12 @@ type RPCSubserverConfig struct {
 	// per URI, they are all required. See rpcserver.go for a list of valid
 	// action and entity values.
 	Permissions map[string][]bakery.Op
+
+	// MacaroonValidator is a custom macaroon validator that should be used
+	// instead of the default lnd validator. If specified, the custom
+	// validator is used for all URIs specified in the above Permissions
+	// map.
+	MacaroonValidator macaroons.MacaroonValidator
 }
 
 // ListenerWithSignal is a net.Listener that has an additional Ready channel that
@@ -197,9 +200,9 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	}()
 
 	// Show version at startup.
-	ltndLog.Infof("Version: %s commit=%s, build=%s, logging=%s",
+	ltndLog.Infof("Version: %s commit=%s, build=%s, logging=%s, debuglevel=%s",
 		build.Version(), build.Commit, build.Deployment,
-		build.LoggingType)
+		build.LoggingType, cfg.DebugLevel)
 
 	var network string
 	switch {
@@ -262,12 +265,14 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	defer cleanUp()
 
 	// Only process macaroons if --no-macaroons isn't set.
-	tlsCfg, restCreds, restProxyDest, err := getTLSConfig(cfg)
+	tlsCfg, restCreds, restProxyDest, cleanUp, err := getTLSConfig(cfg)
 	if err != nil {
 		err := fmt.Errorf("unable to load TLS credentials: %v", err)
 		ltndLog.Error(err)
 		return err
 	}
+
+	defer cleanUp()
 
 	serverCreds := credentials.NewTLS(tlsCfg)
 	serverOpts := []grpc.ServerOption{grpc.Creds(serverCreds)}
@@ -381,6 +386,11 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 		walletInitParams = *params
 		privateWalletPw = walletInitParams.Password
 		publicWalletPw = walletInitParams.Password
+		defer func() {
+			if err := walletInitParams.UnloadWallet(); err != nil {
+				ltndLog.Errorf("Could not unload wallet: %v", err)
+			}
+		}()
 
 		if walletInitParams.RecoveryWindow > 0 {
 			ltndLog.Infof("Wallet recovery mode enabled with "+
@@ -393,7 +403,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 	if !cfg.NoMacaroons {
 		// Create the macaroon authentication/authorization service.
 		macaroonService, err = macaroons.NewService(
-			cfg.networkDir, macaroons.IPLockChecker,
+			cfg.networkDir, "lnd", macaroons.IPLockChecker,
 		)
 		if err != nil {
 			err := fmt.Errorf("unable to set up macaroon "+
@@ -746,7 +756,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, shutdownChan <-chan struct{}) error {
 // getTLSConfig returns a TLS configuration for the gRPC server and credentials
 // and a proxy destination for the REST reverse proxy.
 func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
-	string, error) {
+	string, func(), error) {
 
 	// Ensure we create TLS key and certificate if they don't exist.
 	if !fileExists(cfg.TLSCertPath) && !fileExists(cfg.TLSKeyPath) {
@@ -757,7 +767,7 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 			cfg.TLSDisableAutofill, cert.DefaultAutogenValidity,
 		)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 		rpcsLog.Infof("Done generating TLS certificates")
 	}
@@ -766,7 +776,7 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 		cfg.TLSCertPath, cfg.TLSKeyPath,
 	)
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 
 	// We check whether the certifcate we have on disk match the IPs and
@@ -780,7 +790,7 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 			cfg.TLSExtraDomains, cfg.TLSDisableAutofill,
 		)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 	}
 
@@ -792,12 +802,12 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 
 		err := os.Remove(cfg.TLSCertPath)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 
 		err = os.Remove(cfg.TLSKeyPath)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 
 		rpcsLog.Infof("Renewing TLS certificates...")
@@ -807,7 +817,7 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 			cfg.TLSDisableAutofill, cert.DefaultAutogenValidity,
 		)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 		rpcsLog.Infof("Done renewing TLS certificates")
 
@@ -816,14 +826,15 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 			cfg.TLSCertPath, cfg.TLSKeyPath,
 		)
 		if err != nil {
-			return nil, nil, "", err
+			return nil, nil, "", nil, err
 		}
 	}
 
 	tlsCfg := cert.TLSConfFromCert(certData)
+
 	restCreds, err := credentials.NewClientTLSFromFile(cfg.TLSCertPath, "")
 	if err != nil {
-		return nil, nil, "", err
+		return nil, nil, "", nil, err
 	}
 
 	restProxyDest := cfg.RPCListeners[0].String()
@@ -839,7 +850,64 @@ func getTLSConfig(cfg *Config) (*tls.Config, *credentials.TransportCredentials,
 		)
 	}
 
-	return tlsCfg, &restCreds, restProxyDest, nil
+	// If Let's Encrypt is enabled, instantiate autocert to request/renew
+	// the certificates.
+	cleanUp := func() {}
+	if cfg.LetsEncryptDomain != "" {
+		ltndLog.Infof("Using Let's Encrypt certificate for domain %v",
+			cfg.LetsEncryptDomain)
+
+		manager := autocert.Manager{
+			Cache:      autocert.DirCache(cfg.LetsEncryptDir),
+			Prompt:     autocert.AcceptTOS,
+			HostPolicy: autocert.HostWhitelist(cfg.LetsEncryptDomain),
+		}
+
+		srv := &http.Server{
+			Addr:    cfg.LetsEncryptListen,
+			Handler: manager.HTTPHandler(nil),
+		}
+		shutdownCompleted := make(chan struct{})
+		cleanUp = func() {
+			err := srv.Shutdown(context.Background())
+			if err != nil {
+				ltndLog.Errorf("Autocert listener shutdown "+
+					" error: %v", err)
+
+				return
+			}
+			<-shutdownCompleted
+			ltndLog.Infof("Autocert challenge listener stopped")
+		}
+
+		go func() {
+			ltndLog.Infof("Autocert challenge listener started "+
+				"at %v", cfg.LetsEncryptListen)
+
+			err := srv.ListenAndServe()
+			if err != http.ErrServerClosed {
+				ltndLog.Errorf("autocert http: %v", err)
+			}
+			close(shutdownCompleted)
+		}()
+
+		getCertificate := func(h *tls.ClientHelloInfo) (
+			*tls.Certificate, error) {
+
+			lecert, err := manager.GetCertificate(h)
+			if err != nil {
+				ltndLog.Errorf("GetCertificate: %v", err)
+				return &certData, nil
+			}
+
+			return lecert, err
+		}
+
+		// The self-signed tls.cert remains available as fallback.
+		tlsCfg.GetCertificate = getCertificate
+	}
+
+	return tlsCfg, &restCreds, restProxyDest, cleanUp, nil
 }
 
 // fileExists reports whether the named file or directory exists.
@@ -938,6 +1006,10 @@ type WalletUnlockParams struct {
 	// ChansToRestore a set of static channel backups that should be
 	// restored before the main server instance starts up.
 	ChansToRestore walletunlocker.ChannelsToRecover
+
+	// UnloadWallet is a function for unloading the wallet, which should
+	// be called on shutdown.
+	UnloadWallet func() error
 }
 
 // waitForWalletPassword will spin up gRPC and REST endpoints for the
@@ -1106,6 +1178,7 @@ func waitForWalletPassword(cfg *Config, restEndpoints []net.Addr,
 			RecoveryWindow: recoveryWindow,
 			Wallet:         newWallet,
 			ChansToRestore: initMsg.ChanBackups,
+			UnloadWallet:   loader.UnloadWallet,
 		}, nil
 
 	// The wallet has already been created in the past, and is simply being
@@ -1116,6 +1189,7 @@ func waitForWalletPassword(cfg *Config, restEndpoints []net.Addr,
 			RecoveryWindow: unlockMsg.RecoveryWindow,
 			Wallet:         unlockMsg.Wallet,
 			ChansToRestore: unlockMsg.ChanBackups,
+			UnloadWallet:   unlockMsg.UnloadWallet,
 		}, nil
 
 	case <-signal.ShutdownChannel():

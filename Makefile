@@ -8,6 +8,8 @@ LINT_PKG := github.com/golangci/golangci-lint/cmd/golangci-lint
 GOACC_PKG := github.com/ory/go-acc
 FALAFEL_PKG := github.com/lightninglabs/falafel
 GOIMPORTS_PKG := golang.org/x/tools/cmd/goimports
+GOFUZZ_BUILD_PKG := github.com/dvyukov/go-fuzz/go-fuzz-build
+GOFUZZ_PKG := github.com/dvyukov/go-fuzz/go-fuzz
 
 GO_BIN := ${GOPATH}/bin
 BTCD_BIN := $(GO_BIN)/btcd
@@ -15,6 +17,8 @@ GOMOBILE_BIN := GO111MODULE=off $(GO_BIN)/gomobile
 GOVERALLS_BIN := $(GO_BIN)/goveralls
 LINT_BIN := $(GO_BIN)/golangci-lint
 GOACC_BIN := $(GO_BIN)/go-acc
+GOFUZZ_BUILD_BIN := $(GO_BIN)/go-fuzz-build
+GOFUZZ_BIN := $(GO_BIN)/go-fuzz
 
 BTCD_DIR :=${GOPATH}/src/$(BTCD_PKG)
 MOBILE_BUILD_DIR :=${GOPATH}/src/$(MOBILE_PKG)/build
@@ -35,6 +39,7 @@ BTCD_COMMIT := $(shell cat go.mod | \
 LINT_COMMIT := v1.18.0
 GOACC_COMMIT := ddc355013f90fea78d83d3a6c71f1d37ac07ecd5
 FALAFEL_COMMIT := v0.7.1
+GOFUZZ_COMMIT := 21309f307f61
 
 DEPGET := cd /tmp && GO111MODULE=on go get -v
 GOBUILD := GO111MODULE=on go build -v
@@ -43,8 +48,6 @@ GOTEST := GO111MODULE=on go test
 
 GOVERSION := $(shell go version | awk '{print $$3}')
 GOFILES_NOVENDOR = $(shell find . -type f -name '*.go' -not -path "./vendor/*")
-GOLIST := go list -deps $(PKG)/... | grep '$(PKG)'| grep -v '/vendor/'
-GOLISTCOVER := $(shell go list -deps -f '{{.ImportPath}}' ./... | grep '$(PKG)' | sed -e 's/^$(ESCPKG)/./')
 
 RM := rm -f
 CP := cp
@@ -53,6 +56,7 @@ XARGS := xargs -L 1
 
 include make/testing_flags.mk
 include make/release_flags.mk
+include make/fuzz_flags.mk
 
 DEV_TAGS := $(if ${tags},$(DEV_TAGS) ${tags},$(DEV_TAGS))
 
@@ -118,6 +122,14 @@ goimports:
 	@$(call print, "Installing goimports.")
 	$(DEPGET) $(GOIMPORTS_PKG)
 
+$(GOFUZZ_BIN):
+	@$(call print, "Fetching go-fuzz")
+	$(DEPGET) $(GOFUZZ_PKG)@$(GOFUZZ_COMMIT)
+
+$(GOFUZZ_BUILD_BIN):
+	@$(call print, "Fetching go-fuzz-build")
+	$(DEPGET) $(GOFUZZ_BUILD_PKG)@$(GOFUZZ_COMMIT)
+
 # ============
 # INSTALLATION
 # ============
@@ -171,7 +183,7 @@ unit: btcd
 
 unit-cover: $(GOACC_BIN)
 	@$(call print, "Running unit coverage tests.")
-	$(GOACC_BIN) $(COVER_PKG) -- -test.tags="$(DEV_TAGS) $(LOG_TAGS)"
+	$(GOACC_BIN) $(COVER_PKG) -- -tags="$(DEV_TAGS) $(LOG_TAGS)"
 
 
 unit-race:
@@ -198,6 +210,17 @@ flakehunter: build-itest
 flake-unit:
 	@$(call print, "Flake hunting unit tests.")
 	while [ $$? -eq 0 ]; do GOTRACEBACK=all $(UNIT) -count=1; done
+
+# =============
+# FUZZING
+# =============
+fuzz-build: $(GOFUZZ_BUILD_BIN)
+	@$(call print, "Creating fuzz harnesses for packages '$(FUZZPKG)'.")
+	scripts/fuzz.sh build "$(FUZZPKG)"
+
+fuzz-run: $(GOFUZZ_BIN)
+	@$(call print, "Fuzzing packages '$(FUZZPKG)'.")
+	scripts/fuzz.sh run "$(FUZZPKG)" "$(FUZZ_TEST_RUN_TIME)" "$(FUZZ_TEST_TIMEOUT)" "$(FUZZ_NUM_PROCESSES)" "$(FUZZ_BASE_WORKDIR)"
 
 # =========
 # UTILITIES

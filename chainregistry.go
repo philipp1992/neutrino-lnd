@@ -2,6 +2,7 @@ package lnd
 
 import (
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"github.com/lightningnetwork/lnd/lnwallet/lightwallet"
 
@@ -273,21 +274,15 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			return nil, err
 		}
 
-		// If the user provided an API for fee estimation, activate it now.
+		// Map the deprecated neutrino feeurl flag to the general fee
+		// url.
 		if cfg.NeutrinoMode.FeeURL != "" {
-			ltndLog.Infof("Using API fee estimator!")
-
-			estimator := chainfee.NewWebAPIEstimator(
-				chainfee.SparseConfFeeSource{
-					URL: cfg.NeutrinoMode.FeeURL,
-				},
-				defaultBitcoinStaticFeePerKW,
-			)
-
-			if err := estimator.Start(); err != nil {
-				return nil, err
+			if cfg.FeeURL != "" {
+				return nil, errors.New("feeurl and " +
+					"neutrino.feeurl are mutually exclusive")
 			}
-			cc.feeEstimator = estimator
+
+			cfg.FeeURL = cfg.NeutrinoMode.FeeURL
 		}
 
 		walletConfig.ChainSource = chain.NewNeutrinoClient(
@@ -503,9 +498,6 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			if err != nil {
 				return nil, err
 			}
-			if err := cc.feeEstimator.Start(); err != nil {
-				return nil, err
-			}
 		} else if cfg.Litecoin.Active && !cfg.Litecoin.RegTest {
 			ltndLog.Infof("Initializing litecoind backed fee estimator in "+
 				"%s mode", bitcoindMode.EstimateMode)
@@ -522,9 +514,6 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			if err != nil {
 				return nil, err
 			}
-			if err := cc.feeEstimator.Start(); err != nil {
-				return nil, err
-			}
 		} else if cfg.Xsncoin.Active && !cfg.Xsncoin.RegTest {
 			ltndLog.Infof("Initializing xsnd backed fee estimator in "+
 				"%s mode", bitcoindMode.EstimateMode)
@@ -539,9 +528,6 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 				fallBackFeeRate.FeePerKWeight(),
 			)
 			if err != nil {
-				return nil, err
-			}
-			if err := cc.feeEstimator.Start(); err != nil {
 				return nil, err
 			}
 		}
@@ -646,9 +632,6 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			if err != nil {
 				return nil, err
 			}
-			if err := cc.feeEstimator.Start(); err != nil {
-				return nil, err
-			}
 		}
 	default:
 		return nil, fmt.Errorf("unknown node type: %s",
@@ -662,16 +645,40 @@ func newChainControlFromConfig(cfg *Config, localDB, remoteDB *channeldb.DB,
 			return nil, err
 		}
 
-		cc.msgSigner = wc
-		cc.signer = wc
-		cc.chainIO = wc
-		cc.wc = wc
+                cc.msgSigner = wc
+                cc.signer = wc
+                cc.chainIO = wc
+                cc.wc = wc
 
-		keyRing := keychain.NewBtcWalletKeyRing(
-			wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
+                keyRing := keychain.NewBtcWalletKeyRing(
+                        wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
+                )
+                cc.keyRing = keyRing
+        }
+
+
+	// Override default fee estimator if an external service is specified.
+	if cfg.FeeURL != "" {
+		// Do not cache fees on regtest to make it easier to execute
+		// manual or automated test cases.
+		cacheFees := !cfg.Bitcoin.RegTest
+
+		ltndLog.Infof("Using external fee estimator %v: cached=%v",
+			cfg.FeeURL, cacheFees)
+
+		cc.feeEstimator = chainfee.NewWebAPIEstimator(
+			chainfee.SparseConfFeeSource{
+				URL: cfg.FeeURL,
+			},
+			!cacheFees,
 		)
-		cc.keyRing = keyRing
 	}
+
+	// Start fee estimator.
+	if err := cc.feeEstimator.Start(); err != nil {
+		return nil, err
+	}
+
 	channelConstraints := defaultBtcChannelConstraints
 	if cfg.registeredChains.PrimaryChain() == litecoinChain {
 		channelConstraints = defaultLtcChannelConstraints
@@ -929,7 +936,10 @@ func initNeutrinoBackend(cfg *Config, chainDir string) (*neutrino.ChainService,
 		AddPeers:     cfg.NeutrinoMode.AddPeers,
 		ConnectPeers: cfg.NeutrinoMode.ConnectPeers,
 		Dialer: func(addr net.Addr) (net.Conn, error) {
-			return cfg.net.Dial(addr.Network(), addr.String())
+			return cfg.net.Dial(
+				addr.Network(), addr.String(),
+				cfg.ConnectionTimeout,
+			)
 		},
 		NameResolver: func(host string) ([]net.IP, error) {
 			addrs, err := cfg.net.LookupHost(host)
@@ -954,6 +964,8 @@ func initNeutrinoBackend(cfg *Config, chainDir string) (*neutrino.ChainService,
 
 	neutrino.MaxPeers = 8
 	neutrino.BanDuration = time.Hour * 48
+	neutrino.UserAgentName = cfg.NeutrinoMode.UserAgentName
+	neutrino.UserAgentVersion = cfg.NeutrinoMode.UserAgentVersion
 
 	neutrinoCS, err := neutrino.NewChainService(config)
 	if err != nil {

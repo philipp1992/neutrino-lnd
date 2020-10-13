@@ -20,6 +20,7 @@ import (
 
 	"github.com/btcsuite/btcutil"
 	flags "github.com/jessevdk/go-flags"
+	"github.com/lightninglabs/neutrino"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/build"
 	"github.com/lightningnetwork/lnd/chanbackup"
@@ -64,6 +65,8 @@ const (
 	defaultMaxLogFileSize                = 10
 	defaultMinBackoff                    = time.Second
 	defaultMaxBackoff                    = time.Hour
+	defaultLetsEncryptDirname            = "letsencrypt"
+	defaultLetsEncryptListen             = ":80"
 
 	defaultTorSOCKSPort            = 9050
 	defaultTorDNSHost              = "soa.nodes.lightning.directory"
@@ -93,15 +96,16 @@ const (
 	defaultChainBackoff  = time.Second * 30
 	defaultChainAttempts = 3
 
-	// By default, we will shutdown if less than 10% of disk space is
-	// available. We allow a longer interval for disk space checks, because
-	// this check is less likely to deteriorate quickly. However, we allow
-	// fewer retries because this should not be a flakey check.
+	// Set defaults for a health check which ensures that we have space
+	// available on disk. Although this check is off by default so that we
+	// avoid breaking any existing setups (particularly on mobile), we still
+	// set the other default values so that the health check can be easily
+	// enabled with sane defaults.
 	defaultRequiredDisk = 0.1
 	defaultDiskInterval = time.Hour * 12
 	defaultDiskTimeout  = time.Second * 5
 	defaultDiskBackoff  = time.Minute
-	defaultDiskAttempts = 2
+	defaultDiskAttempts = 0
 
 	// defaultRemoteMaxHtlcs specifies the default limit for maximum
 	// concurrent HTLCs the remote party may add to commitment transactions.
@@ -127,8 +131,9 @@ var (
 
 	defaultTowerDir = filepath.Join(defaultDataDir, defaultTowerSubDirname)
 
-	defaultTLSCertPath = filepath.Join(DefaultLndDir, defaultTLSCertFilename)
-	defaultTLSKeyPath  = filepath.Join(DefaultLndDir, defaultTLSKeyFilename)
+	defaultTLSCertPath    = filepath.Join(DefaultLndDir, defaultTLSCertFilename)
+	defaultTLSKeyPath     = filepath.Join(DefaultLndDir, defaultTLSKeyFilename)
+	defaultLetsEncryptDir = filepath.Join(DefaultLndDir, defaultLetsEncryptDirname)
 
 	defaultBtcdDir         = btcutil.AppDataDir("btcd", false)
 	defaultBtcdRPCCertFile = filepath.Join(defaultBtcdDir, "rpc.cert")
@@ -174,7 +179,7 @@ type Config struct {
 	TLSAutoRefresh     bool     `long:"tlsautorefresh" description:"Re-generate TLS certificate and key if the IPs or domains are changed"`
 	TLSDisableAutofill bool     `long:"tlsdisableautofill" description:"Do not include the interface IPs or the system hostname in TLS certificate, use first --tlsextradomain as Common Name instead, if set"`
 
-	NoMacaroons     bool          `long:"no-macaroons" description:"Disable macaroon authentication"`
+	NoMacaroons     bool          `long:"no-macaroons" description:"Disable macaroon authentication, can only be used if server is not listening on a public interface."`
 	AdminMacPath    string        `long:"adminmacaroonpath" description:"Path to write the admin macaroon for lnd's RPC and REST services if it doesn't exist"`
 	ReadMacPath     string        `long:"readonlymacaroonpath" description:"Path to write the read-only macaroon for lnd's RPC and REST services if it doesn't exist"`
 	InvoiceMacPath  string        `long:"invoicemacaroonpath" description:"Path to the invoice-only macaroon for lnd's RPC and REST services if it doesn't exist"`
@@ -183,25 +188,30 @@ type Config struct {
 	MaxLogFileSize  int           `long:"maxlogfilesize" description:"Maximum logfile size in MB"`
 	AcceptorTimeout time.Duration `long:"acceptortimeout" description:"Time after which an RPCAcceptor will time out and return false if it hasn't yet received a response"`
 
+	LetsEncryptDir    string `long:"letsencryptdir" description:"The directory to store Let's Encrypt certificates within"`
+	LetsEncryptListen string `long:"letsencryptlisten" description:"The IP:port on which lnd will listen for Let's Encrypt challenges. Let's Encrypt will always try to contact on port 80. Often non-root processes are not allowed to bind to ports lower than 1024. This configuration option allows a different port to be used, but must be used in combination with port forwarding from port 80. This configuration can also be used to specify another IP address to listen on, for example an IPv6 address."`
+	LetsEncryptDomain string `long:"letsencryptdomain" description:"Request a Let's Encrypt certificate for this domain. Note that the certicate is only requested and stored when the first rpc connection comes in."`
+
 	// We'll parse these 'raw' string arguments into real net.Addrs in the
 	// loadConfig function. We need to expose the 'raw' strings so the
 	// command line library can access them.
 	// Only the parsed net.Addrs should be used!
-	RawRPCListeners  []string `long:"rpclisten" description:"Add an interface/port/socket to listen for RPC connections"`
-	RawRESTListeners []string `long:"restlisten" description:"Add an interface/port/socket to listen for REST connections"`
-	RawListeners     []string `long:"listen" description:"Add an interface/port to listen for peer connections"`
-	RawExternalIPs   []string `long:"externalip" description:"Add an ip:port to the list of local addresses we claim to listen on to peers. If a port is not specified, the default (9735) will be used regardless of other parameters"`
-	ExternalHosts    []string `long:"externalhosts" description:"A set of hosts that should be periodically resolved to announce IPs for"`
-	RPCListeners     []net.Addr
-	RESTListeners    []net.Addr
-	RestCORS         []string `long:"restcors" description:"Add an ip:port/hostname to allow cross origin access from. To allow all origins, set as \"*\"."`
-	Listeners        []net.Addr
-	ExternalIPs      []net.Addr
-	DisableListen    bool          `long:"nolisten" description:"Disable listening for incoming peer connections"`
-	DisableRest      bool          `long:"norest" description:"Disable REST API"`
-	NAT              bool          `long:"nat" description:"Toggle NAT traversal support (using either UPnP or NAT-PMP) to automatically advertise your external IP address to the network -- NOTE this does not support devices behind multiple NATs"`
-	MinBackoff       time.Duration `long:"minbackoff" description:"Shortest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
-	MaxBackoff       time.Duration `long:"maxbackoff" description:"Longest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
+	RawRPCListeners   []string `long:"rpclisten" description:"Add an interface/port/socket to listen for RPC connections"`
+	RawRESTListeners  []string `long:"restlisten" description:"Add an interface/port/socket to listen for REST connections"`
+	RawListeners      []string `long:"listen" description:"Add an interface/port to listen for peer connections"`
+	RawExternalIPs    []string `long:"externalip" description:"Add an ip:port to the list of local addresses we claim to listen on to peers. If a port is not specified, the default (9735) will be used regardless of other parameters"`
+	ExternalHosts     []string `long:"externalhosts" description:"A set of hosts that should be periodically resolved to announce IPs for"`
+	RPCListeners      []net.Addr
+	RESTListeners     []net.Addr
+	RestCORS          []string `long:"restcors" description:"Add an ip:port/hostname to allow cross origin access from. To allow all origins, set as \"*\"."`
+	Listeners         []net.Addr
+	ExternalIPs       []net.Addr
+	DisableListen     bool          `long:"nolisten" description:"Disable listening for incoming peer connections"`
+	DisableRest       bool          `long:"norest" description:"Disable REST API"`
+	NAT               bool          `long:"nat" description:"Toggle NAT traversal support (using either UPnP or NAT-PMP) to automatically advertise your external IP address to the network -- NOTE this does not support devices behind multiple NATs"`
+	MinBackoff        time.Duration `long:"minbackoff" description:"Shortest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
+	MaxBackoff        time.Duration `long:"maxbackoff" description:"Longest backoff when reconnecting to persistent peers. Valid time units are {s, m, h}."`
+	ConnectionTimeout time.Duration `long:"connectiontimeout" description:"The timeout value for network connections. Valid time units are {ms, s, m, h}."`
 
 	DebugLevel string `short:"d" long:"debuglevel" description:"Logging level for all subsystems {trace, debug, info, warn, error, critical} -- You may also specify <subsystem>=<level>,<subsystem2>=<level>,... to set the log level for individual subsystems -- Use show to list available subsystems"`
 
@@ -226,6 +236,9 @@ type Config struct {
 	XsndMode 	 	*lncfg.Bitcoind `group:"xsnd" namespace:"xsnd"`
 
 	//DualFunding *dualFundingConfig `group:"DualFunding" namespace:"dualfunding"`
+
+	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network."`
+
 	Autopilot *lncfg.AutoPilot `group:"Autopilot" namespace:"autopilot"`
 
 	Tor *lncfg.Tor `group:"Tor" namespace:"tor"`
@@ -247,6 +260,7 @@ type Config struct {
 	Alias                         string        `long:"alias" description:"The node alias. Used as a moniker by peers and intelligence services"`
 	Color                         string        `long:"color" description:"The color of the node in hex format (i.e. '#3399FF'). Used to customize node appearance in intelligence services"`
 	MinChanSize                   int64         `long:"minchansize" description:"The smallest channel size (in satoshis) that we should accept. Incoming channels smaller than this will be rejected"`
+	MaxChanSize                   int64         `long:"maxchansize" description:"The largest channel size (in satoshis) that we should accept. Incoming channels larger than this will be rejected"`
 
 	DefaultRemoteMaxHtlcs uint16 `long:"default-remote-max-htlcs" description:"The default max_htlc applied when opening or accepting channels. This value limits the number of concurrent HTLCs that the remote party can add to the commitment. The maximum possible value is 483."`
 
@@ -319,16 +333,18 @@ type Config struct {
 // DefaultConfig returns all default values for the Config struct.
 func DefaultConfig() Config {
 	return Config{
-		LndDir:          DefaultLndDir,
-		ConfigFile:      DefaultConfigFile,
-		DataDir:         defaultDataDir,
-		DebugLevel:      defaultLogLevel,
-		TLSCertPath:     defaultTLSCertPath,
-		TLSKeyPath:      defaultTLSKeyPath,
-		LogDir:          defaultLogDir,
-		MaxLogFiles:     defaultMaxLogFiles,
-		MaxLogFileSize:  defaultMaxLogFileSize,
-		AcceptorTimeout: defaultAcceptorTimeout,
+		LndDir:            DefaultLndDir,
+		ConfigFile:        DefaultConfigFile,
+		DataDir:           defaultDataDir,
+		DebugLevel:        defaultLogLevel,
+		TLSCertPath:       defaultTLSCertPath,
+		TLSKeyPath:        defaultTLSKeyPath,
+		LetsEncryptDir:    defaultLetsEncryptDir,
+		LetsEncryptListen: defaultLetsEncryptListen,
+		LogDir:            defaultLogDir,
+		MaxLogFiles:       defaultMaxLogFiles,
+		MaxLogFileSize:    defaultMaxLogFileSize,
+		AcceptorTimeout:   defaultAcceptorTimeout,
 		Bitcoin: &lncfg.Chain{
 			MinHTLCIn:     defaultBitcoinMinHTLCInMSat,
 			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
@@ -381,12 +397,16 @@ func DefaultConfig() Config {
 			Dir: defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
 			UseWalletBackend: false,
+		NeutrinoMode: &lncfg.Neutrino{
+			UserAgentName:    neutrino.UserAgentName,
+			UserAgentVersion: neutrino.UserAgentVersion,
 		},
 		UnsafeDisconnect:   true,
 		MaxPendingChannels: lncfg.DefaultMaxPendingChannels,
 		NoSeedBackup:       defaultNoSeedBackup,
 		MinBackoff:         defaultMinBackoff,
 		MaxBackoff:         defaultMaxBackoff,
+		ConnectionTimeout:  tor.DefaultConnTimeout,
 		SubRPCServers: &subRPCServerConfigs{
 			SignRPC:   &signrpc.Config{},
 			RouterRPC: routerrpc.DefaultConfig(),
@@ -399,7 +419,7 @@ func DefaultConfig() Config {
 			MinConfs:       1,
 			ConfTarget:     autopilot.DefaultConfTarget,
 			Heuristic: map[string]float64{
-				"preferential": 1.0,
+				"top_centrality": 1.0,
 			},
 			TrustedNodes: make([]string, 0),
 		},
@@ -415,6 +435,7 @@ func DefaultConfig() Config {
 		Alias:                         defaultAlias,
 		Color:                         defaultColor,
 		MinChanSize:                   int64(minChanFundingSize),
+		MaxChanSize:                   int64(0),
 		DefaultRemoteMaxHtlcs:         defaultRemoteMaxHtlcs,
 		NumGraphSyncPeers:             defaultMinPeers,
 		HistoricalSyncInterval:        discovery.DefaultHistoricalSyncInterval,
@@ -548,6 +569,9 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 	lndDir := CleanAndExpandPath(cfg.LndDir)
 	if lndDir != DefaultLndDir {
 		cfg.DataDir = filepath.Join(lndDir, defaultDataDirname)
+		cfg.LetsEncryptDir = filepath.Join(
+			lndDir, defaultLetsEncryptDirname,
+		)
 		cfg.TLSCertPath = filepath.Join(lndDir, defaultTLSCertFilename)
 		cfg.TLSKeyPath = filepath.Join(lndDir, defaultTLSKeyFilename)
 		cfg.LogDir = filepath.Join(lndDir, defaultLogDirname)
@@ -561,23 +585,28 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 		}
 	}
 
-	// Create the lnd directory if it doesn't already exist.
 	funcName := "loadConfig"
-	if err := os.MkdirAll(lndDir, 0700); err != nil {
-		// Show a nicer error message if it's because a symlink is
-		// linked to a directory that does not exist (probably because
-		// it's not mounted).
-		if e, ok := err.(*os.PathError); ok && os.IsExist(err) {
-			if link, lerr := os.Readlink(e.Path); lerr == nil {
-				str := "is symlink %s -> %s mounted?"
-				err = fmt.Errorf(str, e.Path, link)
+	makeDirectory := func(dir string) error {
+		err := os.MkdirAll(dir, 0700)
+		if err != nil {
+			// Show a nicer error message if it's because a symlink
+			// is linked to a directory that does not exist
+			// (probably because it's not mounted).
+			if e, ok := err.(*os.PathError); ok && os.IsExist(err) {
+				link, lerr := os.Readlink(e.Path)
+				if lerr == nil {
+					str := "is symlink %s -> %s mounted?"
+					err = fmt.Errorf(str, e.Path, link)
+				}
 			}
+
+			str := "%s: Failed to create lnd directory: %v"
+			err := fmt.Errorf(str, funcName, err)
+			_, _ = fmt.Fprintln(os.Stderr, err)
+			return err
 		}
 
-		str := "%s: Failed to create lnd directory: %v"
-		err := fmt.Errorf(str, funcName, err)
-		_, _ = fmt.Fprintln(os.Stderr, err)
-		return nil, err
+		return nil
 	}
 
 	// As soon as we're done parsing configuration options, ensure all paths
@@ -586,6 +615,7 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 	cfg.DataDir = CleanAndExpandPath(cfg.DataDir)
 	cfg.TLSCertPath = CleanAndExpandPath(cfg.TLSCertPath)
 	cfg.TLSKeyPath = CleanAndExpandPath(cfg.TLSKeyPath)
+	cfg.LetsEncryptDir = CleanAndExpandPath(cfg.LetsEncryptDir)
 	cfg.AdminMacPath = CleanAndExpandPath(cfg.AdminMacPath)
 	cfg.ReadMacPath = CleanAndExpandPath(cfg.ReadMacPath)
 	cfg.InvoiceMacPath = CleanAndExpandPath(cfg.InvoiceMacPath)
@@ -599,6 +629,24 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 	cfg.Watchtower.TowerDir = CleanAndExpandPath(cfg.Watchtower.TowerDir)
 	cfg.XsndMode.Dir = CleanAndExpandPath(cfg.XsndMode.Dir)
 	cfg.LightWalletMode.Dir = CleanAndExpandPath(cfg.LightWalletMode.Dir)
+
+	// Create the lnd directory and all other sub directories if they don't
+	// already exist. This makes sure that directory trees are also created
+	// for files that point to outside of the lnddir.
+	dirs := []string{
+		lndDir, cfg.DataDir,
+		cfg.LetsEncryptDir, cfg.Watchtower.TowerDir,
+		filepath.Dir(cfg.TLSCertPath), filepath.Dir(cfg.TLSKeyPath),
+		filepath.Dir(cfg.AdminMacPath), filepath.Dir(cfg.ReadMacPath),
+		filepath.Dir(cfg.InvoiceMacPath),
+		filepath.Dir(cfg.Tor.PrivateKeyPath),
+		filepath.Dir(cfg.Tor.WatchtowerKeyPath),
+	}
+	for _, dir := range dirs {
+		if err := makeDirectory(dir); err != nil {
+			return nil, err
+		}
+	}
 
 	// Ensure that the user didn't attempt to specify negative values for
 	// any of the autopilot params.
@@ -669,6 +717,38 @@ func ValidateConfig(cfg Config, usageMessage string) (*Config, error) {
 
 	if _, err := validateAtplCfg(cfg.Autopilot); err != nil {
 		return nil, err
+	}
+
+	// Ensure that --maxchansize is properly handled when set by user.
+	// For non-Wumbo channels this limit remains 16777215 satoshis by default
+	// as specified in BOLT-02. For wumbo channels this limit is 1,000,000,000.
+	// satoshis (10 BTC). Always enforce --maxchansize explicitly set by user.
+	// If unset (marked by 0 value), then enforce proper default.
+	if cfg.MaxChanSize == 0 {
+		if cfg.ProtocolOptions.Wumbo() {
+			cfg.MaxChanSize = int64(MaxBtcFundingAmountWumbo)
+		} else {
+			cfg.MaxChanSize = int64(MaxBtcFundingAmount)
+		}
+	}
+
+	// Ensure that the user specified values for the min and max channel
+	// size make sense.
+	if cfg.MaxChanSize < cfg.MinChanSize {
+		return nil, fmt.Errorf("invalid channel size parameters: "+
+			"max channel size %v, must be no less than min chan size %v",
+			cfg.MaxChanSize, cfg.MinChanSize,
+		)
+	}
+
+	// Don't allow superflous --maxchansize greater than
+	// BOLT 02 soft-limit for non-wumbo channel
+	if !cfg.ProtocolOptions.Wumbo() && cfg.MaxChanSize > int64(MaxFundingAmount) {
+		return nil, fmt.Errorf("invalid channel size parameters: "+
+			"maximum channel size %v is greater than maximum non-wumbo"+
+			" channel size %v",
+			cfg.MaxChanSize, MaxFundingAmount,
+		)
 	}
 
 	// Ensure a valid max channel fee allocation was set.

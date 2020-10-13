@@ -213,9 +213,9 @@ func stringInSlice(a string, slice []string) bool {
 	return false
 }
 
-// mainRPCServerPermissions returns a mapping of the main RPC server calls to
+// MainRPCServerPermissions returns a mapping of the main RPC server calls to
 // the permissions they require.
-func mainRPCServerPermissions() map[string][]bakery.Op {
+func MainRPCServerPermissions() map[string][]bakery.Op {
 	return map[string][]bakery.Op{
 		"/lnrpc.Lightning/SendCoins": {{
 			Entity: "onchain",
@@ -640,7 +640,7 @@ func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
 	// Next, we need to merge the set of sub server macaroon permissions
 	// with the main RPC server permissions so we can unite them under a
 	// single set of interceptors.
-	permissions := mainRPCServerPermissions()
+	permissions := MainRPCServerPermissions()
 	for _, subServerPerm := range subServerPerms {
 		for method, ops := range subServerPerm {
 			// For each new method:ops combo, we also ensure that
@@ -661,10 +661,12 @@ func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
 		return nil, err
 	}
 
-	// External subserver possibly need to register their own permissions.
+	// External subserver possibly need to register their own permissions
+	// and macaroon validator.
 	for _, lis := range listeners {
 		extSubserver := lis.ExternalRPCSubserverCfg
 		if extSubserver != nil {
+			macValidator := extSubserver.MacaroonValidator
 			for method, ops := range extSubserver.Permissions {
 				// For each new method:ops combo, we also ensure
 				// that non of the sub-servers try to override
@@ -677,6 +679,23 @@ func newRPCServer(cfg *Config, s *server, macService *macaroons.Service,
 				}
 
 				permissions[method] = ops
+
+				// Give the external subservers the possibility
+				// to also use their own validator to check any
+				// macaroons attached to calls to this method.
+				// This allows them to have their own root key
+				// ID database and permission entities.
+				if macValidator != nil {
+					err := macService.RegisterExternalValidator(
+						method, macValidator,
+					)
+					if err != nil {
+						return nil, fmt.Errorf("could "+
+							"not register "+
+							"external macaroon "+
+							"validator: %v", err)
+					}
+				}
 			}
 		}
 	}
@@ -1023,14 +1042,15 @@ func allowCORS(handler http.Handler, origins []string) http.Handler {
 // more addresses specified in the passed payment map. The payment map maps an
 // address to a specified output value to be sent to that address.
 func (r *rpcServer) sendCoinsOnChain(paymentMap map[string]int64,
-	feeRate chainfee.SatPerKWeight, label string) (*chainhash.Hash, error) {
+	feeRate chainfee.SatPerKWeight, minconf int32,
+	label string) (*chainhash.Hash, error) {
 
 	outputs, err := addrPairsToOutputs(paymentMap, r.cfg.ActiveNetParams.Params)
 	if err != nil {
 		return nil, err
 	}
 
-	tx, err := r.server.cc.wallet.SendOutputs(outputs, feeRate, label)
+	tx, err := r.server.cc.wallet.SendOutputs(outputs, feeRate, minconf, label)
 	if err != nil {
 		return nil, err
 	}
@@ -1161,8 +1181,16 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		return nil, err
 	}
 
-	rpcsLog.Infof("[sendcoins] addr=%v, amt=%v, sat/kw=%v, sweep_all=%v",
-		in.Addr, btcutil.Amount(in.Amount), int64(feePerKw),
+	// Then, we'll extract the minimum number of confirmations that each
+	// output we use to fund the transaction should satisfy.
+	minConfs, err := lnrpc.ExtractMinConfs(in.MinConfs, in.SpendUnconfirmed)
+	if err != nil {
+		return nil, err
+	}
+
+	rpcsLog.Infof("[sendcoins] addr=%v, amt=%v, sat/kw=%v, min_confs=%v, "+
+		"sweep_all=%v",
+		in.Addr, btcutil.Amount(in.Amount), int64(feePerKw), minConfs,
 		in.SendAll)
 
 	// Decode the address receiving the coins, we need to check whether the
@@ -1254,7 +1282,7 @@ func (r *rpcServer) SendCoins(ctx context.Context,
 		paymentMap := map[string]int64{targetAddr.String(): in.Amount}
 		err := wallet.WithCoinSelectLock(func() error {
 			newTXID, err := r.sendCoinsOnChain(
-				paymentMap, feePerKw, label,
+				paymentMap, feePerKw, minConfs, label,
 			)
 			if err != nil {
 				return err
@@ -1292,6 +1320,13 @@ func (r *rpcServer) SendMany(ctx context.Context,
 		return nil, err
 	}
 
+	// Then, we'll extract the minimum number of confirmations that each
+	// output we use to fund the transaction should satisfy.
+	minConfs, err := lnrpc.ExtractMinConfs(in.MinConfs, in.SpendUnconfirmed)
+	if err != nil {
+		return nil, err
+	}
+
 	label, err := labels.ValidateAPI(in.Label)
 	if err != nil {
 		return nil, err
@@ -1308,7 +1343,7 @@ func (r *rpcServer) SendMany(ctx context.Context,
 	wallet := r.server.cc.wallet
 	err = wallet.WithCoinSelectLock(func() error {
 		sendManyTXID, err := r.sendCoinsOnChain(
-			in.AddrToAmount, feePerKw, label,
+			in.AddrToAmount, feePerKw, minConfs, label,
 		)
 		if err != nil {
 			return err
@@ -1493,8 +1528,25 @@ func (r *rpcServer) ConnectPeer(ctx context.Context,
 	rpcsLog.Debugf("[connectpeer] requested connection to %x@%s",
 		peerAddr.IdentityKey.SerializeCompressed(), peerAddr.Address)
 
-	if err := r.server.ConnectToPeer(peerAddr, in.Perm); err != nil {
-		rpcsLog.Errorf("[connectpeer]: error connecting to peer: %v", err)
+	// By default, we will use the global connection timeout value.
+	timeout := r.cfg.ConnectionTimeout
+
+	// Check if the connection timeout is set. If set, we will use it in our
+	// request.
+	if in.Timeout != 0 {
+		timeout = time.Duration(in.Timeout) * time.Second
+		rpcsLog.Debugf(
+			"[connectpeer] connection timeout is set to %v",
+			timeout,
+		)
+	}
+
+	if err := r.server.ConnectToPeer(peerAddr,
+		in.Perm, timeout); err != nil {
+
+		rpcsLog.Errorf(
+			"[connectpeer]: error connecting to peer: %v", err,
+		)
 		return nil, err
 	}
 
@@ -1549,42 +1601,6 @@ func (r *rpcServer) DisconnectPeer(ctx context.Context,
 	}
 
 	return &lnrpc.DisconnectPeerResponse{}, nil
-}
-
-// extractOpenChannelMinConfs extracts the minimum number of confirmations from
-// the OpenChannelRequest that each output used to fund the channel's funding
-// transaction should satisfy.
-func extractOpenChannelMinConfs(in *lnrpc.OpenChannelRequest) (int32, error) {
-	switch {
-	// Ensure that the MinConfs parameter is non-negative.
-	case in.MinConfs < 0:
-		return 0, errors.New("minimum number of confirmations must " +
-			"be a non-negative number")
-
-	// The funding transaction should not be funded with unconfirmed outputs
-	// unless explicitly specified by SpendUnconfirmed. We do this to
-	// provide sane defaults to the OpenChannel RPC, as otherwise, if the
-	// MinConfs field isn't explicitly set by the caller, we'll use
-	// unconfirmed outputs without the caller being aware.
-	case in.MinConfs == 0 && !in.SpendUnconfirmed:
-		return 1, nil
-
-	// In the event that the caller set MinConfs > 0 and SpendUnconfirmed to
-	// true, we'll return an error to indicate the conflict.
-	case in.MinConfs > 0 && in.SpendUnconfirmed:
-		return 0, errors.New("SpendUnconfirmed set to true with " +
-			"MinConfs > 0")
-
-	// The funding transaction of the new channel to be created can be
-	// funded with unconfirmed outputs.
-	case in.SpendUnconfirmed:
-		return 0, nil
-
-	// If none of the above cases matched, we'll return the value set
-	// explicitly by the caller.
-	default:
-		return in.MinConfs, nil
-	}
 }
 
 // newFundingShimAssembler returns a new fully populated
@@ -1796,7 +1812,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// Then, we'll extract the minimum number of confirmations that each
 	// output we use to fund the channel's funding transaction should
 	// satisfy.
-	minConfs, err := extractOpenChannelMinConfs(in)
+	minConfs, err := lnrpc.ExtractMinConfs(in.MinConfs, in.SpendUnconfirmed)
 	if err != nil {
 		return nil, err
 	}
@@ -1965,8 +1981,8 @@ out:
 			// If a final channel open update is being sent, then
 			// we can break out of our recv loop as we no longer
 			// need to process any further updates.
-			switch update := fundingUpdate.Update.(type) {
-			case *lnrpc.OpenStatusUpdate_ChanOpen:
+			update, ok := fundingUpdate.Update.(*lnrpc.OpenStatusUpdate_ChanOpen)
+			if ok {
 				chanPoint := update.ChanOpen.ChannelPoint
 				txid, err := GetChanPointFundingTxid(chanPoint)
 				if err != nil {
@@ -2705,6 +2721,30 @@ func (r *rpcServer) ListPeers(ctx context.Context,
 			rpcPeer.Errors = append(rpcPeer.Errors, rpcErr)
 		}
 
+		// If the server has started, we can query the event store
+		// for our peer's flap count. If we do so when the server has
+		// not started, the request will block.
+		if r.server.Started() {
+			vertex, err := route.NewVertexFromBytes(nodePub[:])
+			if err != nil {
+				return nil, err
+			}
+
+			flap, ts, err := r.server.chanEventStore.FlapCount(
+				vertex,
+			)
+			if err != nil {
+				return nil, err
+			}
+
+			// If our timestamp is non-nil, we have values for our
+			// peer's flap count, so we set them.
+			if ts != nil {
+				rpcPeer.FlapCount = int32(flap)
+				rpcPeer.LastFlapNs = ts.UnixNano()
+			}
+		}
+
 		resp.Peers = append(resp.Peers, rpcPeer)
 	}
 
@@ -2796,16 +2836,36 @@ func (r *rpcServer) WalletBalance(ctx context.Context,
 // ChannelBalance returns the total available channel flow across all open
 // channels in satoshis.
 func (r *rpcServer) ChannelBalance(ctx context.Context,
-	in *lnrpc.ChannelBalanceRequest) (*lnrpc.ChannelBalanceResponse, error) {
+	in *lnrpc.ChannelBalanceRequest) (
+	*lnrpc.ChannelBalanceResponse, error) {
+
+	var (
+		localBalance             lnwire.MilliSatoshi
+		remoteBalance            lnwire.MilliSatoshi
+		unsettledLocalBalance    lnwire.MilliSatoshi
+		unsettledRemoteBalance   lnwire.MilliSatoshi
+		pendingOpenLocalBalance  lnwire.MilliSatoshi
+		pendingOpenRemoteBalance lnwire.MilliSatoshi
+	)
 
 	openChannels, err := r.server.remoteChanDB.FetchAllOpenChannels()
 	if err != nil {
 		return nil, err
 	}
 
-	var balance btcutil.Amount
 	for _, channel := range openChannels {
-		balance += channel.LocalCommitment.LocalBalance.ToSatoshis()
+		c := channel.LocalCommitment
+		localBalance += c.LocalBalance
+		remoteBalance += c.RemoteBalance
+
+		// Add pending htlc amount.
+		for _, htlc := range c.Htlcs {
+			if htlc.Incoming {
+				unsettledLocalBalance += htlc.Amt
+			} else {
+				unsettledRemoteBalance += htlc.Amt
+			}
+		}
 	}
 
 	pendingChannels, err := r.server.remoteChanDB.FetchPendingChannels()
@@ -2813,17 +2873,48 @@ func (r *rpcServer) ChannelBalance(ctx context.Context,
 		return nil, err
 	}
 
-	var pendingOpenBalance btcutil.Amount
 	for _, channel := range pendingChannels {
-		pendingOpenBalance += channel.LocalCommitment.LocalBalance.ToSatoshis()
+		c := channel.LocalCommitment
+		pendingOpenLocalBalance += c.LocalBalance
+		pendingOpenRemoteBalance += c.RemoteBalance
 	}
 
-	rpcsLog.Debugf("[channelbalance] balance=%v pending-open=%v",
-		balance, pendingOpenBalance)
+	rpcsLog.Debugf("[channelbalance] local_balance=%v remote_balance=%v "+
+		"unsettled_local_balance=%v unsettled_remote_balance=%v "+
+		"pending_open_local_balance=%v pending_open_remove_balance",
+		localBalance, remoteBalance, unsettledLocalBalance,
+		unsettledRemoteBalance, pendingOpenLocalBalance,
+		pendingOpenRemoteBalance)
 
 	return &lnrpc.ChannelBalanceResponse{
-		Balance:            int64(balance),
-		PendingOpenBalance: int64(pendingOpenBalance),
+		LocalBalance: &lnrpc.Amount{
+			Sat:  uint64(localBalance.ToSatoshis()),
+			Msat: uint64(localBalance),
+		},
+		RemoteBalance: &lnrpc.Amount{
+			Sat:  uint64(remoteBalance.ToSatoshis()),
+			Msat: uint64(remoteBalance),
+		},
+		UnsettledLocalBalance: &lnrpc.Amount{
+			Sat:  uint64(unsettledLocalBalance.ToSatoshis()),
+			Msat: uint64(unsettledLocalBalance),
+		},
+		UnsettledRemoteBalance: &lnrpc.Amount{
+			Sat:  uint64(unsettledRemoteBalance.ToSatoshis()),
+			Msat: uint64(unsettledRemoteBalance),
+		},
+		PendingOpenLocalBalance: &lnrpc.Amount{
+			Sat:  uint64(pendingOpenLocalBalance.ToSatoshis()),
+			Msat: uint64(pendingOpenLocalBalance),
+		},
+		PendingOpenRemoteBalance: &lnrpc.Amount{
+			Sat:  uint64(pendingOpenRemoteBalance.ToSatoshis()),
+			Msat: uint64(pendingOpenRemoteBalance),
+		},
+
+		// Deprecated fields.
+		Balance:            int64(localBalance.ToSatoshis()),
+		PendingOpenBalance: int64(pendingOpenLocalBalance.ToSatoshis()),
 	}, nil
 }
 
@@ -3540,41 +3631,32 @@ func createRPCOpenChannel(r *rpcServer, graph *channeldb.ChannelGraph,
 		return channel, nil
 	}
 
-	// Get the lifespan observed by the channel event store. If the channel is
-	// not known to the channel event store, return early because we cannot
-	// calculate any further uptime information.
+	peer, err := route.NewVertexFromBytes(nodePub.SerializeCompressed())
+	if err != nil {
+		return nil, err
+	}
+
+	// Query the event store for additional information about the channel.
+	// Do not fail if it is not available, because there is a potential
+	// race between a channel being added to our node and the event store
+	// being notified of it.
 	outpoint := dbChannel.FundingOutpoint
-	startTime, endTime, err := r.server.chanEventStore.GetLifespan(outpoint)
+	info, err := r.server.chanEventStore.GetChanInfo(outpoint, peer)
 	switch err {
+	// If the store does not know about the channel, we just log it.
 	case chanfitness.ErrChannelNotFound:
 		rpcsLog.Infof("channel: %v not found by channel event store",
 			outpoint)
 
-		return channel, nil
+	// If we got our channel info, we further populate the channel.
 	case nil:
-		// If there is no error getting lifespan, continue to uptime
-		// calculation.
+		channel.Uptime = int64(info.Uptime.Seconds())
+		channel.Lifetime = int64(info.Lifetime.Seconds())
+
+	// If we get an unexpected error, we return it.
 	default:
 		return nil, err
 	}
-
-	// If endTime is zero, the channel is still open, progress endTime to
-	// the present so we can calculate lifetime.
-	if endTime.IsZero() {
-		endTime = time.Now()
-	}
-	channel.Lifetime = int64(endTime.Sub(startTime).Seconds())
-
-	// Once we have successfully obtained channel lifespan, we know that the
-	// channel is known to the event store, so we can return any non-nil error
-	// that occurs.
-	uptime, err := r.server.chanEventStore.GetUptime(
-		outpoint, startTime, endTime,
-	)
-	if err != nil {
-		return nil, err
-	}
-	channel.Uptime = int64(uptime.Seconds())
 
 	return channel, nil
 }
@@ -6711,19 +6793,50 @@ func (r *rpcServer) FundingStateStep(ctx context.Context,
 	// the final PSBT to the previously verified one and if nothing
 	// unexpected was changed, continue the channel opening process.
 	case in.GetPsbtFinalize() != nil:
+		msg := in.GetPsbtFinalize()
 		rpcsLog.Debugf("Finalizing PSBT for pending_id=%x",
-			in.GetPsbtFinalize().PendingChanId)
+			msg.PendingChanId)
 
 		copy(pendingChanID[:], in.GetPsbtFinalize().PendingChanId)
-		packet, err := psbt.NewFromRawBytes(
-			bytes.NewReader(in.GetPsbtFinalize().SignedPsbt), false,
+
+		var (
+			packet *psbt.Packet
+			rawTx  *wire.MsgTx
+			err    error
 		)
-		if err != nil {
-			return nil, fmt.Errorf("error parsing psbt: %v", err)
+
+		// Either the signed PSBT or the raw transaction need to be set
+		// but not both at the same time.
+		switch {
+		case len(msg.SignedPsbt) > 0 && len(msg.FinalRawTx) > 0:
+			return nil, fmt.Errorf("cannot set both signed PSBT " +
+				"and final raw TX at the same time")
+
+		case len(msg.SignedPsbt) > 0:
+			packet, err = psbt.NewFromRawBytes(
+				bytes.NewReader(in.GetPsbtFinalize().SignedPsbt),
+				false,
+			)
+			if err != nil {
+				return nil, fmt.Errorf("error parsing psbt: %v",
+					err)
+			}
+
+		case len(msg.FinalRawTx) > 0:
+			rawTx = &wire.MsgTx{}
+			err = rawTx.Deserialize(bytes.NewReader(msg.FinalRawTx))
+			if err != nil {
+				return nil, fmt.Errorf("error parsing final "+
+					"raw TX: %v", err)
+			}
+
+		default:
+			return nil, fmt.Errorf("PSBT or raw transaction to " +
+				"finalize missing")
 		}
 
 		err = r.server.cc.wallet.PsbtFundingFinalize(
-			pendingChanID, packet,
+			pendingChanID, packet, rawTx,
 		)
 		if err != nil {
 			return nil, err

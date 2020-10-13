@@ -32,8 +32,9 @@ service Lightning {
     rpc WalletBalance (WalletBalanceRequest) returns (WalletBalanceResponse);
 
     /* lncli: `channelbalance`
-    ChannelBalance returns the total funds available across all open channels
-    in satoshis.
+    ChannelBalance returns a report on the total funds across all open channels,
+    categorized in local/remote, pending local/remote and unsettled local/remote
+    balances.
     */
     rpc ChannelBalance (ChannelBalanceRequest) returns (ChannelBalanceResponse);
 
@@ -862,6 +863,13 @@ message SendManyRequest {
 
     // An optional label for the transaction, limited to 500 characters.
     string label = 6;
+
+    // The minimum number of confirmations each one of your outputs used for
+    // the transaction must satisfy.
+    int32 min_confs = 7;
+
+    // Whether unconfirmed outputs should be used as inputs for the transaction.
+    bool spend_unconfirmed = 8;
 }
 message SendManyResponse {
     // The id of the transaction
@@ -892,6 +900,13 @@ message SendCoinsRequest {
 
     // An optional label for the transaction, limited to 500 characters.
     string label = 7;
+
+    // The minimum number of confirmations each one of your outputs used for
+    // the transaction must satisfy.
+    int32 min_confs = 8;
+
+    // Whether unconfirmed outputs should be used as inputs for the transaction.
+    bool spend_unconfirmed = 9;
 }
 message SendCoinsResponse {
     // The transaction ID of the transaction
@@ -969,6 +984,12 @@ message ConnectPeerRequest {
     /* If set, the daemon will attempt to persistently connect to the target
      * peer. Otherwise, the call will be synchronous. */
     bool perm = 2;
+
+    /*
+    The connection timeout value (in seconds) for this request. It won't affect
+    other requests.
+    */
+    uint64 timeout = 3;
 }
 message ConnectPeerResponse {
 }
@@ -1415,6 +1436,20 @@ message Peer {
     spamming us with errors at no cost.
     */
     repeated TimestampedError errors = 12;
+
+    /*
+    The number of times we have recorded this peer going offline or coming
+    online, recorded across restarts. Note that this value is decreased over
+    time if the peer has not recently flapped, so that we can forgive peers
+    with historically high flap counts.
+    */
+    int32 flap_count = 13;
+
+    /*
+    The timestamp of the last flap we observed for this peer. If this value is
+    zero, we have not observed any flaps for this peer.
+    */
+    int64 last_flap_ns = 14;
 }
 
 message TimestampedError {
@@ -1850,12 +1885,19 @@ message FundingPsbtFinalize {
     /*
     The funded PSBT that contains all witness data to send the exact channel
     capacity amount to the PK script returned in the open channel message in a
-    previous step.
+    previous step. Cannot be set at the same time as final_raw_tx.
     */
     bytes signed_psbt = 1;
 
     // The pending channel ID of the channel to get the PSBT for.
     bytes pending_chan_id = 2;
+
+    /*
+    As an alternative to the signed PSBT with all witness data, the final raw
+    wire format transaction can also be specified directly. Cannot be set at the
+    same time as signed_psbt.
+    */
+    bytes final_raw_tx = 3;
 }
 
 message FundingTransitionMsg {
@@ -2111,14 +2153,40 @@ message WalletBalanceResponse {
     int64 unconfirmed_balance = 3;
 }
 
+message Amount {
+    // Value denominated in satoshis.
+    uint64 sat = 1;
+
+    // Value denominated in milli-satoshis.
+    uint64 msat = 2;
+}
+
 message ChannelBalanceRequest {
 }
 message ChannelBalanceResponse {
-    // Sum of channels balances denominated in satoshis
-    int64 balance = 1;
+    // Deprecated. Sum of channels balances denominated in satoshis
+    int64 balance = 1 [deprecated = true];
 
-    // Sum of channels pending balances denominated in satoshis
-    int64 pending_open_balance = 2;
+    // Deprecated. Sum of channels pending balances denominated in satoshis
+    int64 pending_open_balance = 2 [deprecated = true];
+
+    // Sum of channels local balances.
+    Amount local_balance = 3;
+
+    // Sum of channels remote balances.
+    Amount remote_balance = 4;
+
+    // Sum of channels local unsettled balances.
+    Amount unsettled_local_balance = 5;
+
+    // Sum of channels remote unsettled balances.
+    Amount unsettled_remote_balance = 6;
+
+    // Sum of channels pending local balances.
+    Amount pending_open_local_balance = 7;
+
+    // Sum of channels pending remote balances.
+    Amount pending_open_remote_balance = 8;
 }
 
 message QueryRoutesRequest {

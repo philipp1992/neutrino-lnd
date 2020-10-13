@@ -19,6 +19,8 @@ import (
 
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/integration/rpctest"
+	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/go-errors/errors"
@@ -26,6 +28,7 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/invoicesrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
+	"github.com/lightningnetwork/lnd/lnrpc/signrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/watchtowerrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/wtclientrpc"
@@ -154,6 +157,8 @@ type NodeConfig struct {
 	ProfilePort int
 
 	AcceptKeySend bool
+
+	FeeURL string
 }
 
 func (cfg NodeConfig) P2PAddr() string {
@@ -232,6 +237,10 @@ func (cfg NodeConfig) genArgs() []string {
 		args = append(args, "--accept-keysend")
 	}
 
+	if cfg.FeeURL != "" {
+		args = append(args, "--feeurl="+cfg.FeeURL)
+	}
+
 	return args
 }
 
@@ -278,6 +287,10 @@ type HarnessNode struct {
 	lnrpc.WalletUnlockerClient
 
 	invoicesrpc.InvoicesClient
+
+	// SignerClient cannot be embedded because the name collisions of the
+	// methods SignMessage and VerifyMessage.
+	SignerClient signrpc.SignerClient
 
 	// conn is the underlying connection to the grpc endpoint of the node.
 	conn *grpc.ClientConn
@@ -338,6 +351,59 @@ func newNode(cfg NodeConfig) (*HarnessNode, error) {
 		closedChans:  make(map[wire.OutPoint]struct{}),
 		closeClients: make(map[wire.OutPoint][]chan struct{}),
 	}, nil
+}
+
+// NewMiner creates a new miner using btcd backend. The logDir specifies the
+// miner node's log dir. When tests finished, during clean up, its logs are
+// copied to a file specified as logFilename.
+func NewMiner(logDir, logFilename string, netParams *chaincfg.Params,
+	handler *rpcclient.NotificationHandlers) (*rpctest.Harness,
+	func() error, error) {
+
+	args := []string{
+		"--rejectnonstd",
+		"--txindex",
+		"--nowinservice",
+		"--nobanning",
+		"--debuglevel=debug",
+		"--logdir=" + logDir,
+		"--trickleinterval=100ms",
+	}
+
+	miner, err := rpctest.New(netParams, handler, args)
+	if err != nil {
+		return nil, nil, fmt.Errorf(
+			"unable to create mining node: %v", err,
+		)
+	}
+
+	cleanUp := func() error {
+		if err := miner.TearDown(); err != nil {
+			return fmt.Errorf(
+				"failed to tear down miner, got error: %s", err,
+			)
+		}
+
+		// After shutting down the miner, we'll make a copy of the log
+		// file before deleting the temporary log dir.
+		logFile := fmt.Sprintf(
+			"%s/%s/btcd.log", logDir, netParams.Name,
+		)
+		copyPath := fmt.Sprintf("./%s", logFilename)
+		err := CopyFile(copyPath, logFile)
+		if err != nil {
+			return fmt.Errorf("unable to copy file: %v", err)
+		}
+
+		if err = os.RemoveAll(logDir); err != nil {
+			return fmt.Errorf(
+				"cannot remove dir %s: %v", logDir, err,
+			)
+		}
+		return nil
+	}
+
+	return miner, cleanUp, nil
 }
 
 // DBPath returns the filepath to the channeldb database file for this node.
@@ -578,6 +644,7 @@ func (hn *HarnessNode) initLightningClient(conn *grpc.ClientConn) error {
 	hn.WalletKitClient = walletrpc.NewWalletKitClient(conn)
 	hn.Watchtower = watchtowerrpc.NewWatchtowerClient(conn)
 	hn.WatchtowerClient = wtclientrpc.NewWatchtowerClientClient(conn)
+	hn.SignerClient = signrpc.NewSignerClient(conn)
 
 	// Set the harness node's pubkey to what the node claims in GetInfo.
 	err := hn.FetchNodeInfo()

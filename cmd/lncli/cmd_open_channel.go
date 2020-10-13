@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -11,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
@@ -19,8 +21,7 @@ import (
 )
 
 const (
-	defaultUtxoMinConf = 1
-	userMsgFund        = `PSBT funding initiated with peer %x.
+	userMsgFund = `PSBT funding initiated with peer %x.
 Please create a PSBT that sends %v (%d satoshi) to the funding address %s.
 
 Note: The whole process should be completed within 10 minutes, otherwise there
@@ -41,11 +42,11 @@ Paste the funded PSBT here to continue the funding flow.
 Base64 encoded PSBT: `
 
 	userMsgSign = `
-PSBT verified by lnd, please continue the funding flow by signing the PSBT by 
+PSBT verified by lnd, please continue the funding flow by signing the PSBT by
 all required parties/devices. Once the transaction is fully signed, paste it
-again here.
+again here either in base64 PSBT or hex encoded raw wire TX format.
 
-Base64 encoded signed PSBT: `
+Signed base64 encoded PSBT or hex encoded raw wire TX: `
 )
 
 // TODO(roasbeef): change default number of confirmations
@@ -66,7 +67,7 @@ var openChannelCommand = cli.Command{
 	amount to the remote node as part of the channel opening. Once the channel is open,
 	a channelPoint (txid:vout) of the funding output is returned.
 
-	If the remote peer supports the option upfront shutdown feature bit (query 
+	If the remote peer supports the option upfront shutdown feature bit (query
 	listpeers to see their supported feature bits), an address to enforce
 	payout of funds on cooperative close can optionally be provided. Note that
 	if you set this value, you will not be able to cooperatively close out to
@@ -505,7 +506,7 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 				return fmt.Errorf("reading from console "+
 					"failed: %v", err)
 			}
-			psbt, err := base64.StdEncoding.DecodeString(
+			fundedPsbt, err := base64.StdEncoding.DecodeString(
 				strings.TrimSpace(psbtBase64),
 			)
 			if err != nil {
@@ -515,7 +516,7 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 			verifyMsg := &lnrpc.FundingTransitionMsg{
 				Trigger: &lnrpc.FundingTransitionMsg_PsbtVerify{
 					PsbtVerify: &lnrpc.FundingPsbtVerify{
-						FundedPsbt:    psbt,
+						FundedPsbt:    fundedPsbt,
 						PendingChanId: pendingChanID[:],
 					},
 				},
@@ -531,7 +532,7 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 			fmt.Print(userMsgSign)
 
 			// Read the signed PSBT and send it to lnd.
-			psbtBase64, err = readLine(quit)
+			finalTxStr, err := readLine(quit)
 			if err == io.EOF {
 				return nil
 			}
@@ -539,22 +540,16 @@ func openChannelPsbt(ctx *cli.Context, client lnrpc.LightningClient,
 				return fmt.Errorf("reading from console "+
 					"failed: %v", err)
 			}
-			psbt, err = base64.StdEncoding.DecodeString(
-				strings.TrimSpace(psbtBase64),
+			finalizeMsg, err := finalizeMsgFromString(
+				finalTxStr, pendingChanID[:],
 			)
 			if err != nil {
-				return fmt.Errorf("base64 decode failed: %v",
-					err)
+				return err
 			}
-			finalizeMsg := &lnrpc.FundingTransitionMsg{
-				Trigger: &lnrpc.FundingTransitionMsg_PsbtFinalize{
-					PsbtFinalize: &lnrpc.FundingPsbtFinalize{
-						SignedPsbt:    psbt,
-						PendingChanId: pendingChanID[:],
-					},
-				},
+			transitionMsg := &lnrpc.FundingTransitionMsg{
+				Trigger: finalizeMsg,
 			}
-			err = sendFundingState(ctxc, ctx, finalizeMsg)
+			err = sendFundingState(ctxc, ctx, transitionMsg)
 			if err != nil {
 				return fmt.Errorf("finalizing PSBT funding "+
 					"flow failed: %v", err)
@@ -685,4 +680,42 @@ func sendFundingState(cancelCtx context.Context, cliCtx *cli.Context,
 
 	_, err := client.FundingStateStep(cancelCtx, msg)
 	return err
+}
+
+// finalizeMsgFromString creates the final message for the PsbtFinalize step
+// from either a hex encoded raw wire transaction or a base64 encoded PSBT
+// packet.
+func finalizeMsgFromString(tx string,
+	pendingChanID []byte) (*lnrpc.FundingTransitionMsg_PsbtFinalize, error) {
+
+	rawTx, err := hex.DecodeString(strings.TrimSpace(tx))
+	if err == nil {
+		// Hex decoding succeeded so we assume we have a raw wire format
+		// transaction. Let's submit that instead of a PSBT packet.
+		tx := &wire.MsgTx{}
+		err := tx.Deserialize(bytes.NewReader(rawTx))
+		if err != nil {
+			return nil, fmt.Errorf("deserializing as raw wire "+
+				"transaction failed: %v", err)
+		}
+		return &lnrpc.FundingTransitionMsg_PsbtFinalize{
+			PsbtFinalize: &lnrpc.FundingPsbtFinalize{
+				FinalRawTx:    rawTx,
+				PendingChanId: pendingChanID,
+			},
+		}, nil
+	}
+
+	// If the string isn't a hex encoded transaction, we assume it must be
+	// a base64 encoded PSBT packet.
+	psbtBytes, err := base64.StdEncoding.DecodeString(strings.TrimSpace(tx))
+	if err != nil {
+		return nil, fmt.Errorf("base64 decode failed: %v", err)
+	}
+	return &lnrpc.FundingTransitionMsg_PsbtFinalize{
+		PsbtFinalize: &lnrpc.FundingPsbtFinalize{
+			SignedPsbt:    psbtBytes,
+			PendingChanId: pendingChanID,
+		},
+	}, nil
 }

@@ -60,6 +60,7 @@ import (
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/localchans"
 	"github.com/lightningnetwork/lnd/routing/route"
+	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/lightningnetwork/lnd/sweep"
 	"github.com/lightningnetwork/lnd/ticker"
 	"github.com/lightningnetwork/lnd/tor"
@@ -67,6 +68,7 @@ import (
 	"github.com/lightningnetwork/lnd/watchtower/wtclient"
 	"github.com/lightningnetwork/lnd/watchtower/wtdb"
 	"github.com/lightningnetwork/lnd/watchtower/wtpolicy"
+	"github.com/lightningnetwork/lnd/watchtower/wtserver"
 )
 
 const (
@@ -326,11 +328,11 @@ func parseAddr(address string, netCfg tor.Net) (net.Addr, error) {
 // noiseDial is a factory function which creates a connmgr compliant dialing
 // function by returning a closure which includes the server's identity key.
 func noiseDial(idKey keychain.SingleKeyECDH,
-	netCfg tor.Net) func(net.Addr) (net.Conn, error) {
+	netCfg tor.Net, timeout time.Duration) func(net.Addr) (net.Conn, error) {
 
 	return func(a net.Addr) (net.Conn, error) {
 		lnAddr := a.(*lnwire.NetAddress)
-		return brontide.Dial(idKey, lnAddr, netCfg.Dial)
+		return brontide.Dial(idKey, lnAddr, timeout, netCfg.Dial)
 	}
 }
 
@@ -727,14 +729,16 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 	}
 
 	srvrLog.Debugf("Instantiating payment session source with config: "+
-		"PaymentAttemptPenalty=%v, MinRouteProbability=%v",
+		"AttemptCost=%v + %v%%, MinRouteProbability=%v",
 		int64(routingConfig.AttemptCost),
+		float64(routingConfig.AttemptCostPPM)/10000,
 		routingConfig.MinRouteProbability)
 
 	pathFindingConfig := routing.PathFindingConfig{
-		PaymentAttemptPenalty: lnwire.NewMSatFromSatoshis(
+		AttemptCost: lnwire.NewMSatFromSatoshis(
 			routingConfig.AttemptCost,
 		),
+		AttemptCostPPM: routingConfig.AttemptCostPPM,
 		MinProbability: routingConfig.MinRouteProbability,
 	}
 
@@ -1179,6 +1183,7 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		ZombieSweeperInterval:         1 * time.Minute,
 		ReservationTimeout:            10 * time.Minute,
 		MinChanSize:                   btcutil.Amount(cfg.MinChanSize),
+		MaxChanSize:                   btcutil.Amount(cfg.MaxChanSize),
 		MaxPendingChannels:            cfg.MaxPendingChannels,
 		RejectPush:                    cfg.RejectPush,
 		NotifyOpenChannelEvent:        s.channelNotifier.NotifyOpenChannelEvent,
@@ -1215,9 +1220,17 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 
 	// Create a channel event store which monitors all open channels.
 	s.chanEventStore = chanfitness.NewChannelEventStore(&chanfitness.Config{
-		SubscribeChannelEvents: s.channelNotifier.SubscribeChannelEvents,
-		SubscribePeerEvents:    s.peerNotifier.SubscribePeerEvents,
-		GetOpenChannels:        s.remoteChanDB.FetchAllOpenChannels,
+		SubscribeChannelEvents: func() (subscribe.Subscription, error) {
+			return s.channelNotifier.SubscribeChannelEvents()
+		},
+		SubscribePeerEvents: func() (subscribe.Subscription, error) {
+			return s.peerNotifier.SubscribePeerEvents()
+		},
+		GetOpenChannels: s.remoteChanDB.FetchAllOpenChannels,
+		Clock:           clock.NewDefaultClock(),
+		ReadFlapCount:   s.remoteChanDB.ReadFlapCount,
+		WriteFlapCount:  s.remoteChanDB.WriteFlapCounts,
+		FlapCountTicker: ticker.New(chanfitness.FlapCountFlushRate),
 	})
 
 	if cfg.WtClient.Active {
@@ -1236,12 +1249,23 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			return nil, err
 		}
 
+		// authDial is the wrapper around the btrontide.Dial for the
+		// watchtower.
+		authDial := func(localKey keychain.SingleKeyECDH,
+			netAddr *lnwire.NetAddress,
+			dialer tor.DialFunc) (wtserver.Peer, error) {
+
+			return brontide.Dial(
+				localKey, netAddr, cfg.ConnectionTimeout, dialer,
+			)
+		}
+
 		s.towerClient, err = wtclient.New(&wtclient.Config{
 			Signer:         cc.wallet.Cfg.Signer,
 			NewAddress:     newSweepPkScriptGen(cc.wallet),
 			SecretKeyRing:  s.cc.keyRing,
 			Dial:           cfg.net.Dial,
-			AuthDial:       wtclient.AuthDial,
+			AuthDial:       authDial,
 			DB:             towerClientDB,
 			Policy:         policy,
 			ChainHash:      *s.cfg.ActiveNetParams.GenesisHash,
@@ -1332,8 +1356,10 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		OnAccept:       s.InboundPeerConnected,
 		RetryDuration:  time.Second * 5,
 		TargetOutbound: 100,
-		Dial:           noiseDial(s.identityECDH, s.cfg.net),
-		OnConnection:   s.OutboundPeerConnected,
+		Dial: noiseDial(
+			s.identityECDH, s.cfg.net, s.cfg.ConnectionTimeout,
+		),
+		OnConnection: s.OutboundPeerConnected,
 	})
 	if err != nil {
 		return nil, err
@@ -1847,7 +1873,7 @@ func initNetworkBootstrappers(s *server) ([]discovery.NetworkPeerBootstrapper, e
 				"seeds: %v", dnsSeeds)
 
 			dnsBootStrapper := discovery.NewDNSSeedBootstrapper(
-				dnsSeeds, s.cfg.net,
+				dnsSeeds, s.cfg.net, s.cfg.ConnectionTimeout,
 			)
 			bootStrappers = append(bootStrappers, dnsBootStrapper)
 		}
@@ -1970,7 +1996,10 @@ func (s *server) peerBootstrapper(numTargetPeers uint32,
 					// TODO(roasbeef): can do AS, subnet,
 					// country diversity, etc
 					errChan := make(chan error, 1)
-					s.connectToPeer(a, errChan)
+					s.connectToPeer(
+						a, errChan,
+						s.cfg.ConnectionTimeout,
+					)
 					select {
 					case err := <-errChan:
 						if err == nil {
@@ -2072,7 +2101,9 @@ func (s *server) initialPeerBootstrap(ignore map[autopilot.NodeID]struct{},
 				defer wg.Done()
 
 				errChan := make(chan error, 1)
-				go s.connectToPeer(addr, errChan)
+				go s.connectToPeer(
+					addr, errChan, s.cfg.ConnectionTimeout,
+				)
 
 				// We'll only allow this connection attempt to
 				// take up to 3 seconds. This allows us to move
@@ -2927,7 +2958,7 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
 	// htlcs, an extra block is added to prevent the channel from being
 	// closed when the htlc is outstanding and a new block comes in.
 	pCfg := peer.Config{
-		Conn:                    conn,
+		Conn:                    brontideConn,
 		ConnReq:                 connReq,
 		Addr:                    peerAddr,
 		Inbound:                 inbound,
@@ -2963,14 +2994,9 @@ func (s *server) peerConnected(conn net.Conn, connReq *connmgr.ConnReq,
 
 		PrunePersistentPeerConnection: s.prunePersistentPeerConnection,
 
-		FetchLastChanUpdate:   s.fetchLastChanUpdate(),
-		ProcessFundingOpen:    s.fundingMgr.processFundingOpen,
-		ProcessFundingAccept:  s.fundingMgr.processFundingAccept,
-		ProcessFundingCreated: s.fundingMgr.processFundingCreated,
-		ProcessFundingSigned:  s.fundingMgr.processFundingSigned,
-		ProcessFundingLocked:  s.fundingMgr.processFundingLocked,
-		ProcessFundingError:   s.fundingMgr.processFundingError,
-		IsPendingChannel:      s.fundingMgr.IsPendingChannel,
+		FetchLastChanUpdate: s.fetchLastChanUpdate(),
+
+		FundingManager: s.fundingMgr,
 
 		Hodl:                    s.cfg.Hodl,
 		UnsafeReplay:            s.cfg.UnsafeReplay,
@@ -3383,7 +3409,9 @@ type openChanReq struct {
 // connection is established, or the initial handshake process fails.
 //
 // NOTE: This function is safe for concurrent access.
-func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
+func (s *server) ConnectToPeer(addr *lnwire.NetAddress,
+	perm bool, timeout time.Duration) error {
+
 	targetPub := string(addr.IdentityKey.SerializeCompressed())
 
 	// Acquire mutex, but use explicit unlocking instead of defer for
@@ -3444,7 +3472,7 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
 	// the crypto negotiation breaks down, then return an error to the
 	// caller.
 	errChan := make(chan error, 1)
-	s.connectToPeer(addr, errChan)
+	s.connectToPeer(addr, errChan, timeout)
 
 	select {
 	case err := <-errChan:
@@ -3457,8 +3485,12 @@ func (s *server) ConnectToPeer(addr *lnwire.NetAddress, perm bool) error {
 // connectToPeer establishes a connection to a remote peer. errChan is used to
 // notify the caller if the connection attempt has failed. Otherwise, it will be
 // closed.
-func (s *server) connectToPeer(addr *lnwire.NetAddress, errChan chan<- error) {
-	conn, err := brontide.Dial(s.identityECDH, addr, s.cfg.net.Dial)
+func (s *server) connectToPeer(addr *lnwire.NetAddress,
+	errChan chan<- error, timeout time.Duration) {
+
+	conn, err := brontide.Dial(
+		s.identityECDH, addr, timeout, s.cfg.net.Dial,
+	)
 	if err != nil {
 		srvrLog.Errorf("Unable to connect to %v: %v", addr, err)
 		select {
