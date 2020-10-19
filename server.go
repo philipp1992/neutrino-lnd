@@ -1137,9 +1137,9 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 			}
 			s.mu.Unlock()
 
-			if !channel.IsInitiator {
-				s.pendingChannelOpened <- channel
-			}
+			//if !channel.IsInitiator {
+			//	s.pendingChannelOpened <- channel
+			//}
 
 			// With that taken care of, we'll send this channel to
 			// the chain arb so it can react to on-chain events.
