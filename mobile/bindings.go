@@ -45,18 +45,21 @@ func Start(extraArgs string, unlockerReady, rpcReady Callback) {
 	// LoadConfig below.
 	os.Args = append(os.Args, splitArgs...)
 
-	// Load the configuration, and parse the extra arguments as command
-	// line options. This function will also set up logging properly.
-	loadedConfig, err := lnd.LoadConfig()
+	// Hook interceptor for os signals.
+	shutdownInterceptor, err := signal.Intercept()
 	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		rpcReady.OnError(err)
+		return
 	}
 
-	// Hook interceptor for os signals.
-	if err := signal.Intercept(); err != nil {
+	// Load the configuration, and parse the extra arguments as command
+	// line options. This function will also set up logging properly.
+	loadedConfig, err := lnd.LoadConfig(shutdownInterceptor)
+	if err != nil {
 		_, _ = fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+		rpcReady.OnError(err)
+		return
 	}
 
 	// Set up channels that will be notified when the RPC servers are ready
@@ -83,14 +86,15 @@ func Start(extraArgs string, unlockerReady, rpcReady Callback) {
 	// be executed in the case of a graceful shutdown.
 	go func() {
 		if err := lnd.Main(
-			loadedConfig, cfg, signal.ShutdownChannel(),
+			loadedConfig, cfg, shutdownInterceptor,
 		); err != nil {
 			if e, ok := err.(*flags.Error); ok &&
 				e.Type == flags.ErrHelp {
 			} else {
 				fmt.Fprintln(os.Stderr, err)
 			}
-			os.Exit(1)
+			rpcReady.OnError(err)
+			return
 		}
 	}()
 

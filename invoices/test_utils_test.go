@@ -23,11 +23,16 @@ import (
 
 type mockPayload struct {
 	mpp           *record.MPP
+	amp           *record.AMP
 	customRecords record.CustomSet
 }
 
 func (p *mockPayload) MultiPath() *record.MPP {
 	return p.mpp
+}
+
+func (p *mockPayload) AMPRecord() *record.AMP {
+	return p.amp
 }
 
 func (p *mockPayload) CustomRecords() record.CustomSet {
@@ -96,6 +101,32 @@ var (
 			Value:           testInvoiceAmt,
 			Expiry:          time.Hour,
 			Features:        testFeatures,
+		},
+		CreationDate: testInvoiceCreationDate,
+	}
+
+	testPayAddrReqInvoice = &channeldb.Invoice{
+		Terms: channeldb.ContractTerm{
+			PaymentPreimage: &testInvoicePreimage,
+			Value:           testInvoiceAmt,
+			Expiry:          time.Hour,
+			Features: lnwire.NewFeatureVector(
+				lnwire.NewRawFeatureVector(lnwire.PaymentAddrRequired),
+				lnwire.Features,
+			),
+		},
+		CreationDate: testInvoiceCreationDate,
+	}
+
+	testPayAddrOptionalInvoice = &channeldb.Invoice{
+		Terms: channeldb.ContractTerm{
+			PaymentPreimage: &testInvoicePreimage,
+			Value:           testInvoiceAmt,
+			Expiry:          time.Hour,
+			Features: lnwire.NewFeatureVector(
+				lnwire.NewRawFeatureVector(lnwire.PaymentAddrOptional),
+				lnwire.Features,
+			),
 		},
 		CreationDate: testInvoiceCreationDate,
 	}

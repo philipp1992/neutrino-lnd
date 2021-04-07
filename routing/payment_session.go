@@ -236,6 +236,18 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 
 	finalHtlcExpiry := int32(height) + int32(finalCltvDelta)
 
+	// Before we enter the loop below, we'll make sure to respect the max
+	// payment shard size (if it's set), which is effectively our
+	// client-side MTU that we'll attempt to respect at all times.
+	maxShardActive := p.payment.MaxShardAmt != nil
+	if maxShardActive && maxAmt > *p.payment.MaxShardAmt {
+		p.log.Debug("Clamping payment attempt from %v to %v due to "+
+			"max shard size of %v", maxAmt,
+			*p.payment.MaxShardAmt, maxAmt)
+
+		maxAmt = *p.payment.MaxShardAmt
+	}
+
 	for {
 		// We'll also obtain a set of bandwidthHints from the lower
 		// layer for each of our outbound channels. This will allow the
@@ -282,6 +294,19 @@ func (p *paymentSession) RequestRoute(maxAmt, feeLimit lnwire.MilliSatoshi,
 					"address is unspecified")
 
 					return nil, errNoPathFound
+			}
+
+			if p.payment.DestFeatures == nil {
+				p.log.Debug("Not splitting because " +
+					"destination DestFeatures is nil")
+				return nil, errNoPathFound
+			}
+
+			if !p.payment.DestFeatures.HasFeature(lnwire.MPPOptional) {
+				p.log.Debug("not splitting because " +
+					"destination doesn't declare MPP")
+
+				return nil, errNoPathFound
 			}
 
 			// No splitting if this is the last shard.

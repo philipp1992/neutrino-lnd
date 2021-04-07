@@ -8,7 +8,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd"
+	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/routerrpc"
 	"github.com/lightningnetwork/lnd/lntest"
@@ -91,7 +91,7 @@ func testSendToRouteMultiPath(net *lntest.NetworkHarness, t *harnessTest) {
 
 		req := &routerrpc.BuildRouteRequest{
 			AmtMsat:        int64(amt * 1000),
-			FinalCltvDelta: lnd.DefaultBitcoinTimeLockDelta,
+			FinalCltvDelta: chainreg.DefaultBitcoinTimeLockDelta,
 			HopPubkeys:     rpcHops,
 		}
 
@@ -375,7 +375,7 @@ func (c *mppTestContext) waitForChannels() {
 	// Wait for all nodes to have seen all channels.
 	for _, chanPoint := range c.networkChans {
 		for _, node := range c.nodes {
-			txid, err := lnd.GetChanPointFundingTxid(chanPoint)
+			txid, err := lnrpc.GetChanPointFundingTxid(chanPoint)
 			if err != nil {
 				c.t.Fatalf("unable to get txid: %v", err)
 			}

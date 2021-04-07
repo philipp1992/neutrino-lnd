@@ -420,6 +420,9 @@ func (s *Switch) GetPaymentResult(paymentID uint64, paymentHash lntypes.Hash,
 			return
 		}
 
+		log.Debugf("Received network result %T for paymentID=%v", n.msg,
+			paymentID)
+
 		// Extract the result and pass it to the result channel.
 		result, err := s.extractResult(
 			deobfuscator, n, paymentID, paymentHash,
@@ -933,7 +936,7 @@ func (s *Switch) parseFailedPayment(deobfuscator ErrorDecrypter,
 			OutgoingFailureOnChainTimeout,
 		)
 
-		log.Info("%v: hash=%v, pid=%d",
+		log.Infof("%v: hash=%v, pid=%d",
 			linkError.FailureDetail.FailureString(),
 			paymentHash, paymentID)
 
@@ -1833,6 +1836,8 @@ func (s *Switch) loadChannelFwdPkgs(source lnwire.ShortChannelID) ([]*channeldb.
 			tx, source,
 		)
 		return err
+	}, func() {
+		fwdPkgs = nil
 	}); err != nil {
 		return nil, err
 	}
@@ -2183,6 +2188,12 @@ func (s *Switch) getLinks(destination [33]byte) ([]ChannelLink, error) {
 // CircuitModifier returns a reference to subset of the interfaces provided by
 // the circuit map, to allow links to open and close circuits.
 func (s *Switch) CircuitModifier() CircuitModifier {
+	return s.circuits
+}
+
+// CircuitLookup returns a reference to subset of the interfaces provided by the
+// circuit map, to allow looking up circuits.
+func (s *Switch) CircuitLookup() CircuitLookup {
 	return s.circuits
 }
 

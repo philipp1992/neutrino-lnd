@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
-
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/htlcswitch"
@@ -22,6 +22,15 @@ import (
 	"github.com/lightningnetwork/lnd/routing/route"
 	"github.com/lightningnetwork/lnd/subscribe"
 	"github.com/lightningnetwork/lnd/zpay32"
+)
+
+const (
+	// DefaultMaxParts is the default number of splits we'll possibly use
+	// for MPP when the user is attempting to send a payment.
+	//
+	// TODO(roasbeef): make this value dynamic based on expected number of
+	// attempts for given amount
+	DefaultMaxParts = 16
 )
 
 // RouterBackend contains the backend implementation of the router rpc sub
@@ -74,6 +83,16 @@ type RouterBackend struct {
 	// InterceptableForwarder exposes the ability to intercept forward events
 	// by letting the router register a ForwardInterceptor.
 	InterceptableForwarder htlcswitch.InterceptableHtlcForwarder
+
+	// SetChannelEnabled exposes the ability to manually enable a channel.
+	SetChannelEnabled func(wire.OutPoint) error
+
+	// SetChannelDisabled exposes the ability to manually disable a channel
+	SetChannelDisabled func(wire.OutPoint) error
+
+	// SetChannelAuto exposes the ability to restore automatic channel state
+	// management after manually setting channel status.
+	SetChannelAuto func(wire.OutPoint) error
 }
 
 // MissionControl defines the mission control dependencies of routerrpc.
@@ -91,10 +110,22 @@ type MissionControl interface {
 	// state and actual probability estimates.
 	GetHistorySnapshot() *routing.MissionControlSnapshot
 
+	// ImportHistory imports the mission control snapshot to our internal
+	// state. This import will only be applied in-memory, and will not be
+	// persisted across restarts.
+	ImportHistory(*routing.MissionControlSnapshot) error
+
 	// GetPairHistorySnapshot returns the stored history for a given node
 	// pair.
 	GetPairHistorySnapshot(fromNode,
 		toNode route.Vertex) routing.TimedPairResult
+
+	// GetConfig gets mission control's current config.
+	GetConfig() *routing.MissionControlConfig
+
+	// SetConfig sets mission control's config to the values provided, if
+	// they are valid.
+	SetConfig(cfg *routing.MissionControlConfig) error
 }
 
 // QueryRoutes attempts to query the daemons' Channel Router for a possible
@@ -547,13 +578,22 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 	}
 	payIntent.CltvLimit = cltvLimit
 
-	// Take max htlcs from the request. Map zero to one for backwards
-	// compatibility.
+	// Attempt to parse the max parts value set by the user, if this value
+	// isn't set, then we'll use the current default value for this
+	// setting.
 	maxParts := rpcPayReq.MaxParts
 	if maxParts == 0 {
-		maxParts = 1
+		maxParts = DefaultMaxParts
 	}
 	payIntent.MaxParts = maxParts
+
+	// If this payment had a max shard amount specified, then we'll apply
+	// that now, which'll force us to always make payment splits smaller
+	// than this.
+	if rpcPayReq.MaxShardSizeMsat > 0 {
+		shardAmtMsat := lnwire.MilliSatoshi(rpcPayReq.MaxShardSizeMsat)
+		payIntent.MaxShardAmt = &shardAmtMsat
+	}
 
 	// Take fee limit from request.
 	payIntent.FeeLimit, err = lnrpc.UnmarshallAmt(
@@ -648,6 +688,10 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 			payIntent.Amount = *payReq.MilliSat
 		}
 
+		if !payReq.Features.HasFeature(lnwire.MPPOptional) {
+			payIntent.MaxParts = 1
+		}
+
 		copy(payIntent.PaymentHash[:], payReq.PaymentHash[:])
 		destKey := payReq.Destination.SerializeCompressed()
 		copy(payIntent.Target[:], destKey)
@@ -693,6 +737,15 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 		features, err := UnmarshalFeatures(rpcPayReq.DestFeatures)
 		if err != nil {
 			return nil, err
+		}
+
+		// If the payment addresses is specified, then we'll also
+		// populate that now as well.
+		if len(rpcPayReq.PaymentAddr) != 0 {
+			var payAddr [32]byte
+			copy(payAddr[:], rpcPayReq.PaymentAddr)
+
+			payIntent.PaymentAddr = &payAddr
 		}
 
 		payIntent.DestFeatures = features
@@ -852,6 +905,7 @@ func (r *RouterBackend) MarshalHTLCAttempt(
 	}
 
 	rpcAttempt := &lnrpc.HTLCAttempt{
+		AttemptId:     htlc.AttemptID,
 		AttemptTimeNs: MarshalTimeNano(htlc.AttemptTime),
 		Route:         route,
 	}
@@ -1058,6 +1112,9 @@ func marshallWireError(msg lnwire.FailureMessage,
 
 	case *lnwire.FailMPPTimeout:
 		response.Code = lnrpc.Failure_MPP_TIMEOUT
+
+	case *lnwire.InvalidOnionPayload:
+		response.Code = lnrpc.Failure_INVALID_ONION_PAYLOAD
 
 	case nil:
 		response.Code = lnrpc.Failure_UNKNOWN_FAILURE

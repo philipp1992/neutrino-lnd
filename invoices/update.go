@@ -20,6 +20,7 @@ type invoiceUpdateCtx struct {
 	finalCltvRejectDelta int32
 	customRecords        record.CustomSet
 	mpp                  *record.MPP
+	amp                  *record.AMP
 }
 
 // invoiceRef returns an identifier that can be used to lookup or update the
@@ -32,10 +33,22 @@ func (i *invoiceUpdateCtx) invoiceRef() channeldb.InvoiceRef {
 	return channeldb.InvoiceRefByHash(i.hash)
 }
 
+// setID returns an identifier that identifies other possible HTLCs that this
+// particular one is related to. If nil is returned this means the HTLC is an
+// MPP or legacy payment, otherwise the HTLC belongs AMP payment.
+func (i invoiceUpdateCtx) setID() *[32]byte {
+	if i.amp != nil {
+		setID := i.amp.SetID()
+		return &setID
+	}
+	return nil
+}
+
 // log logs a message specific to this update context.
 func (i *invoiceUpdateCtx) log(s string) {
-	log.Debugf("Invoice%v: %v, amt=%v, expiry=%v, circuit=%v, mpp=%v",
-		i.invoiceRef, s, i.amtPaid, i.expiry, i.circuitKey, i.mpp)
+	log.Debugf("Invoice%v: %v, amt=%v, expiry=%v, circuit=%v, mpp=%v, "+
+		"amp=%v", i.hash[:], s, i.amtPaid, i.expiry, i.circuitKey,
+		i.mpp, i.amp)
 }
 
 // failRes is a helper function which creates a failure resolution with
@@ -90,6 +103,9 @@ func updateInvoice(ctx *invoiceUpdateCtx, inv *channeldb.Invoice) (
 		}
 	}
 
+	// If no MPP payload was provided, then we expect this to be a keysend,
+	// or a payment to an invoice created before we started to require the
+	// MPP payload.
 	if ctx.mpp == nil {
 		return updateLegacy(ctx, inv)
 	}
@@ -102,6 +118,8 @@ func updateInvoice(ctx *invoiceUpdateCtx, inv *channeldb.Invoice) (
 func updateMpp(ctx *invoiceUpdateCtx,
 	inv *channeldb.Invoice) (*channeldb.InvoiceUpdateDesc,
 	HtlcResolution, error) {
+
+	setID := ctx.setID()
 
 	// Start building the accept descriptor.
 	acceptDesc := &channeldb.HtlcAcceptDesc{
@@ -138,14 +156,7 @@ func updateMpp(ctx *invoiceUpdateCtx,
 
 	// Check whether total amt matches other htlcs in the set.
 	var newSetTotal lnwire.MilliSatoshi
-	for _, htlc := range inv.Htlcs {
-		// Only consider accepted mpp htlcs. It is possible that there
-		// are htlcs registered in the invoice database that previously
-		// timed out and are in the canceled state now.
-		if htlc.State != channeldb.HtlcStateAccepted {
-			continue
-		}
-
+	for _, htlc := range inv.HTLCSet(setID) {
 		if ctx.mpp.TotalMsat() != htlc.MppTotalAmt {
 			return nil, ctx.failRes(ResultHtlcSetTotalMismatch), nil
 		}
@@ -190,6 +201,7 @@ func updateMpp(ctx *invoiceUpdateCtx,
 	if inv.HodlInvoice {
 		update.State = &channeldb.InvoiceStateUpdateDesc{
 			NewState: channeldb.ContractAccepted,
+			SetID:    setID,
 		}
 		return &update, ctx.acceptRes(resultAccepted), nil
 	}
@@ -197,6 +209,7 @@ func updateMpp(ctx *invoiceUpdateCtx,
 	update.State = &channeldb.InvoiceStateUpdateDesc{
 		NewState: channeldb.ContractSettled,
 		Preimage: inv.Terms.PaymentPreimage,
+		SetID:    setID,
 	}
 
 	return &update, ctx.settleRes(
@@ -206,6 +219,10 @@ func updateMpp(ctx *invoiceUpdateCtx,
 
 // updateLegacy is a callback for DB.UpdateInvoice that contains the invoice
 // settlement logic for legacy payments.
+//
+// NOTE: This function is only kept in place in order to be able to handle key
+// send payments and any invoices we created in the past that are valid and
+// still had the optional mpp bit set.
 func updateLegacy(ctx *invoiceUpdateCtx,
 	inv *channeldb.Invoice) (*channeldb.InvoiceUpdateDesc, HtlcResolution, error) {
 
@@ -223,16 +240,26 @@ func updateLegacy(ctx *invoiceUpdateCtx,
 		return nil, ctx.failRes(ResultAmountTooLow), nil
 	}
 
-	// TODO(joostjager): Check invoice mpp required feature
-	// bit when feature becomes mandatory.
+	// If the invoice had the required feature bit set at this point, then
+	// if we're in this method it means that the remote party didn't supply
+	// the expected payload. However if this is a keysend payment, then
+	// we'll permit it to pass.
+	_, isKeySend := ctx.customRecords[record.KeySendType]
+	invoiceFeatures := inv.Terms.Features
+	paymentAddrRequired := invoiceFeatures.RequiresFeature(
+		lnwire.PaymentAddrRequired,
+	)
+	if !isKeySend && paymentAddrRequired {
+		log.Warnf("Payment to pay_hash=%v doesn't include MPP "+
+			"payload, rejecting", ctx.hash)
+		return nil, ctx.failRes(ResultAddressMismatch), nil
+	}
 
 	// Don't allow settling the invoice with an old style
 	// htlc if we are already in the process of gathering an
 	// mpp set.
-	for _, htlc := range inv.Htlcs {
-		if htlc.State == channeldb.HtlcStateAccepted &&
-			htlc.MppTotalAmt > 0 {
-
+	for _, htlc := range inv.HTLCSet(nil) {
+		if htlc.MppTotalAmt > 0 {
 			return nil, ctx.failRes(ResultMppInProgress), nil
 		}
 	}

@@ -61,28 +61,15 @@ type networkResult struct {
 
 // serializeNetworkResult serializes the networkResult.
 func serializeNetworkResult(w io.Writer, n *networkResult) error {
-	if _, err := lnwire.WriteMessage(w, n.msg, 0); err != nil {
-		return err
-	}
-
-	return channeldb.WriteElements(w, n.unencrypted, n.isResolution)
+	return channeldb.WriteElements(w, n.msg, n.unencrypted, n.isResolution)
 }
 
 // deserializeNetworkResult deserializes the networkResult.
 func deserializeNetworkResult(r io.Reader) (*networkResult, error) {
-	var (
-		err error
-	)
-
 	n := &networkResult{}
 
-	n.msg, err = lnwire.ReadMessage(r, 0)
-	if err != nil {
-		return nil, err
-	}
-
 	if err := channeldb.ReadElements(r,
-		&n.unencrypted, &n.isResolution,
+		&n.msg, &n.unencrypted, &n.isResolution,
 	); err != nil {
 		return nil, err
 	}
@@ -127,6 +114,8 @@ func (store *networkResultStore) storeResult(paymentID uint64,
 	// of concurrent calls.
 	store.paymentIDMtx.Lock(paymentID)
 	defer store.paymentIDMtx.Unlock(paymentID)
+
+	log.Debugf("Storing result for paymentID=%v", paymentID)
 
 	// Serialize the payment result.
 	var b bytes.Buffer
@@ -175,6 +164,8 @@ func (store *networkResultStore) subscribeResult(paymentID uint64) (
 	store.paymentIDMtx.Lock(paymentID)
 	defer store.paymentIDMtx.Unlock(paymentID)
 
+	log.Debugf("Subscribing to result for paymentID=%v", paymentID)
+
 	var (
 		result     *networkResult
 		resultChan = make(chan *networkResult, 1)
@@ -197,6 +188,8 @@ func (store *networkResultStore) subscribeResult(paymentID uint64) (
 		default:
 			return nil
 		}
+	}, func() {
+		result = nil
 	})
 	if err != nil {
 		return nil, err
@@ -230,6 +223,8 @@ func (store *networkResultStore) getResult(pid uint64) (
 		var err error
 		result, err = fetchResult(tx, pid)
 		return err
+	}, func() {
+		result = nil
 	})
 	if err != nil {
 		return nil, err
@@ -301,5 +296,5 @@ func (store *networkResultStore) cleanStore(keep map[uint64]struct{}) error {
 		}
 
 		return nil
-	})
+	}, func() {})
 }

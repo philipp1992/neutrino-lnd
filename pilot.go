@@ -11,7 +11,10 @@ import (
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/autopilot"
+	"github.com/lightningnetwork/lnd/chainreg"
+	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lncfg"
+	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -106,7 +109,7 @@ type chanController struct {
 	minConfs      int32
 	confTarget    uint32
 	chanMinHtlcIn lnwire.MilliSatoshi
-	netParams     bitcoinNetParams
+	netParams     chainreg.BitcoinNetParams
 }
 
 // OpenChannel opens a channel to a target peer, with a capacity of the
@@ -140,18 +143,18 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 
 	// Construct the open channel request and send it to the server to begin
 	// the funding workflow.
-	req := &openChanReq{
-		targetPubkey:     target,
-		chainHash:        *c.netParams.GenesisHash,
-		subtractFees:     true,
-		localFundingAmt:  amt,
-		pushAmt:          0,
-		minHtlcIn:        c.chanMinHtlcIn,
-		fundingFeePerKw:  feePerKw,
-		private:          c.private,
-		remoteCsvDelay:   0,
-		minConfs:         c.minConfs,
-		maxValueInFlight: 0,
+	req := &funding.InitFundingMsg{
+		TargetPubkey:     target,
+		ChainHash:        *c.netParams.GenesisHash,
+		SubtractFees:     true,
+		LocalFundingAmt:  amt,
+		PushAmt:          0,
+		MinHtlcIn:        c.chanMinHtlcIn,
+		FundingFeePerKw:  feePerKw,
+		Private:          c.private,
+		RemoteCsvDelay:   0,
+		MinConfs:         c.minConfs,
+		MaxValueInFlight: 0,
 	}
 
 	updateStream, errChan := c.server.OpenChannel(req)
@@ -178,8 +181,8 @@ var _ autopilot.ChannelController = (*chanController)(nil)
 // interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
 func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
-	chainCfg *lncfg.Chain, netParams bitcoinNetParams) (*autopilot.ManagerCfg,
-	error) {
+	chainCfg *lncfg.Chain, netParams chainreg.BitcoinNetParams) (
+	*autopilot.ManagerCfg, error) {
 
 	atplLog.Infof("Instantiating autopilot with active=%v, "+
 		"max_channels=%d, allocation=%f, min_chan_size=%d, "+
@@ -228,7 +231,9 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 			netParams:     netParams,
 		},
 		WalletBalance: func() (btcutil.Amount, error) {
-			return svr.cc.wallet.ConfirmedBalance(cfg.MinConfs)
+			return svr.cc.Wallet.ConfirmedBalance(
+				cfg.MinConfs, lnwallet.DefaultAccountName,
+			)
 		},
 		Graph:       autopilot.ChannelGraphFromDatabase(svr.localChanDB.ChannelGraph()),
 		Constraints: atplConstraints,
@@ -340,7 +345,7 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 				Node:    autopilot.NewNodeID(channel.IdentityPub),
 			}, nil
 		},
-		SubscribeTransactions: svr.cc.wallet.SubscribeTransactions,
+		SubscribeTransactions: svr.cc.Wallet.SubscribeTransactions,
 		SubscribeTopology:     svr.chanRouter.SubscribeTopology,
 	}, nil
 }
