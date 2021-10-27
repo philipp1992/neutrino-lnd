@@ -4,10 +4,14 @@ import (
 	"bytes"
 	"encoding/hex"
 	"fmt"
+	"github.com/btcsuite/btcutil/hdkeychain"
+	"github.com/btcsuite/btcutil/psbt"
+	"github.com/btcsuite/btcwallet/waddrmgr"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
@@ -65,11 +69,12 @@ func (lw *LightWalletController) FetchInputInfo(prevOut *wire.OutPoint) (*lnwall
 	}, nil
 }
 
-func (lw *LightWalletController) ConfirmedBalance(confs int32) (btcutil.Amount, error) {
+func (lw *LightWalletController) ConfirmedBalance(confs int32, accountFilter string) (btcutil.Amount, error) {
 	return lw.client.ChainConn.RPCClient().GetConfirmedBalance(confs)
 }
 
-func (lw *LightWalletController) NewAddress(addrType lnwallet.AddressType, change bool) (btcutil.Address, error) {
+func (lw *LightWalletController) NewAddress(addrType lnwallet.AddressType, change bool,
+	accountName string) (btcutil.Address, error) {
 	if addrType != lnwallet.WitnessPubKey {
 		panic("implement me")
 	}
@@ -83,7 +88,7 @@ func (lw *LightWalletController) NewAddress(addrType lnwallet.AddressType, chang
 	return btcutil.DecodeAddress(addrStr, lw.config.NetParams)
 }
 
-func (lw *LightWalletController) LastUnusedAddress(addrType lnwallet.AddressType) (btcutil.Address, error) {
+func (lw *LightWalletController) LastUnusedAddress(addrType lnwallet.AddressType, str string) (btcutil.Address, error) {
 	panic("implement me")
 }
 
@@ -92,19 +97,19 @@ func (lw *LightWalletController) IsOurAddress(a btcutil.Address) bool {
 }
 
 func (lw *LightWalletController) SendOutputs(outputs []*wire.TxOut,
-	feeRate chainfee.SatPerKWeight, label string) (*wire.MsgTx, error) {
-	panic("implement me")
+	feeRate chainfee.SatPerKWeight, minconf int32, label string) (*wire.MsgTx, error) {
+	panic("implement me SendOutputs")
 }
 
 func (lw *LightWalletController) CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
 	dryRun bool) (*txauthor.AuthoredTx, error) {
-	panic("implement me")
+	panic("implement me CreateSimpleTx")
 }
 
-func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int32) ([]*lnwallet.Utxo, error) {
+func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int32, accountFilter string) ([]*lnwallet.Utxo, error) {
 
 	var addresses []string
-	result, err := lw.client.ChainConn.RPCClient().ListUtxos(3, 9999999, addresses)
+	result, err := lw.client.ChainConn.RPCClient().ListUtxos( 2, 9999999, addresses)
 	if err != nil {
 		return nil, err
 	}
@@ -143,9 +148,9 @@ func (lw *LightWalletController) ListUnspentWitness(minconfirms, maxconfirms int
 	return utxos, nil
 }
 
-func (lw *LightWalletController) ListTransactionDetails(startHeight,
-	endHeight int32) ([]*lnwallet.TransactionDetail, error) {
-	panic("implement list")
+func (lw *LightWalletController) ListTransactionDetails(startHeight, endHeight int32,
+	accountFilter string) ([]*lnwallet.TransactionDetail, error) {
+	panic("implement me ListTransactionDetails")
 	return nil, nil
 }
 
@@ -440,7 +445,7 @@ func (b *LightWalletController) LabelTransaction(hash chainhash.Hash, label stri
 // wtxmgr.ErrOutputAlreadyLocked is returned.
 //
 // NOTE: This method requires the global coin selection lock to be held.
-func (b *LightWalletController) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) (time.Time,
+func (b *LightWalletController) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint, time time.Duration) (time.Time,
 	error) {
 
 	// Make sure we don't attempt to double lock an output that's been
@@ -450,7 +455,7 @@ func (b *LightWalletController) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) 
 	//}
 	//
 	//return b.wallet.LeaseOutput(id, op)
-	panic("implement me")
+	panic("implement me LeaseOutput")
 }
 
 // ReleaseOutput unlocks an output, allowing it to be available for coin
@@ -459,8 +464,37 @@ func (b *LightWalletController) LeaseOutput(id wtxmgr.LockID, op wire.OutPoint) 
 //
 // NOTE: This method requires the global coin selection lock to be held.
 func (b *LightWalletController) ReleaseOutput(id wtxmgr.LockID, op wire.OutPoint) error {
-	panic("implement me")
+	panic("implement me ReleaseOutput")
 	//return b.wallet.ReleaseOutput(id, op)
+}
+
+func (b *LightWalletController) ListAccounts(name string,
+	keyScope *waddrmgr.KeyScope) ([]*waddrmgr.AccountProperties, error) {
+	panic("implement me ListAccounts")
+}
+
+// ListLeasedOutputs returns a list of all currently locked outputs.
+func (b *LightWalletController) ListLeasedOutputs() ([]*wtxmgr.LockedOutput, error) {
+	panic("implement me ListLeasedOutputs")
+}
+
+func (b *LightWalletController) ImportPublicKey(pubKey *btcec.PublicKey,
+	addrType waddrmgr.AddressType) error {
+        panic("implement me ImportPublicKey")
+}
+
+func (b *LightWalletController) ImportAccount(name string, accountPubKey *hdkeychain.ExtendedKey,
+	masterKeyFingerprint uint32, addrType *waddrmgr.AddressType) error {
+	panic("implement me ImportAccount")
+}
+
+func (b *LightWalletController) FundPsbt(packet *psbt.Packet,
+	feeRate chainfee.SatPerKWeight, accountName string) (int32, error) {
+	panic("implement me FundPsbt")
+}
+
+func (b *LightWalletController) FinalizePsbt(packet *psbt.Packet, accountName string) error {
+	panic("implement me FinalizePsbt")
 }
 
 func New(cfg btcwallet.Config, 	client *chain.LightWalletClient, keychain *keychain.LightWalletKeyRing) (*LightWalletController, error) {

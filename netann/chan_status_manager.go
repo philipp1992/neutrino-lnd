@@ -516,7 +516,7 @@ func (m *ChanStatusManager) markPendingInactiveChannels() {
 			// check duplication to avoid error logs
 			if m.cfg.IsChannelActive(chanID) {
 				// give a chance to a channels which were enabled while peer got unsynchronized
-				err := m.processEnableRequest(c.FundingOutpoint)
+				err := m.processEnableRequest(c.FundingOutpoint, false)
 				if err != nil {
 					log.Errorf("Unable to process enable request for "+
 						"Channel(%v): %v", c.FundingOutpoint, err)

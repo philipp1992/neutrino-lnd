@@ -256,24 +256,22 @@ type Config struct {
 	MaxPendingChannels int    `long:"maxpendingchannels" description:"The maximum number of incoming pending channels permitted per peer."`
 	BackupFilePath     string `long:"backupfilepath" description:"The target location of the channel backup file"`
 
-<<<<<<< HEAD
-	Bitcoin      	*lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
-	BtcdMode     	*lncfg.Btcd     `group:"btcd" namespace:"btcd"`
-	BitcoindMode 	*lncfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
-	NeutrinoMode 	*lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
-	LightWalletMode *lncfg.LightWalletConfig `group:"lightwallet" namespace:"lightwallet"`
-	Litecoin      	*lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
-	LtcdMode      	*lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
-	LitecoindMode 	*lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
-	Xsncoin      	*lncfg.Chain    `group:"Xsncoin" namespace:"xsncoin"`
-	XsndMode 	 	*lncfg.Bitcoind `group:"xsnd" namespace:"xsnd"`
-=======
 	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet."`
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
 
-	//DualFunding *dualFundingConfig `group:"DualFunding" namespace:"dualfunding"`
+	Bitcoin      	*lncfg.Chain    	`group:"Bitcoin" namespace:"bitcoin"`
+	BtcdMode     	*lncfg.Btcd     	`group:"btcd" namespace:"btcd"`
+	BitcoindMode 	*lncfg.Bitcoind 	`group:"bitcoind" namespace:"bitcoind"`
+	NeutrinoMode 	*lncfg.Neutrino 	`group:"neutrino" namespace:"neutrino"`
 
-	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network."`
+	Litecoin      	*lncfg.Chain    	`group:"Litecoin" namespace:"litecoin"`
+	LtcdMode      	*lncfg.Btcd     	`group:"ltcd" namespace:"ltcd"`
+	LitecoindMode 	*lncfg.Bitcoind 	`group:"litecoind" namespace:"litecoind"`
+
+	Xsncoin	      	*lncfg.Chain    	`group:"Xsncoin" namespace:"xsncoin"`
+	XsndMode      	*lncfg.Bitcoind 	`group:"xsnd" namespace:"xsnd"`
+	LightWalletMode *lncfg.LightWallet 	`group:"lightwallet" namespace:"lightwallet"`
+
+	BlockCacheSize uint64 `long:"blockcachesize" description:"The maximum capacity of the block cache"`
 
 	Autopilot *lncfg.AutoPilot `group:"Autopilot" namespace:"autopilot"`
 
@@ -427,22 +425,23 @@ func DefaultConfig() Config {
 			RPCHost:      defaultRPCHost,
 			EstimateMode: defaultBitcoindEstimateMode,
 		},
-		Xsncoin: &lncfg.Chain {
-			MinHTLCIn:     defaultBitcoinMinHTLCInMSat,
-			MinHTLCOut:    defaultBitcoinMinHTLCOutMSat,
-			BaseFee:       DefaultBitcoinBaseFeeMSat,
-			FeeRate:       DefaultBitcoinFeeRate,
-			TimeLockDelta: DefaultXsncoinTimeLockDelta,
+		Xsncoin: &lncfg.Chain{
+			MinHTLCIn:     chainreg.DefaultBitcoinMinHTLCInMSat,
+			MinHTLCOut:    chainreg.DefaultBitcoinMinHTLCOutMSat,
+			BaseFee:       chainreg.DefaultBitcoinBaseFeeMSat,
+			FeeRate:       chainreg.DefaultBitcoinFeeRate,
+			TimeLockDelta: chainreg.DefaultXsncoinTimeLockDelta,
 			Node:          "xsnd",
-			},
-		XsndMode: &lncfg.Bitcoind {
+		},
+		XsndMode: &lncfg.Bitcoind{
 			Dir:     defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
 		},
-		LightWalletMode: &lncfg.LightWalletConfig {
-			Dir: defaultBitcoindDir,
-			RPCHost: defaultRPCHost,
+		LightWalletMode: &lncfg.LightWallet{
+			Dir:              defaultBitcoindDir,
+			RPCHost:          defaultRPCHost,
 			UseWalletBackend: false,
+		},
 		NeutrinoMode: &lncfg.Neutrino{
 			UserAgentName:    neutrino.UserAgentName,
 			UserAgentVersion: neutrino.UserAgentVersion,
@@ -469,9 +468,6 @@ func DefaultConfig() Config {
 			},
 			TrustedNodes: make([]string, 0),
 		},
-		//DualFunding: &dualFundingConfig{
-		//	Active: false,
-		//},
 		PaymentsExpirationGracePeriod: defaultPaymentsExpirationGracePeriod,
 		TrickleDelay:                  defaultTrickleDelay,
 		ChanStatusSampleInterval:      defaultChanStatusSampleInterval,
@@ -686,12 +682,9 @@ func ValidateConfig(cfg Config, usageMessage string,
 	cfg.Tor.PrivateKeyPath = CleanAndExpandPath(cfg.Tor.PrivateKeyPath)
 	cfg.Tor.WatchtowerKeyPath = CleanAndExpandPath(cfg.Tor.WatchtowerKeyPath)
 	cfg.Watchtower.TowerDir = CleanAndExpandPath(cfg.Watchtower.TowerDir)
-<<<<<<< HEAD
 	cfg.XsndMode.Dir = CleanAndExpandPath(cfg.XsndMode.Dir)
 	cfg.LightWalletMode.Dir = CleanAndExpandPath(cfg.LightWalletMode.Dir)
-=======
 	cfg.BackupFilePath = CleanAndExpandPath(cfg.BackupFilePath)
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
 
 	// Create the lnd directory and all other sub directories if they don't
 	// already exist. This makes sure that directory trees are also created
@@ -751,40 +744,31 @@ func ValidateConfig(cfg Config, usageMessage string,
 	}
 
 	// Ensure that the specified values for the min and max channel size
-<<<<<<< HEAD
 	// don't are within the bounds of the normal chan size constraints.
 	switch {
 	case cfg.Bitcoin.Active:
-		if cfg.Autopilot.MinChannelSize < int64(minChanFundingSize) {
-			cfg.Autopilot.MinChannelSize = int64(minChanFundingSize)
+		if cfg.Autopilot.MinChannelSize < int64(funding.MinChanFundingSize) {
+			cfg.Autopilot.MinChannelSize = int64(funding.MinChanFundingSize)
 		}
-		if cfg.Autopilot.MaxChannelSize > int64(MaxBtcFundingAmount) {
-			cfg.Autopilot.MaxChannelSize = int64(MaxBtcFundingAmount)
+		if cfg.Autopilot.MaxChannelSize > int64(funding.MaxBtcFundingAmount) {
+			cfg.Autopilot.MaxChannelSize = int64(funding.MaxBtcFundingAmount)
 		}
 
 	case cfg.Litecoin.Active:
-		if cfg.Autopilot.MinChannelSize < int64(minLtcChanFundingSize) {
-			cfg.Autopilot.MinChannelSize = int64(minLtcChanFundingSize)
+		if cfg.Autopilot.MinChannelSize < int64(funding.MinLtcChanFundingSize) {
+			cfg.Autopilot.MinChannelSize = int64(funding.MinLtcChanFundingSize)
 		}
-		if cfg.Autopilot.MaxChannelSize > int64(maxLtcFundingAmount) {
-			cfg.Autopilot.MaxChannelSize = int64(maxLtcFundingAmount)
+		if cfg.Autopilot.MaxChannelSize > int64(funding.MaxLtcFundingAmount) {
+			cfg.Autopilot.MaxChannelSize = int64(funding.MaxLtcFundingAmount)
 		}
 
 	case cfg.Xsncoin.Active:
-		if cfg.Autopilot.MinChannelSize < int64(minXsnChanFundingSize) {
-			cfg.Autopilot.MinChannelSize = int64(minXsnChanFundingSize)
+		if cfg.Autopilot.MinChannelSize < int64(funding.MinXsnChanFundingSize) {
+			cfg.Autopilot.MinChannelSize = int64(funding.MinXsnChanFundingSize)
 		}
-		if cfg.Autopilot.MaxChannelSize > int64(maxXsnFundingAmount) {
-			cfg.Autopilot.MaxChannelSize = int64(maxXsnFundingAmount)
+		if cfg.Autopilot.MaxChannelSize > int64(funding.MaxXsnFundingAmount) {
+			cfg.Autopilot.MaxChannelSize = int64(funding.MaxXsnFundingAmount)
 		}
-=======
-	// are within the bounds of the normal chan size constraints.
-	if cfg.Autopilot.MinChannelSize < int64(funding.MinChanFundingSize) {
-		cfg.Autopilot.MinChannelSize = int64(funding.MinChanFundingSize)
-	}
-	if cfg.Autopilot.MaxChannelSize > int64(MaxFundingAmount) {
-		cfg.Autopilot.MaxChannelSize = int64(MaxFundingAmount)
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
 	}
 
 	if _, err := validateAtplCfg(cfg.Autopilot); err != nil {
@@ -957,17 +941,12 @@ func ValidateConfig(cfg Config, usageMessage string,
 		// number of network flags passed; assign active network params
 		// while we're at it.
 		numNets := 0
-<<<<<<< HEAD
-		var ltcParams litecoinNetParams
+		var ltcParams chainreg.LitecoinNetParams
 		if cfg.Litecoin.MainNet && cfg.Litecoin.Node == "lightwallet"{
 			numNets++
-			ltcParams = ltcLightWalletParams
+			ltcParams = chainreg.LtcLightWalletParams
 		}
 		if cfg.Litecoin.MainNet && cfg.Litecoin.Node != "lightwallet"{
-=======
-		var ltcParams chainreg.LitecoinNetParams
-		if cfg.Litecoin.MainNet {
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
 			numNets++
 			ltcParams = chainreg.LitecoinMainNetParams
 		}
@@ -1035,7 +1014,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			}
 
 			err := parseRPCParams(
-				cfg.Litecoin, cfg.LightWalletMode, litecoinChain, funcName,
+				cfg.Litecoin, cfg.LightWalletMode, chainreg.LitecoinChain, funcName,
 				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
@@ -1064,7 +1043,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 		numNets := 0
 		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node == "lightwallet" {
 			numNets++
-			cfg.ActiveNetParams = btcLightWalletParams
+			cfg.ActiveNetParams = chainreg.BtcLightWalletParams
 		}
 		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node != "lightwallet"{
 			numNets++
@@ -1076,7 +1055,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 		}
 		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node == "lightwallet" {
 			numNets++
-			cfg.ActiveNetParams = btcLightWalletRegtestParams
+			cfg.ActiveNetParams = chainreg.BtcLightWalletRegtestParams
 		}
 		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node != "lightwallet"{
 			numNets++
@@ -1145,7 +1124,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			}
 
 			err := parseRPCParams(
-				cfg.Bitcoin, cfg.LightWalletMode, bitcoinChain, funcName,
+				cfg.Bitcoin, cfg.LightWalletMode, chainreg.BitcoinChain, funcName,
 				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
@@ -1164,34 +1143,33 @@ func ValidateConfig(cfg Config, usageMessage string,
 
 		// Finally we'll register the bitcoin chain as our current
 		// primary chain.
-<<<<<<< HEAD
-		cfg.registeredChains.RegisterPrimaryChain(bitcoinChain)
+		cfg.registeredChains.RegisterPrimaryChain(chainreg.BitcoinChain)
 
 	case cfg.Xsncoin.Active:
 		// Multiple networks can't be selected simultaneously.  Count
 		// number of network flags passed; assign active network params
 		// while we're at it.
 		numNets := 0
-		var xsnParams xsncoinNetParams
+		var xsnParams chainreg.XsncoinNetParams
 		if cfg.Xsncoin.MainNet && cfg.Xsncoin.Node == "lightwallet" {
 			numNets++
-			xsnParams = xsnLightWalletParams
+			xsnParams = chainreg.XsnLightWalletParams
 		}
 		if cfg.Xsncoin.MainNet && cfg.Xsncoin.Node != "lightwallet"{
 			numNets++
-			xsnParams = xsnMainNetParams
+			xsnParams = chainreg.XsnMainNetParams
 		}
 		if cfg.Xsncoin.TestNet3 {
 			numNets++
-			xsnParams = xsnTestNetParams
+			xsnParams = chainreg.XsnTestNetParams
 		}
 		if cfg.Xsncoin.RegTest && cfg.Xsncoin.Node == "lightwallet" {
 			numNets++
-			xsnParams = xsnLightWalletRegtestParams
+			xsnParams = chainreg.XsnLightWalletRegtestParams
 		}
 		if cfg.Xsncoin.RegTest && cfg.Xsncoin.Node != "lightwallet"{
 			numNets++
-			xsnParams = xsnRegTestNetParams
+			xsnParams = chainreg.XsnRegTestNetParams
 		}
 
 		if numNets > 1 {
@@ -1216,7 +1194,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 		// throughout the codebase we required chaincfg.Params. So as a
 		// temporary hack, we'll mutate the default net params for
 		// bitcoin with the litecoin specific information.
-		applyStakenetParams(&cfg.ActiveNetParams, &xsnParams)
+		chainreg.ApplyStakenetParams(&cfg.ActiveNetParams, &xsnParams)
 
 		if cfg.Xsncoin.TimeLockDelta < minTimeLockDelta {
 			return nil, fmt.Errorf("timelockdelta must be at least %v",
@@ -1231,7 +1209,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			}
 
 			err := parseRPCParams(
-				cfg.Xsncoin, cfg.XsndMode, xsncoinChain, funcName,
+				cfg.Xsncoin, cfg.XsndMode, chainreg.XsncoinChain, funcName,
 				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
@@ -1246,7 +1224,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			}
 
 			err := parseRPCParams(
-				cfg.Xsncoin, cfg.LightWalletMode, xsncoinChain, funcName,
+				cfg.Xsncoin, cfg.LightWalletMode, chainreg.XsncoinChain, funcName,
 				cfg.ActiveNetParams)
 			if err != nil {
 				err := fmt.Errorf("unable to load RPC "+
@@ -1262,15 +1240,12 @@ func ValidateConfig(cfg Config, usageMessage string,
 
 		cfg.Xsncoin.ChainDir = filepath.Join(cfg.DataDir,
 			defaultChainSubDirname,
-			xsncoinChain.String())
+			chainreg.XsncoinChain.String())
 
 		// Finally we'll register the bitcoin chain as our current
 		// primary chain.
-		cfg.registeredChains.RegisterPrimaryChain(xsncoinChain)
-		MaxFundingAmount = maxXsnFundingAmount
-=======
-		cfg.registeredChains.RegisterPrimaryChain(chainreg.BitcoinChain)
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
+		cfg.registeredChains.RegisterPrimaryChain(chainreg.XsncoinChain)
+		MaxFundingAmount = funding.MaxXsnFundingAmount
 	}
 
 	// Ensure that the user didn't attempt to specify negative values for
@@ -1688,7 +1663,7 @@ func parseRPCParams(cConfig *lncfg.Chain, nodeConfig interface{},
 			daemonName = "litecoind"
 			confDir = conf.Dir
 			confFile = "litecoin"
-		case xsncoinChain:
+		case chainreg.XsncoinChain:
 			confDir = conf.Dir
 			confFile = "bitcoin"
 		}

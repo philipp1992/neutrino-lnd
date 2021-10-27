@@ -32,3 +32,18 @@ func (c *ChainIO) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
 func (c *ChainIO) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) {
 	return nil, nil
 }
+
+// no cache for mock
+func (b *ChainIO) FreeCache() error {
+	return nil
+}
+
+// no cache for mock
+func (b *ChainIO) GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error) {
+	return nil, nil
+}
+
+// no cache for mock
+func (b *ChainIO) LoadCache(startHeight uint32) (bool, error) {
+	return false, nil
+}

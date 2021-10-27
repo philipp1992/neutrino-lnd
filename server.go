@@ -1006,10 +1006,10 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		minRemoteDelay = funding.MinLtcRemoteDelay
 		maxRemoteDelay = funding.MaxLtcRemoteDelay
 	}
-	if primaryChain == xsncoinChain {
+	if primaryChain == chainreg.XsncoinChain {
 		chainCfg = cfg.Xsncoin
-		minRemoteDelay = minBtcRemoteDelay
-		maxRemoteDelay = maxBtcRemoteDelay
+		minRemoteDelay = funding.MinBtcRemoteDelay
+		maxRemoteDelay = funding.MaxBtcRemoteDelay
 	}
 
 	var chanIDSeed [32]byte
@@ -1634,7 +1634,7 @@ func (s *server) Start() error {
 				return
 			}
 
-			result := make([][2]string, len(tuples))
+			result := make([][3]string, len(tuples))
 			for idx, tuple := range tuples {
 				tuple = strings.TrimSpace(tuple)
 				if len(tuple) == 0 {

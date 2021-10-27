@@ -9,12 +9,12 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/chainreg"
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -127,7 +127,7 @@ func (c *chanController) OpenChannel(target *btcec.PublicKey,
 	if feeRate < 1 {
 		// With the connection established, we'll now establish our connection
 		// to the target peer, waiting for the first update before we exit.
-		feePerKw, err = c.server.cc.feeEstimator.EstimateFeePerKW(
+		feePerKw, err = c.server.cc.FeeEstimator.EstimateFeePerKW(
 			c.confTarget,
 		)
 		if err != nil {

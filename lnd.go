@@ -545,6 +545,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 	chainControlCfg := &chainreg.Config{
 		Bitcoin:                     cfg.Bitcoin,
 		Litecoin:                    cfg.Litecoin,
+		Xsncoin: 					 cfg.Xsncoin,
 		PrimaryChain:                cfg.registeredChains.PrimaryChain,
 		HeightHintCacheQueryDisable: cfg.HeightHintCacheQueryDisable,
 		NeutrinoMode:                cfg.NeutrinoMode,
@@ -552,6 +553,8 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 		LitecoindMode:               cfg.LitecoindMode,
 		BtcdMode:                    cfg.BtcdMode,
 		LtcdMode:                    cfg.LtcdMode,
+		XsndMode: 					 cfg.XsndMode,
+		LightWalletMode: 			 cfg.LightWalletMode,
 		LocalChanDB:                 localChanDB,
 		RemoteChanDB:                remoteChanDB,
 		PrivateWalletPw:             privateWalletPw,
@@ -1157,7 +1160,7 @@ func createWalletUnlockerService(cfg *Config) *walletunlocker.UnlockerService {
 	if cfg.registeredChains.PrimaryChain() == chainreg.LitecoinChain {
 		chainConfig = cfg.Litecoin
 	}
-	if cfg.registeredChains.PrimaryChain() == xsncoinChain {
+	if cfg.registeredChains.PrimaryChain() == chainreg.XsncoinChain {
 		chainConfig = cfg.Xsncoin
 	}
 

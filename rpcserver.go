@@ -1873,24 +1873,23 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 		return nil, fmt.Errorf("cannot open channel to self")
 	}
 
-<<<<<<< HEAD
-	rpcsLog.Debugf("[openchannel]: using fee of %v sat/byte for funding tx",
-		int64(in.SatPerByte))
+//<<<<<<< HEAD RostyslavAntonyshyn
+//	rpcsLog.Debugf("[openchannel]: using fee of %v sat/byte for funding tx",
+//		int64(in.SatPerByte))
+//
+//	// Based on the passed fee related parameters, we'll determine an
+//	// appropriate fee rate for the funding transaction.
+//	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
+//	feeRate, err := sweep.DetermineFeePerKw(
+//		r.server.cc.feeEstimator, sweep.FeePreference{
+//			ConfTarget: uint32(in.TargetConf),
+//			FeeRate:    satPerKw,
+//		},
 
-	// Based on the passed fee related parameters, we'll determine an
-	// appropriate fee rate for the funding transaction.
-	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
-	feeRate, err := sweep.DetermineFeePerKw(
-		r.server.cc.feeEstimator, sweep.FeePreference{
-			ConfTarget: uint32(in.TargetConf),
-			FeeRate:    satPerKw,
-		},
-=======
 	// Calculate an appropriate fee rate for this transaction.
 	feeRate, err := calculateFeeRate(
 		uint64(in.SatPerByte), in.SatPerVbyte,
 		uint32(in.TargetConf), r.server.cc.FeeEstimator,
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
 	)
 	if err != nil {
 		return nil, err
@@ -1910,22 +1909,6 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 	// Instruct the server to trigger the necessary events to attempt to
 	// open a new channel. A stream is returned in place, this stream will
 	// be used to consume updates of the state of the pending channel.
-<<<<<<< HEAD
-	return &openChanReq{
-		targetPubkey:     nodePubKey,
-		chainHash:        *r.cfg.ActiveNetParams.GenesisHash,
-		localFundingAmt:  localFundingAmt,
-		pushAmt:          lnwire.NewMSatFromSatoshis(remoteInitialBalance),
-		minHtlcIn:        minHtlcIn,
-		fundingFeePerKw:  feeRate,
-		private:          in.Private,
-		remoteCsvDelay:   remoteCsvDelay,
-		minConfs:         minConfs,
-		shutdownScript:   script,
-		maxValueInFlight: maxValue,
-		maxHtlcs:         maxHtlcs,
-                subtractFees:     in.SubtractFees,
-=======
 	return &funding.InitFundingMsg{
 		TargetPubkey:     nodePubKey,
 		ChainHash:        *r.cfg.ActiveNetParams.GenesisHash,
@@ -1940,7 +1923,7 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 		MaxValueInFlight: maxValue,
 		MaxHtlcs:         maxHtlcs,
 		MaxLocalCsv:      uint16(in.MaxLocalCsv),
->>>>>>> 786568fa460a982f6b9e6a0ff3e32a281771057d
+		SubtractFees:     in.SubtractFees,
 	}, nil
 }
 
@@ -4780,7 +4763,7 @@ func (r *rpcServer) AddInvoice(ctx context.Context,
 	if r.cfg.registeredChains.PrimaryChain() == chainreg.LitecoinChain {
 		defaultDelta = r.cfg.Litecoin.TimeLockDelta
 	}
-	if r.cfg.registeredChains.PrimaryChain() == xsncoinChain {
+	if r.cfg.registeredChains.PrimaryChain() == chainreg.XsncoinChain {
 		defaultDelta = r.cfg.Xsncoin.TimeLockDelta
 	}
 
@@ -4957,11 +4940,11 @@ func (r *rpcServer) SubscribeInvoices(req *lnrpc.InvoiceSubscription,
 				newInvoice, r.cfg.ActiveNetParams.Params,
 			)
 			if err != nil {
-				return err
+                               return err
 			}
 
 			if err := updateStream.Send(rpcInvoice); err != nil {
-				return err
+                               return err
 			}
 
 		case settledInvoice := <-invoiceClient.SettledInvoices:
@@ -4969,11 +4952,11 @@ func (r *rpcServer) SubscribeInvoices(req *lnrpc.InvoiceSubscription,
 				settledInvoice, r.cfg.ActiveNetParams.Params,
 			)
 			if err != nil {
-				return err
+                               return err
 			}
 
 			if err := updateStream.Send(rpcInvoice); err != nil {
-				return err
+                               return err
 			}
 
 		case <-r.quit:

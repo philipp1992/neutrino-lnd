@@ -2470,6 +2470,9 @@ func generateBandwidthHints(sourceNode *channeldb.LightningNode,
 		edgeInfo *channeldb.ChannelEdgeInfo,
 		_, _ *channeldb.ChannelEdgePolicy) error {
 
+		log.Debugf("localChaneEdgeinfo ", edgeInfo.ChannelPoint.String())
+		log.Debugf("localChaneEdgeinfo cap", edgeInfo.Capacity.String())
+
 		localChans = append(localChans, edgeInfo)
 		return nil
 	})

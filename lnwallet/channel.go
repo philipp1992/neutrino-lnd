@@ -6516,6 +6516,8 @@ func (lc *LightningChannel) availableBalance() (lnwire.MilliSatoshi, int64) {
 		htlcView, false,
 	)
 
+	lc.log.Debugf("ourLocalCommitBalance", ourLocalCommitBalance)
+
 	// Do the same calculation from the remote commitment point of view.
 	ourRemoteCommitBalance, _ := lc.availableCommitmentBalance(
 		htlcView, true,
@@ -6549,6 +6551,8 @@ func (lc *LightningChannel) availableCommitmentBalance(view *htlcView,
 		lc.log.Errorf("Unable to fetch available balance: %v", err)
 		return 0, 0
 	}
+
+	lc.log.Debugf("ourBalance ", ourBalance)
 
 	// We can never spend from the channel reserve, so we'll subtract it
 	// from our available balance.

@@ -1931,7 +1931,7 @@ func (f *Manager) handleFundingCreated(peer lnpeer.Peer,
 			"arbitration: %v", fundingOut, err)
 	}
 
-	// Create an entry in the local discovery map so we can ensure that we
+	// Creatinvalid vertex lengthe an entry in the local discovery map so we can ensure that we
 	// process the channel confirmation fully before we receive a funding
 	// locked message.
 	f.localDiscoveryMtx.Lock()
@@ -3305,7 +3305,7 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 		MaxValueInFlight:      maxValue,
 		ChannelReserve:        chanReserve,
 		HtlcMinimum:           minHtlcIn,
-		FeePerKiloWeight:      uint32(msg.fundingFeePerKw),
+		FeePerKiloWeight:      uint32(msg.FundingFeePerKw),
 		CsvDelay:              remoteCsvDelay,
 		MaxAcceptedHTLCs:      maxHtlcs,
 		FundingKey:            ourContribution.MultiSigKey.PubKey,

@@ -3,10 +3,10 @@ package chainreg
 import (
 	"github.com/btcsuite/btcd/chaincfg"
 	bitcoinCfg "github.com/btcsuite/btcd/chaincfg"
+	xsncoinCfg "github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	bitcoinWire "github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/keychain"
-	xsncoinCfg "github.com/btcsuite/btcd/chaincfg"
 	litecoinCfg "github.com/ltcsuite/ltcd/chaincfg"
 	litecoinWire "github.com/ltcsuite/ltcd/wire"
 )
@@ -29,7 +29,7 @@ type LitecoinNetParams struct {
 
 type XsncoinNetParams struct {
 	*xsncoinCfg.Params
-	rpcPort  string
+	RPCPort  string
 	CoinType uint32
 }
 
@@ -58,44 +58,44 @@ var BitcoinSimNetParams = BitcoinNetParams{
 }
 
 // bitcoinLightWalletParams contains parameters specific to the LW connection
-var LtcLightWalletParams = litecoinNetParams{
+var LtcLightWalletParams = LitecoinNetParams{
 	Params:   &litecoinCfg.LitecoinLWParams,
-	rpcPort:  "12347",
+	RPCPort:  "12347",
 	CoinType: keychain.CoinTypeLitecoin,
 }
 
 // bitcoinLightWalletParams contains parameters specific to the LW connection
-var LtcLightWalletRegtestParams = litecoinNetParams{
+var LtcLightWalletRegtestParams = LitecoinNetParams{
 	Params:   &litecoinCfg.LitecoinLWRegTestParams,
-	rpcPort:  "12347",
+	RPCPort:  "12347",
 	CoinType: keychain.CoinTypeLitecoin,
 }
 
 // bitcoinLightWalletParams contains parameters specific to the LW connection
-var BtcLightWalletParams = bitcoinNetParams{
+var BtcLightWalletParams = BitcoinNetParams{
 	Params:   &bitcoinCfg.BitcoinLWParams,
-	rpcPort:  "12347",
+	RPCPort:  "12347",
 	CoinType: keychain.CoinTypeBitcoin,
 }
 
 // bitcoinLightWalletParams contains parameters specific to the LW connection
-var BtcLightWalletRegtestParams = bitcoinNetParams{
+var BtcLightWalletRegtestParams = BitcoinNetParams{
 	Params:   &bitcoinCfg.BitcoinLWRegTestParams,
-	rpcPort:  "12347",
+	RPCPort:  "12347",
 	CoinType: keychain.CoinTypeBitcoin,
 }
 
 // xsnLightWalletParams contains parameters specific to the LW connection
-var XsnLightWalletParams = xsncoinNetParams {
+var XsnLightWalletParams = XsncoinNetParams {
 	Params:   &xsncoinCfg.XsncoinLWParams,
-	rpcPort:  "12347",
+	RPCPort:  "12347",
 	CoinType: keychain.CoinTypeStakenet,
 }
 
 // xsnLightWalletRegtestParams contains parameters specific to the LW connection
-var XsnLightWalletRegtestParams = xsncoinNetParams {
+var XsnLightWalletRegtestParams = XsncoinNetParams {
 	Params:   &xsncoinCfg.XsncoinLWRegTestParams,
-	rpcPort:  "12347",
+	RPCPort:  "12347",
 	CoinType: keychain.CoinTypeStakenet,
 }
 
@@ -141,24 +141,24 @@ var BitcoinRegTestNetParams = BitcoinNetParams{
 
 // xsnTestNetParams contains parameters specific to the 3rd version of the
 // test network.
-var XsnTestNetParams = xsncoinNetParams{
+var XsnTestNetParams = XsncoinNetParams{
 	Params:   &xsncoinCfg.TestNet3Params,
-	rpcPort:  "20000",
+	RPCPort:  "20000",
 	CoinType: keychain.CoinTypeStakenet,
 }
 
 // xsnMainNetParams contains the parameters specific to the current
 // Stakenet mainnet.
-var XsnMainNetParams = xsncoinNetParams{
+var XsnMainNetParams = XsncoinNetParams{
 	Params:   &xsncoinCfg.MainNetParams,
-	rpcPort:  "51475",
+	RPCPort:  "51475",
 	CoinType: keychain.CoinTypeStakenet,
 }
 
 // xsnRegTestNetParams contains parameters specific to a local regtest network.
-var XsnRegTestNetParams = xsncoinNetParams{
+var XsnRegTestNetParams = XsncoinNetParams{
 	Params:   &xsncoinCfg.RegressionNetParams,
-	rpcPort:  "18334",
+	RPCPort:  "18334",
 	CoinType: keychain.CoinTypeStakenet,
 }
 
@@ -209,7 +209,7 @@ func ApplyLitecoinParams(params *BitcoinNetParams,
 // differ for xsncoin to the chain parameters typed for btcsuite derivation.
 // This function is used in place of using something like interface{} to
 // abstract over _which_ chain (or fork) the parameters are for.
-func ApplyStakenetParams(params *bitcoinNetParams, xsnParams *xsncoinNetParams) {
+func ApplyStakenetParams(params *BitcoinNetParams, xsnParams *XsncoinNetParams) {
 	params.Name = xsnParams.Name
 	params.Net = bitcoinWire.BitcoinNet(xsnParams.Net)
 	params.DefaultPort = xsnParams.DefaultPort
@@ -242,7 +242,7 @@ func ApplyStakenetParams(params *bitcoinNetParams, xsnParams *xsncoinNetParams) 
 	}
 	params.Checkpoints = checkPoints
 
-	params.rpcPort = xsnParams.rpcPort
+	params.RPCPort = xsnParams.RPCPort
 	params.CoinType = xsnParams.CoinType
 }
 
