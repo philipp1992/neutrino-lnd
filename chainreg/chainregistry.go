@@ -459,9 +459,6 @@ func NewChainControl(cfg *Config) (*ChainControl, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := cc.FeeEstimator.Start(); err != nil {
-			return nil, err
-		}
 
 		// Get our best block as a health check.
 		cc.HealthCheck = func() error {
@@ -736,24 +733,6 @@ func NewChainControl(cfg *Config) (*ChainControl, error) {
 			homeChainConfig.Node)
 	}
 
-	//if cc.wc == nil {
-	//	wc, err := btcwallet.New(*walletConfig)
-	//	if err != nil {
-	//		fmt.Printf("unable to create wallet controller: %v\n", err)
-	//		return nil, err
-	//	}
-	//
-    //            cc.msgSigner = wc
-    //            cc.signer = wc
-    //            cc.chainIO = wc
-    //            cc.wc = wc
-	//
-    //            keyRing := keychain.NewBtcWalletKeyRing(
-    //                    wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
-    //            )
-    //            cc.keyRing = keyRing
-    //    }
-
 	switch {
 	// If the fee URL isn't set, and the user is running mainnet, then
 	// we'll return an error to instruct them to set a proper fee
@@ -786,16 +765,23 @@ func NewChainControl(cfg *Config) (*ChainControl, error) {
 		return nil, err
 	}
 
-	wc, err := btcwallet.New(*walletConfig)
-	if err != nil {
-		fmt.Printf("unable to create wallet controller: %v\n", err)
-		return nil, err
-	}
+	if cc.Wc == nil {
+		wc, err := btcwallet.New(*walletConfig)
+		if err != nil {
+			fmt.Printf("unable to create wallet controller: %v\n", err)
+			return nil, err
+		}
 
-	cc.MsgSigner = wc
-	cc.Signer = wc
-	cc.ChainIO = wc
-	cc.Wc = wc
+		cc.MsgSigner = wc
+		cc.Signer = wc
+		cc.ChainIO = wc
+		cc.Wc = wc
+
+		keyRing := keychain.NewBtcWalletKeyRing(
+			wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
+		)
+		cc.KeyRing = keyRing
+	}
 
 	// Select the default channel constraints for the primary chain.
 	channelConstraints := DefaultBtcChannelConstraints
@@ -803,24 +789,20 @@ func NewChainControl(cfg *Config) (*ChainControl, error) {
 		channelConstraints = DefaultLtcChannelConstraints
 	}
 
-	keyRing := keychain.NewBtcWalletKeyRing(
-		wc.InternalWallet(), cfg.ActiveNetParams.CoinType,
-	)
-	cc.KeyRing = keyRing
-
 	// Create, and start the lnwallet, which handles the core payment
 	// channel logic, and exposes control via proxy state machines.
 	walletCfg := lnwallet.Config{
 		Database:           cfg.RemoteChanDB,
 		Notifier:           cc.ChainNotifier,
-		WalletController:   wc,
+		WalletController:   cc.Wc,
 		Signer:             cc.Signer,
 		FeeEstimator:       cc.FeeEstimator,
-		SecretKeyRing:      keyRing,
+		SecretKeyRing:      cc.KeyRing,
 		ChainIO:            cc.ChainIO,
 		DefaultConstraints: channelConstraints,
 		NetParams:          *cfg.ActiveNetParams.Params,
 	}
+
 	lnWallet, err := lnwallet.NewLightningWallet(walletCfg)
 	if err != nil {
 		fmt.Printf("unable to create wallet: %v\n", err)
