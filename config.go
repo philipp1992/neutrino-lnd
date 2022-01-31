@@ -182,11 +182,6 @@ var (
 	// estimatesmartfee RPC call.
 	defaultBitcoindEstimateMode = "CONSERVATIVE"
 	bitcoindEstimateModes       = [2]string{"ECONOMICAL", defaultBitcoindEstimateMode}
-
-//type dualFundingConfig struct {
-//	Active         bool               `long:"active" description:"If the dual channel funding should be active or not."`
-//}
-//
 	defaultSphinxDbName = "sphinxreplay.db"
 )
 
@@ -431,11 +426,13 @@ func DefaultConfig() Config {
 			BaseFee:       chainreg.DefaultBitcoinBaseFeeMSat,
 			FeeRate:       chainreg.DefaultBitcoinFeeRate,
 			TimeLockDelta: chainreg.DefaultXsncoinTimeLockDelta,
+			MaxLocalDelay: defaultMaxLocalCSVDelay,
 			Node:          "xsnd",
 		},
 		XsndMode: &lncfg.Bitcoind{
 			Dir:     defaultBitcoindDir,
 			RPCHost: defaultRPCHost,
+			EstimateMode: defaultBitcoindEstimateMode,
 		},
 		LightWalletMode: &lncfg.LightWallet{
 			Dir:              defaultBitcoindDir,
@@ -747,6 +744,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 	// don't are within the bounds of the normal chan size constraints.
 	switch {
 	case cfg.Bitcoin.Active:
+		MaxFundingAmount = funding.MaxBtcFundingAmount
 		if cfg.Autopilot.MinChannelSize < int64(funding.MinChanFundingSize) {
 			cfg.Autopilot.MinChannelSize = int64(funding.MinChanFundingSize)
 		}
@@ -755,6 +753,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 		}
 
 	case cfg.Litecoin.Active:
+		MaxFundingAmount = funding.MaxLtcFundingAmount
 		if cfg.Autopilot.MinChannelSize < int64(funding.MinLtcChanFundingSize) {
 			cfg.Autopilot.MinChannelSize = int64(funding.MinLtcChanFundingSize)
 		}
@@ -763,6 +762,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 		}
 
 	case cfg.Xsncoin.Active:
+		MaxFundingAmount = funding.MaxXsnFundingAmount
 		if cfg.Autopilot.MinChannelSize < int64(funding.MinXsnChanFundingSize) {
 			cfg.Autopilot.MinChannelSize = int64(funding.MinXsnChanFundingSize)
 		}
@@ -784,7 +784,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 		if cfg.ProtocolOptions.Wumbo() {
 			cfg.MaxChanSize = int64(funding.MaxBtcFundingAmountWumbo)
 		} else {
-			cfg.MaxChanSize = int64(funding.MaxBtcFundingAmount)
+			cfg.MaxChanSize = int64(MaxFundingAmount)
 		}
 	}
 
@@ -1034,7 +1034,6 @@ func ValidateConfig(cfg Config, usageMessage string,
 		// Finally we'll register the litecoin chain as our current
 		// primary chain.
 		cfg.registeredChains.RegisterPrimaryChain(chainreg.LitecoinChain)
-		MaxFundingAmount = funding.MaxLtcFundingAmount
 
 	case cfg.Bitcoin.Active:
 		// Multiple networks can't be selected simultaneously.  Count
@@ -1190,10 +1189,10 @@ func ValidateConfig(cfg Config, usageMessage string,
 			return nil, err
 		}
 
-		// The litecoin chain is the current active chain. However
+		// The xsncoin chain is the current active chain. However
 		// throughout the codebase we required chaincfg.Params. So as a
 		// temporary hack, we'll mutate the default net params for
-		// bitcoin with the litecoin specific information.
+		// bitcoin with the xsncoin specific information.
 		chainreg.ApplyStakenetParams(&cfg.ActiveNetParams, &xsnParams)
 
 		if cfg.Xsncoin.TimeLockDelta < minTimeLockDelta {
@@ -1245,7 +1244,6 @@ func ValidateConfig(cfg Config, usageMessage string,
 		// Finally we'll register the bitcoin chain as our current
 		// primary chain.
 		cfg.registeredChains.RegisterPrimaryChain(chainreg.XsncoinChain)
-		MaxFundingAmount = funding.MaxXsnFundingAmount
 	}
 
 	// Ensure that the user didn't attempt to specify negative values for

@@ -11,6 +11,7 @@ import (
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/queue"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -657,7 +658,6 @@ func (b *LightWalletNotifier) notifyBlockEpochClient(epochClient *blockEpochRegi
 func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	pkScript []byte, heightHint uint32) (*chainntnfs.SpendEvent, error) {
 
-
 	ntfn, err := b.txNotifier.RegisterSpend(outpoint, pkScript, heightHint)
 	if err != nil {
 		return nil, err
@@ -683,26 +683,8 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 			return nil, err
 		}
 	}
-	// If the txNotifier didn't return any details to perform a historical
-	// scan of the chain, then we can return early as there's nothing left
-	// for us to do.
+
 	if ntfn.HistoricalDispatch == nil {
-		return ntfn.Event, nil
-	}
-
-	// Otherwise, we'll need to dispatch a historical rescan to determine if
-	// the outpoint was already spent at a previous height.
-	//
-	// We'll short-circuit the path when dispatching the spend of a script,
-	// rather than an outpoint, as there aren't any additional checks we can
-	// make for scripts.
-	if ntfn.HistoricalDispatch.OutPoint == chainntnfs.ZeroOutPoint {
-		select {
-		case b.notificationRegistry <- ntfn.HistoricalDispatch:
-		case <-b.quit:
-			return nil, chainntnfs.ErrChainNotifierShuttingDown
-		}
-
 		return ntfn.Event, nil
 	}
 
@@ -721,23 +703,43 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 	if txOut != nil {
 		// We'll let the txNotifier know the outpoint is still unspent
 		// in order to begin updating its spend hint.
-		err := b.txNotifier.UpdateSpendDetails(ntfn.HistoricalDispatch.SpendRequest, nil)
+
+		err = b.txNotifier.UpdateSpendDetails(ntfn.HistoricalDispatch.SpendRequest, nil)
+		if err != nil {
+			return nil, err
+		}
+
+		return ntfn.Event, nil
+	} else {
+		tx, height, err := b.chainConn.GetSpendingDetails(&outpoint.Hash, outpoint.Index)
+		if err != nil && strings.Contains(err.Error(), "output_unspent") {
+			err = b.txNotifier.UpdateSpendDetails(ntfn.HistoricalDispatch.SpendRequest, nil)
+			if err != nil {
+				return nil, err
+			}
+
+			return ntfn.Event, nil
+		}
+
+		if err != nil && !strings.Contains(err.Error(), "output_unspent") {
+			return nil, err
+		}
+
+		details := &chainntnfs.SpendDetail{
+			SpentOutPoint:     outpoint,
+			SpenderTxHash:     tx.Hash(),
+			SpendingTx:        tx.MsgTx(),
+			SpenderInputIndex: outpoint.Index,
+			SpendingHeight:    height,
+		}
+
+		err = b.txNotifier.UpdateSpendDetails(ntfn.HistoricalDispatch.SpendRequest, details)
 		if err != nil {
 			return nil, err
 		}
 
 		return ntfn.Event, nil
 	}
-
-	// Now that we've determined the starting point of our rescan, we can
-	// dispatch it and return.
-	select {
-	case b.notificationRegistry <- ntfn.HistoricalDispatch:
-	case <-b.quit:
-		return nil, chainntnfs.ErrChainNotifierShuttingDown
-	}
-
-	return ntfn.Event, nil
 }
 
 // historicalSpendDetails attempts to manually scan the chain within the given

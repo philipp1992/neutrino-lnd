@@ -476,9 +476,9 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		peerConnectedListeners:    make(map[string][]chan<- lnpeer.Peer),
 		peerDisconnectedListeners: make(map[string][]chan<- struct{}),
 
-		featureMgr: featureMgr,
-		pendingChannelOpened: 	make(chan *channeldb.OpenChannel),
-		quit:       			make(chan struct{}),
+		featureMgr:           featureMgr,
+		pendingChannelOpened: make(chan *channeldb.OpenChannel),
+		quit:                 make(chan struct{}),
 	}
 
 	s.witnessBeacon = &preimageBeacon{
@@ -816,7 +816,7 @@ func newServer(cfg *Config, listenAddrs []net.Addr,
 		ProofMatureDelta:        0,
 		TrickleDelay:            time.Millisecond * time.Duration(cfg.TrickleDelay),
 		RetransmitTicker:        ticker.New(time.Minute * 5),
-		RebroadcastInterval:     time.Minute * 14,
+		RebroadcastInterval:     time.Minute * 4,
 		WaitingProofStore:       waitingProofStore,
 		MessageStore:            gossipMessageStore,
 		AnnSigner:               s.nodeSigner,

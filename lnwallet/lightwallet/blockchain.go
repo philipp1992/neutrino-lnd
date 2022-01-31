@@ -16,6 +16,21 @@ func (lw *LightWalletController) GetBestBlock() (*chainhash.Hash, int32, error) 
 	return &blockStamp.Hash, blockStamp.Height, nil
 }
 
+func (lw *LightWalletController) OutputSpent(op *wire.OutPoint) (bool, error) {
+
+	utxo, err := lw.client.GetUnspentOutput(&op.Hash, op.Index)
+	if err != nil {
+		return false, err
+	}
+
+	// if utxo empty, output is spent
+	if utxo == nil {
+		return true, nil
+	}
+
+	return false, nil
+}
+
 func (lw *LightWalletController) GetUtxo(op *wire.OutPoint, pkScript []byte, heightHint uint32,
 	cancel <-chan struct{}) (*wire.TxOut, error) {
 

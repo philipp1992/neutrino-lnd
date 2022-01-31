@@ -193,6 +193,10 @@ func (b *BtcWallet) FreeCache() error {
 	return nil
 }
 
+func (b *BtcWallet) OutputSpent(op *wire.OutPoint) (bool, error) {
+	return false, nil
+}
+
 // A compile time check to ensure that BtcWallet implements the BlockChainIO
 // interface.
 var _ lnwallet.WalletController = (*BtcWallet)(nil)

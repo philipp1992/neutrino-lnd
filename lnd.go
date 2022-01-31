@@ -724,6 +724,7 @@ func Main(cfg *Config, lisCfg ListenerCfg, interceptor signal.Interceptor) error
 
 	// Set up the core server which will listen for incoming peer
 	// connections.
+
 	server, err := newServer(
 		cfg, cfg.Listeners, localChanDB, remoteChanDB, towerClientDB,
 		activeChainControl, &idKeyDesc, walletInitParams.ChansToRestore,

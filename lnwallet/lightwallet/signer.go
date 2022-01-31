@@ -211,6 +211,6 @@ func (lw *LightWalletController) SignMessage(pubKey *btcec.PublicKey, msg []byte
 }
 
 
-//// A compile time check to ensure that BtcWallet implements the MessageSigner
-//// interface.
+// A compile time check to ensure that BtcWallet implements the MessageSigner
+// interface.
 //var _ lnwallet.MessageSigner = (*LightWalletController)(nil)

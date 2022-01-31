@@ -423,6 +423,8 @@ type BlockChainIO interface {
 	GetUtxo(op *wire.OutPoint, pkScript []byte, heightHint uint32,
 		cancel <-chan struct{}) (*wire.TxOut, error)
 
+	OutputSpent(op *wire.OutPoint) (bool, error)
+
 	// GetBlockHash returns the hash of the block in the best blockchain
 	// at the given height.
 	GetBlockHash(blockHeight int64) (*chainhash.Hash, error)

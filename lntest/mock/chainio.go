@@ -47,3 +47,7 @@ func (b *ChainIO) GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgT
 func (b *ChainIO) LoadCache(startHeight uint32) (bool, error) {
 	return false, nil
 }
+
+func (b *ChainIO) OutputSpent(op *wire.OutPoint) (bool, error) {
+	return false, nil
+}

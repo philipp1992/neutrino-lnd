@@ -248,6 +248,10 @@ func (m *mockChainIO) FreeCache() error {
 	return nil
 }
 
+func (m *mockChainIO) OutputSpent(op *wire.OutPoint) (bool, error) {
+	return false, nil
+}
+
 // mockWalletController is used by the LightningWallet, and let us mock the
 // interaction with the bitcoin network.
 type mockWalletController struct {

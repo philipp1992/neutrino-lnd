@@ -3,6 +3,7 @@ package routing
 import (
 	"bytes"
 	"fmt"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"runtime"
 	"sync"
 	"sync/atomic"
@@ -510,6 +511,10 @@ func (r *ChannelRouter) Start() error {
 			log.Info("Initial zombie prune starting")
 			if err := r.pruneZombieChans(); err != nil {
 				log.Errorf("Unable to prune zombies: %v", err)
+			}
+
+			if err := r.filterOwnChannels(bestHash, bestHeight); err != nil {
+				log.Errorf("Unable to filter own channels: %v", err)
 			}
 		})
 	} else {
@@ -2327,8 +2332,8 @@ func (r *ChannelRouter) ForAllOutgoingChannels(cb func(*channeldb.ChannelEdgeInf
 
 	return r.selfNode.ForEachChannel(nil, func(_ kvdb.RTx, c *channeldb.ChannelEdgeInfo,
 		e, _ *channeldb.ChannelEdgePolicy) error {
-
 		if e == nil {
+			log.Debugf("it has no policy ", c.ChannelPoint.String())
 			return fmt.Errorf("channel from self node has no policy")
 		}
 
@@ -2666,4 +2671,50 @@ func (r *ChannelRouter) BuildRoute(amt *lnwire.MilliSatoshi,
 			paymentAddr: payAddr,
 		},
 	)
+}
+
+func (r *ChannelRouter) filterOwnChannels(bestHash *chainhash.Hash, bestHeight int32) error {
+
+	// First, we'll collect the set of outbound edges from the target
+	// source node.
+	var localChans []*channeldb.ChannelEdgeInfo
+	err := r.selfNode.ForEachChannel(nil, func(tx kvdb.RTx,
+		edgeInfo *channeldb.ChannelEdgeInfo,
+		_, _ *channeldb.ChannelEdgePolicy) error {
+
+		localChans = append(localChans, edgeInfo)
+		return nil
+	})
+	if err != nil {
+		return err
+	}
+
+	var spentOutputs []*wire.OutPoint
+	for _, localChan := range localChans {
+		// check if output is spent
+		log.Debugf("checking own channel %v for spentness ", localChan.ChannelPoint.Hash.String())
+
+		spent, err := r.cfg.Chain.OutputSpent(&localChan.ChannelPoint)
+		if err != nil {
+			log.Errorf("Error on get output spent ", err)
+		}
+
+		// if spent prune it from graph
+		if spent {
+			log.Debugf("channel %v is already spent ", localChan.ChannelPoint.Hash.String())
+			spentOutputs = append(spentOutputs,
+				&localChan.ChannelPoint)
+		}
+	}
+
+	closedChans, err := r.cfg.Graph.PruneGraph(
+		spentOutputs, bestHash, uint32(bestHeight),
+	)
+	if err != nil {
+		return err
+	}
+
+	log.Infof("Pruning own channels complete: %v channels were closed", len(closedChans))
+
+	return nil
 }

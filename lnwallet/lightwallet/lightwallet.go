@@ -174,7 +174,7 @@ func (lw *LightWalletController) UnlockOutpoint(o wire.OutPoint) {
 func (lw *LightWalletController) PublishTransaction(tx *wire.MsgTx, label string) error {
 	txid, err := lw.client.SendRawTransaction(tx, true)
 	if err != nil {
-		if strings.Contains(err.Error(), "Missing inputs") {
+		if strings.Contains(err.Error(), "missing inputs") {
 			return lnwallet.ErrDoubleSpend
 		}
 		return err

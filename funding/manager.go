@@ -93,7 +93,7 @@ const (
 	// MaxLtcFundingAmount is a soft-limit of the maximum channel size
 	// currently accepted on the Litecoin chain within the Lightning
 	// Protocol.
-        MaxLtcFundingAmount = MaxBtcFundingAmount * chainreg.BtcToLtcConversionRate
+	MaxLtcFundingAmount = MaxBtcFundingAmount * chainreg.BtcToLtcConversionRate
 	MaxXsnFundingAmount = MaxBtcFundingAmount * chainreg.BtcToXsnConversionRate
 
 	// TODO(roasbeef): tune
@@ -3187,12 +3187,8 @@ func (f *Manager) handleInitFundingMsg(msg *InitFundingMsg) {
 	// commitment transaction confirmed by the next few blocks (conf target
 	// of 3). We target the near blocks here to ensure that we'll be able
 	// to execute a timely unilateral channel closure if needed.
-	commitFeePerKw, err := f.cfg.FeeEstimator.EstimateFeePerKW(3)
-	if err != nil {
-		msg.Err <- err
-		return
-	}
 
+	commitFeePerKw := msg.FundingFeePerKw
 	// For anchor channels cap the initial commit fee rate at our defined
 	// maximum.
 	if commitType == lnwallet.CommitmentTypeAnchorsZeroFeeHtlcTx &&
