@@ -182,7 +182,7 @@ var (
 	// estimatesmartfee RPC call.
 	defaultBitcoindEstimateMode = "CONSERVATIVE"
 	bitcoindEstimateModes       = [2]string{"ECONOMICAL", defaultBitcoindEstimateMode}
-	defaultSphinxDbName = "sphinxreplay.db"
+	defaultSphinxDbName         = "sphinxreplay.db"
 )
 
 // Config defines the configuration options for lnd.
@@ -253,18 +253,18 @@ type Config struct {
 
 	FeeURL string `long:"feeurl" description:"Optional URL for external fee estimation. If no URL is specified, the method for fee estimation will depend on the chosen backend and network. Must be set for neutrino on mainnet."`
 
-	Bitcoin      	*lncfg.Chain    	`group:"Bitcoin" namespace:"bitcoin"`
-	BtcdMode     	*lncfg.Btcd     	`group:"btcd" namespace:"btcd"`
-	BitcoindMode 	*lncfg.Bitcoind 	`group:"bitcoind" namespace:"bitcoind"`
-	NeutrinoMode 	*lncfg.Neutrino 	`group:"neutrino" namespace:"neutrino"`
+	Bitcoin      *lncfg.Chain    `group:"Bitcoin" namespace:"bitcoin"`
+	BtcdMode     *lncfg.Btcd     `group:"btcd" namespace:"btcd"`
+	BitcoindMode *lncfg.Bitcoind `group:"bitcoind" namespace:"bitcoind"`
+	NeutrinoMode *lncfg.Neutrino `group:"neutrino" namespace:"neutrino"`
 
-	Litecoin      	*lncfg.Chain    	`group:"Litecoin" namespace:"litecoin"`
-	LtcdMode      	*lncfg.Btcd     	`group:"ltcd" namespace:"ltcd"`
-	LitecoindMode 	*lncfg.Bitcoind 	`group:"litecoind" namespace:"litecoind"`
+	Litecoin      *lncfg.Chain    `group:"Litecoin" namespace:"litecoin"`
+	LtcdMode      *lncfg.Btcd     `group:"ltcd" namespace:"ltcd"`
+	LitecoindMode *lncfg.Bitcoind `group:"litecoind" namespace:"litecoind"`
 
-	Xsncoin	      	*lncfg.Chain    	`group:"Xsncoin" namespace:"xsncoin"`
-	XsndMode      	*lncfg.Bitcoind 	`group:"xsnd" namespace:"xsnd"`
-	LightWalletMode *lncfg.LightWallet 	`group:"lightwallet" namespace:"lightwallet"`
+	Xsncoin         *lncfg.Chain       `group:"Xsncoin" namespace:"xsncoin"`
+	XsndMode        *lncfg.Bitcoind    `group:"xsnd" namespace:"xsnd"`
+	LightWalletMode *lncfg.LightWallet `group:"lightwallet" namespace:"lightwallet"`
 
 	BlockCacheSize uint64 `long:"blockcachesize" description:"The maximum capacity of the block cache"`
 
@@ -430,8 +430,8 @@ func DefaultConfig() Config {
 			Node:          "xsnd",
 		},
 		XsndMode: &lncfg.Bitcoind{
-			Dir:     defaultBitcoindDir,
-			RPCHost: defaultRPCHost,
+			Dir:          defaultBitcoindDir,
+			RPCHost:      defaultRPCHost,
 			EstimateMode: defaultBitcoindEstimateMode,
 		},
 		LightWalletMode: &lncfg.LightWallet{
@@ -942,19 +942,23 @@ func ValidateConfig(cfg Config, usageMessage string,
 		// while we're at it.
 		numNets := 0
 		var ltcParams chainreg.LitecoinNetParams
-		if cfg.Litecoin.MainNet && cfg.Litecoin.Node == "lightwallet"{
+		if cfg.Litecoin.MainNet && cfg.Litecoin.Node == "lightwallet" {
 			numNets++
 			ltcParams = chainreg.LtcLightWalletParams
 		}
-		if cfg.Litecoin.MainNet && cfg.Litecoin.Node != "lightwallet"{
+		if cfg.Litecoin.MainNet && cfg.Litecoin.Node != "lightwallet" {
 			numNets++
 			ltcParams = chainreg.LitecoinMainNetParams
 		}
-		if cfg.Litecoin.TestNet3 {
+		if cfg.Litecoin.TestNet3 && cfg.Litecoin.Node == "lightwallet" {
+			numNets++
+			ltcParams = chainreg.LtcLightWalletTestnetParams
+		}
+		if cfg.Litecoin.TestNet3 && cfg.Litecoin.Node != "lightwallet" {
 			numNets++
 			ltcParams = chainreg.LitecoinTestNetParams
 		}
-		if cfg.Litecoin.RegTest && cfg.Litecoin.Node != "lightwallet"{
+		if cfg.Litecoin.RegTest && cfg.Litecoin.Node != "lightwallet" {
 			numNets++
 			ltcParams = chainreg.LitecoinRegTestNetParams
 		}
@@ -1008,8 +1012,8 @@ func ValidateConfig(cfg Config, usageMessage string,
 				return nil, err
 			}
 		case "lightwallet":
-			if !cfg.Litecoin.MainNet && !cfg.Litecoin.RegTest {
-				return nil, fmt.Errorf("%s: only litecoin mainnet "+
+			if !cfg.Litecoin.MainNet && !cfg.Litecoin.TestNet3 {
+				return nil, fmt.Errorf("%s: only litecoin mainnet and testnet "+
 					"regtest currently supports lightWallet mode", funcName)
 			}
 
@@ -1044,11 +1048,15 @@ func ValidateConfig(cfg Config, usageMessage string,
 			numNets++
 			cfg.ActiveNetParams = chainreg.BtcLightWalletParams
 		}
-		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node != "lightwallet"{
+		if cfg.Bitcoin.MainNet && cfg.Bitcoin.Node != "lightwallet" {
 			numNets++
 			cfg.ActiveNetParams = chainreg.BitcoinMainNetParams
 		}
-		if cfg.Bitcoin.TestNet3 {
+		if cfg.Bitcoin.TestNet3 && cfg.Bitcoin.Node == "lightwallet" {
+			numNets++
+			cfg.ActiveNetParams = chainreg.BtcLightWalletTestnetParams
+		}
+		if cfg.Bitcoin.TestNet3 && cfg.Bitcoin.Node != "lightwallet" {
 			numNets++
 			cfg.ActiveNetParams = chainreg.BitcoinTestNetParams
 		}
@@ -1056,7 +1064,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			numNets++
 			cfg.ActiveNetParams = chainreg.BtcLightWalletRegtestParams
 		}
-		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node != "lightwallet"{
+		if cfg.Bitcoin.RegTest && cfg.Bitcoin.Node != "lightwallet" {
 			numNets++
 			cfg.ActiveNetParams = chainreg.BitcoinRegTestNetParams
 		}
@@ -1117,8 +1125,8 @@ func ValidateConfig(cfg Config, usageMessage string,
 			// No need to get RPC parameters.
 
 		case "lightwallet":
-			if !cfg.Bitcoin.MainNet && !cfg.Bitcoin.RegTest {
-				return nil, fmt.Errorf("%s: only bitcoin mainnet "+
+			if !cfg.Bitcoin.MainNet && !cfg.Bitcoin.TestNet3 {
+				return nil, fmt.Errorf("%s: only bitcoin mainnet and testnet "+
 					"currently supports lightWallet mode", funcName)
 			}
 
@@ -1154,7 +1162,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			numNets++
 			xsnParams = chainreg.XsnLightWalletParams
 		}
-		if cfg.Xsncoin.MainNet && cfg.Xsncoin.Node != "lightwallet"{
+		if cfg.Xsncoin.MainNet && cfg.Xsncoin.Node != "lightwallet" {
 			numNets++
 			xsnParams = chainreg.XsnMainNetParams
 		}
@@ -1166,7 +1174,7 @@ func ValidateConfig(cfg Config, usageMessage string,
 			numNets++
 			xsnParams = chainreg.XsnLightWalletRegtestParams
 		}
-		if cfg.Xsncoin.RegTest && cfg.Xsncoin.Node != "lightwallet"{
+		if cfg.Xsncoin.RegTest && cfg.Xsncoin.Node != "lightwallet" {
 			numNets++
 			xsnParams = chainreg.XsnRegTestNetParams
 		}
@@ -1217,8 +1225,8 @@ func ValidateConfig(cfg Config, usageMessage string,
 			}
 
 		case "lightwallet":
-			if !cfg.Xsncoin.MainNet && !cfg.Xsncoin.RegTest {
-				return nil, fmt.Errorf("%s: only xsncoin mainnet and regtest "+
+			if !cfg.Xsncoin.MainNet && !cfg.Xsncoin.TestNet3 {
+				return nil, fmt.Errorf("%s: only xsncoin mainnet and testnet "+
 					"currently supports lightWallet mode", funcName)
 			}
 
