@@ -1873,18 +1873,18 @@ func (r *rpcServer) parseOpenChannelReq(in *lnrpc.OpenChannelRequest,
 		return nil, fmt.Errorf("cannot open channel to self")
 	}
 
-//<<<<<<< HEAD RostyslavAntonyshyn
-//	rpcsLog.Debugf("[openchannel]: using fee of %v sat/byte for funding tx",
-//		int64(in.SatPerByte))
-//
-//	// Based on the passed fee related parameters, we'll determine an
-//	// appropriate fee rate for the funding transaction.
-//	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
-//	feeRate, err := sweep.DetermineFeePerKw(
-//		r.server.cc.feeEstimator, sweep.FeePreference{
-//			ConfTarget: uint32(in.TargetConf),
-//			FeeRate:    satPerKw,
-//		},
+	//<<<<<<< HEAD RostyslavAntonyshyn
+	//	rpcsLog.Debugf("[openchannel]: using fee of %v sat/byte for funding tx",
+	//		int64(in.SatPerByte))
+	//
+	//	// Based on the passed fee related parameters, we'll determine an
+	//	// appropriate fee rate for the funding transaction.
+	//	satPerKw := chainfee.SatPerKVByte(in.SatPerByte * 1000).FeePerKWeight()
+	//	feeRate, err := sweep.DetermineFeePerKw(
+	//		r.server.cc.feeEstimator, sweep.FeePreference{
+	//			ConfTarget: uint32(in.TargetConf),
+	//			FeeRate:    satPerKw,
+	//		},
 
 	// Calculate an appropriate fee rate for this transaction.
 	feeRate, err := calculateFeeRate(
@@ -4940,11 +4940,11 @@ func (r *rpcServer) SubscribeInvoices(req *lnrpc.InvoiceSubscription,
 				newInvoice, r.cfg.ActiveNetParams.Params,
 			)
 			if err != nil {
-                               return err
+				return err
 			}
 
 			if err := updateStream.Send(rpcInvoice); err != nil {
-                               return err
+				return err
 			}
 
 		case settledInvoice := <-invoiceClient.SettledInvoices:
@@ -4952,11 +4952,11 @@ func (r *rpcServer) SubscribeInvoices(req *lnrpc.InvoiceSubscription,
 				settledInvoice, r.cfg.ActiveNetParams.Params,
 			)
 			if err != nil {
-                               return err
+				return err
 			}
 
 			if err := updateStream.Send(rpcInvoice); err != nil {
-                               return err
+				return err
 			}
 
 		case <-r.quit:
