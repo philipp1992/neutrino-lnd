@@ -15,7 +15,7 @@ const (
 	// feeServiceTarget is the confirmation target for which a fee estimate
 	// is returned. Requests for higher confirmation targets will fall back
 	// to this.
-	feeServiceTarget = 2
+	feeServiceTarget = 1
 )
 
 // feeService runs a web service that provides fee estimation information.
@@ -37,7 +37,7 @@ type feeEstimates struct {
 
 // startFeeService spins up a go-routine to serve fee estimates.
 func startFeeService() *feeService {
-	port := nextAvailablePort()
+	port := NextAvailablePort()
 	f := feeService{
 		url: fmt.Sprintf("http://localhost:%v/fee-estimates.json", port),
 	}
@@ -46,11 +46,13 @@ func startFeeService() *feeService {
 	f.Fees = map[uint32]uint32{feeServiceTarget: 50000}
 
 	listenAddr := fmt.Sprintf(":%v", port)
-	f.srv = &http.Server{
-		Addr: listenAddr,
-	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/fee-estimates.json", f.handleRequest)
 
-	http.HandleFunc("/fee-estimates.json", f.handleRequest)
+	f.srv = &http.Server{
+		Addr:    listenAddr,
+		Handler: mux,
+	}
 
 	f.wg.Add(1)
 	go func() {
@@ -99,4 +101,12 @@ func (f *feeService) setFee(fee chainfee.SatPerKWeight) {
 	defer f.lock.Unlock()
 
 	f.Fees[feeServiceTarget] = uint32(fee.FeePerKVByte())
+}
+
+// setFeeWithConf sets a fee for the given confirmation target.
+func (f *feeService) setFeeWithConf(fee chainfee.SatPerKWeight, conf uint32) {
+	f.lock.Lock()
+	defer f.lock.Unlock()
+
+	f.Fees[conf] = uint32(fee.FeePerKVByte())
 }

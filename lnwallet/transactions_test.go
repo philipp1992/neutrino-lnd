@@ -542,16 +542,19 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 		Privkeys: []*btcec.PrivateKey{aliceKeyPriv},
 	}
 
+	// Calculate the dust limit we'll use for the test.
+	dustLimit := DustLimitForSize(input.UnknownWitnessSize)
+
 	aliceChanCfg := &channeldb.ChannelConfig{
 		ChannelConstraints: channeldb.ChannelConstraints{
-			DustLimit: DefaultDustLimit(),
+			DustLimit: dustLimit,
 			CsvDelay:  csvTimeout,
 		},
 	}
 
 	bobChanCfg := &channeldb.ChannelConfig{
 		ChannelConstraints: channeldb.ChannelConstraints{
-			DustLimit: DefaultDustLimit(),
+			DustLimit: dustLimit,
 			CsvDelay:  csvTimeout,
 		},
 	}
@@ -570,7 +573,7 @@ func testSpendValidation(t *testing.T, tweakless bool) {
 	}
 	commitmentTx, err := CreateCommitTx(
 		channelType, *fakeFundingTxIn, keyRing, aliceChanCfg,
-		bobChanCfg, channelBalance, channelBalance, 0,
+		bobChanCfg, channelBalance, channelBalance, 0, true, 0,
 	)
 	if err != nil {
 		t.Fatalf("unable to create commitment transaction: %v", nil)
@@ -886,7 +889,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 	remoteCommitTx, localCommitTx, err := CreateCommitmentTxns(
 		remoteBalance, localBalance-commitFee,
 		&remoteCfg, &localCfg, remoteCommitPoint,
-		localCommitPoint, *fundingTxIn, chanType,
+		localCommitPoint, *fundingTxIn, chanType, true, 0,
 	)
 	require.NoError(t, err)
 
@@ -937,7 +940,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		RevocationStore:         shachain.NewRevocationStore(),
 		LocalCommitment:         remoteCommit,
 		RemoteCommitment:        remoteCommit,
-		Db:                      dbRemote,
+		Db:                      dbRemote.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 		FundingTxn:              tc.fundingTx.MsgTx(),
 	}
@@ -955,7 +958,7 @@ func createTestChannelsForVectors(tc *testContext, chanType channeldb.ChannelTyp
 		RevocationStore:         shachain.NewRevocationStore(),
 		LocalCommitment:         localCommit,
 		RemoteCommitment:        localCommit,
-		Db:                      dbLocal,
+		Db:                      dbLocal.ChannelStateDB(),
 		Packager:                channeldb.NewChannelPackager(shortChanID),
 		FundingTxn:              tc.fundingTx.MsgTx(),
 	}

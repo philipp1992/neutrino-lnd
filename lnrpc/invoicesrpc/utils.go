@@ -2,7 +2,6 @@ package invoicesrpc
 
 import (
 	"encoding/hex"
-	"errors"
 	"fmt"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -24,7 +23,7 @@ func decodePayReq(invoice *channeldb.Invoice,
 	if paymentRequest == "" {
 		preimage := invoice.Terms.PaymentPreimage
 		if preimage == nil {
-			return nil, errors.New("cannot reconstruct pay req")
+			return &zpay32.Invoice{}, nil
 		}
 		hash := [32]byte(preimage.Hash())
 		return &zpay32.Invoice{
@@ -49,6 +48,11 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 	decoded, err := decodePayReq(invoice, activeNetParams)
 	if err != nil {
 		return nil, err
+	}
+
+	var rHash []byte
+	if decoded.PaymentHash != nil {
+		rHash = decoded.PaymentHash[:]
 	}
 
 	var descHash []byte
@@ -129,7 +133,7 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 			rpcHtlc.Amp = &lnrpc.AMP{
 				RootShare:  rootShare[:],
 				SetId:      setID[:],
-				ChildIndex: uint32(htlc.AMP.Record.ChildIndex()),
+				ChildIndex: htlc.AMP.Record.ChildIndex(),
 				Hash:       htlc.AMP.Hash[:],
 				Preimage:   preimage,
 			}
@@ -143,9 +147,11 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		rpcHtlcs = append(rpcHtlcs, &rpcHtlc)
 	}
 
+	isAmp := invoice.Terms.Features.HasFeature(lnwire.AMPOptional)
+
 	rpcInvoice := &lnrpc.Invoice{
-		Memo:            string(invoice.Memo[:]),
-		RHash:           decoded.PaymentHash[:],
+		Memo:            string(invoice.Memo),
+		RHash:           rHash,
 		Value:           int64(satAmt),
 		ValueMsat:       int64(invoice.Terms.Value),
 		CreationDate:    invoice.CreationDate.Unix(),
@@ -166,8 +172,42 @@ func CreateRPCInvoice(invoice *channeldb.Invoice,
 		State:           state,
 		Htlcs:           rpcHtlcs,
 		Features:        CreateRPCFeatures(invoice.Terms.Features),
-		IsKeysend:       len(invoice.PaymentRequest) == 0,
+		IsKeysend:       len(invoice.PaymentRequest) == 0 && !isAmp,
 		PaymentAddr:     invoice.Terms.PaymentAddr[:],
+		IsAmp:           isAmp,
+	}
+
+	rpcInvoice.AmpInvoiceState = make(map[string]*lnrpc.AMPInvoiceState)
+	for setID, ampState := range invoice.AMPState {
+
+		setIDStr := hex.EncodeToString(setID[:])
+
+		var state lnrpc.InvoiceHTLCState
+		switch ampState.State {
+		case channeldb.HtlcStateAccepted:
+			state = lnrpc.InvoiceHTLCState_ACCEPTED
+		case channeldb.HtlcStateSettled:
+			state = lnrpc.InvoiceHTLCState_SETTLED
+		case channeldb.HtlcStateCanceled:
+			state = lnrpc.InvoiceHTLCState_CANCELED
+		default:
+			return nil, fmt.Errorf("unknown state %v", ampState.State)
+		}
+
+		rpcInvoice.AmpInvoiceState[setIDStr] = &lnrpc.AMPInvoiceState{
+			State:       state,
+			SettleIndex: ampState.SettleIndex,
+			SettleTime:  ampState.SettleDate.Unix(),
+			AmtPaidMsat: int64(ampState.AmtPaid),
+		}
+
+		// If at least one of the present HTLC sets show up as being
+		// settled, then we'll mark the invoice itself as being
+		// settled.
+		if ampState.State == channeldb.HtlcStateSettled {
+			rpcInvoice.Settled = true // nolint:staticcheck
+			rpcInvoice.State = lnrpc.Invoice_SETTLED
+		}
 	}
 
 	if preimage != nil {

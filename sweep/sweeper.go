@@ -15,6 +15,7 @@ import (
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lnwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
@@ -427,7 +428,7 @@ func (s *UtxoSweeper) Stop() error {
 		return nil
 	}
 
-	log.Debugf("Sweeper shutting down")
+	log.Info("Sweeper shutting down")
 
 	close(s.quit)
 	s.wg.Wait()
@@ -459,9 +460,11 @@ func (s *UtxoSweeper) SweepInput(input input.Input,
 		return nil, err
 	}
 
+	absoluteTimeLock, _ := input.RequiredLockTime()
 	log.Infof("Sweep request received: out_point=%v, witness_type=%v, "+
-		"time_lock=%v, amount=%v, params=(%v)",
-		input.OutPoint(), input.WitnessType(), input.BlocksToMaturity(),
+		"relative_time_lock=%v, absolute_time_lock=%v, amount=%v, "+
+		"params=(%v)", input.OutPoint(), input.WitnessType(),
+		input.BlocksToMaturity(), absoluteTimeLock,
 		btcutil.Amount(input.SignDesc().Output.Value), params)
 
 	sweeperInput := &sweepInputMessage{
@@ -534,6 +537,17 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch) {
 				log.Debugf("Already pending input %v received",
 					outpoint)
 
+				// Before updating the input details, check if
+				// an exclusive group was set, and if so, assume
+				// this input as finalized and remove all other
+				// inputs belonging to the same exclusive group.
+				var prevExclGroup *uint64
+				if pendInput.params.ExclusiveGroup != nil &&
+					input.params.ExclusiveGroup == nil {
+					prevExclGroup = new(uint64)
+					*prevExclGroup = *pendInput.params.ExclusiveGroup
+				}
+
 				// Update input details and sweep parameters.
 				// The re-offered input details may contain a
 				// change to the unconfirmed parent tx info.
@@ -545,6 +559,11 @@ func (s *UtxoSweeper) collector(blockEpochs <-chan *chainntnfs.BlockEpoch) {
 				pendInput.listeners = append(
 					pendInput.listeners, input.resultChan,
 				)
+
+				if prevExclGroup != nil {
+					s.removeExclusiveGroup(*prevExclGroup)
+				}
+
 				continue
 			}
 
@@ -1150,7 +1169,7 @@ func (s *UtxoSweeper) getInputLists(cluster inputCluster,
 	if len(retryInputs) > 0 {
 		var err error
 		allSets, err = generateInputPartitionings(
-			append(retryInputs, newInputs...), s.relayFeeRate,
+			append(retryInputs, newInputs...),
 			cluster.sweepFeeRate, s.cfg.MaxInputsPerTx,
 			s.cfg.Wallet,
 		)
@@ -1161,8 +1180,8 @@ func (s *UtxoSweeper) getInputLists(cluster inputCluster,
 
 	// Create sets for just the new inputs.
 	newSets, err := generateInputPartitionings(
-		newInputs, s.relayFeeRate, cluster.sweepFeeRate,
-		s.cfg.MaxInputsPerTx, s.cfg.Wallet,
+		newInputs, cluster.sweepFeeRate, s.cfg.MaxInputsPerTx,
+		s.cfg.Wallet,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("input partitionings: %v", err)
@@ -1193,7 +1212,7 @@ func (s *UtxoSweeper) sweep(inputs inputSet, feeRate chainfee.SatPerKWeight,
 	// Create sweep tx.
 	tx, err := createSweepTx(
 		inputs, nil, s.currentOutputScript, uint32(currentHeight),
-		feeRate, dustLimit(s.relayFeeRate), s.cfg.Signer,
+		feeRate, s.cfg.Signer,
 	)
 	if err != nil {
 		return fmt.Errorf("create sweep tx: %v", err)
@@ -1219,7 +1238,9 @@ func (s *UtxoSweeper) sweep(inputs inputSet, feeRate chainfee.SatPerKWeight,
 		}),
 	)
 
-	err = s.cfg.Wallet.PublishTransaction(tx, "")
+	err = s.cfg.Wallet.PublishTransaction(
+		tx, labels.MakeLabel(labels.LabelTypeSweepTransaction, nil),
+	)
 
 	// In case of an unexpected error, don't try to recover.
 	if err != nil && err != lnwallet.ErrDoubleSpend {
@@ -1488,7 +1509,7 @@ func (s *UtxoSweeper) CreateSweepTx(inputs []input.Input, feePref FeePreference,
 
 	return createSweepTx(
 		inputs, nil, pkScript, currentBlockHeight, feePerKw,
-		dustLimit(s.relayFeeRate), s.cfg.Signer,
+		s.cfg.Signer,
 	)
 }
 

@@ -1,3 +1,4 @@
+//go:build autopilotrpc
 // +build autopilotrpc
 
 package autopilotrpc
@@ -5,11 +6,10 @@ package autopilotrpc
 import (
 	"context"
 	"encoding/hex"
-	"fmt"
 	"sync/atomic"
 
 	"github.com/btcsuite/btcd/btcec"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/autopilot"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"google.golang.org/grpc"
@@ -49,13 +49,6 @@ var (
 			Entity: "offchain",
 			Action: "write",
 		}},
-		"/autopilotrpc.Autopilot/RestartWNewConstraints": {{
-			Entity: "onchain",
-			Action: "write",
-		}, {
-			Entity: "offchain",
-			Action: "write",
-		}},
 	}
 )
 
@@ -72,6 +65,11 @@ type ServerShell struct {
 type Server struct {
 	started  int32 // To be used atomically.
 	shutdown int32 // To be used atomically.
+
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	// Must be after the atomically used variables to not break struct
+	// alignment.
+	UnimplementedAutopilotServer
 
 	cfg *Config
 
@@ -298,37 +296,4 @@ func (s *Server) SetScores(ctx context.Context,
 	}
 
 	return &SetScoresResponse{}, nil
-}
-
-// RestartWNewConstraints restarts agent with new constraints, if active.
-//
-// NOTE: Part of the AutopilotServer interface.
-func (s *Server) RestartWNewConstraints(ctx context.Context,
-	in *RestartConstraintsRequest) (*RestartConstraintsResponse, error) {
-
-	var err error
-
-	log.Debugf("Restarting autopilot agent with allocation=%v, chanlimit=%d, feeRate=%d sat/byte",
-		in.Allocation, in.ChanLimit, in.SatPerByte)
-
-	if in.Allocation > 1.0 || in.Allocation < 0 {
-		return nil, fmt.Errorf("allocation our of range, expected 0-1, received %v", in.Allocation)
-	}
-
-	// first of all stop agent
-	err = s.manager.StopAgent()
-	if err != nil {
-		return nil, err
-	}
-
-	// then update constraints
-	s.manager.UpdateCurrentConstraints(in.Allocation, uint16(in.ChanLimit), in.SatPerByte)
-
-	// and restart our agent
-	err = s.manager.StartAgent()
-	if err != nil {
-		return nil, err
-	}
-
-	return &RestartConstraintsResponse{}, nil
 }

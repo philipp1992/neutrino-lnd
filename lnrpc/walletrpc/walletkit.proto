@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-import "rpc.proto";
+import "lightning.proto";
 import "signrpc/signer.proto";
 
 package walletrpc;
@@ -201,6 +201,21 @@ service WalletKit {
     rpc FundPsbt (FundPsbtRequest) returns (FundPsbtResponse);
 
     /*
+    SignPsbt expects a partial transaction with all inputs and outputs fully
+    declared and tries to sign all unsigned inputs that have all required fields
+    (UTXO information, BIP32 derivation information, witness or sig scripts)
+    set.
+    If no error is returned, the PSBT is ready to be given to the next signer or
+    to be finalized if lnd was the last signer.
+
+    NOTE: This RPC only signs inputs (and only those it can sign), it does not
+    perform any other tasks (such as coin selection, UTXO locking or
+    input/output/fee value validation, PSBT finalization). Any input that is
+    incomplete will be skipped.
+    */
+    rpc SignPsbt (SignPsbtRequest) returns (SignPsbtResponse);
+
+    /*
     FinalizePsbt expects a partial transaction with all inputs and outputs fully
     declared and tries to sign all inputs that belong to the wallet. Lnd must be
     the last signer of the transaction. That means, if there are any unsigned
@@ -286,6 +301,16 @@ message AddrRequest {
     default wallet account is used.
     */
     string account = 1;
+
+    /*
+    The type of address to derive.
+    */
+    AddressType type = 2;
+
+    /*
+    Whether a change address should be derived.
+    */
+    bool change = 3;
 }
 message AddrResponse {
     /*
@@ -324,9 +349,10 @@ message Account {
     /*
     The fingerprint of the root key from which the account public key was
     derived from. This will always be zero for the default imported account in
-    which single public keys are imported into.
+    which single public keys are imported into. The bytes are in big-endian
+    order.
     */
-    uint32 master_key_fingerprint = 4;
+    bytes master_key_fingerprint = 4;
 
     /*
     The derivation path corresponding to the account public key. This will
@@ -377,9 +403,10 @@ message ImportAccountRequest {
     /*
     The fingerprint of the root key (also known as the key with derivation path
     m/) from which the account public key was derived from. This may be required
-    by some hardware wallets for proper identification and signing.
+    by some hardware wallets for proper identification and signing. The bytes
+    must be in big-endian order.
     */
-    uint32 master_key_fingerprint = 3;
+    bytes master_key_fingerprint = 3;
 
     /*
     An address type is only required when the extended account public key has a
@@ -387,8 +414,33 @@ message ImportAccountRequest {
     address scheme it belongs to.
     */
     AddressType address_type = 4;
+
+    /*
+    Whether a dry run should be attempted when importing the account. This
+    serves as a way to confirm whether the account is being imported correctly
+    by returning the first N addresses for the external and internal branches of
+    the account. If these addresses match as expected, then it should be safe to
+    import the account as is.
+    */
+    bool dry_run = 5;
 }
 message ImportAccountResponse {
+    // The details of the imported account.
+    Account account = 1;
+
+    /*
+    The first N addresses that belong to the external branch of the account.
+    The external branch is typically used for external non-change addresses.
+    These are only returned if a dry run was specified within the request.
+    */
+    repeated string dry_run_external_addrs = 2;
+
+    /*
+    The first N addresses that belong to the internal branch of the account.
+    The internal branch is typically used for change addresses. These are only
+    returned if a dry run was specified within the request.
+    */
+    repeated string dry_run_internal_addrs = 3;
 }
 
 message ImportPublicKeyRequest {
@@ -724,6 +776,13 @@ message FundPsbtRequest {
     account is used.
     */
     string account = 5;
+
+    // The minimum number of confirmations each one of your outputs used for
+    // the transaction must satisfy.
+    int32 min_confs = 6;
+
+    // Whether unconfirmed outputs should be used as inputs for the transaction.
+    bool spend_unconfirmed = 7;
 }
 message FundPsbtResponse {
     /*
@@ -774,6 +833,19 @@ message UtxoLease {
     The absolute expiration of the output lease represented as a unix timestamp.
     */
     uint64 expiration = 3;
+}
+
+message SignPsbtRequest {
+    /*
+    The PSBT that should be signed. The PSBT must contain all required inputs,
+    outputs, UTXO data and custom fields required to identify the signing key.
+    */
+    bytes funded_psbt = 1;
+}
+
+message SignPsbtResponse {
+    // The signed transaction in PSBT format.
+    bytes signed_psbt = 1;
 }
 
 message FinalizePsbtRequest {

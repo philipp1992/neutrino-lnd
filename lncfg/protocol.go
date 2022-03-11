@@ -1,3 +1,6 @@
+//go:build !rpctest
+// +build !rpctest
+
 package lncfg
 
 // ProtocolOptions is a struct that we use to be able to test backwards
@@ -18,8 +21,14 @@ type ProtocolOptions struct {
 	// mini.
 	WumboChans bool `long:"wumbo-channels" description:"if set, then lnd will create and accept requests for channels larger chan 0.16 BTC"`
 
-	// Anchors enables anchor commitments.
-	Anchors bool `long:"anchors" description:"enable support for anchor commitments"`
+	// NoAnchors should be set if we don't want to support opening or accepting
+	// channels having the anchor commitment type.
+	NoAnchors bool `long:"no-anchors" description:"disable support for anchor commitments"`
+
+	// NoScriptEnforcedLease should be set if we don't want to support
+	// opening or accepting channels having the script enforced commitment
+	// type for leased channel.
+	NoScriptEnforcedLease bool `long:"no-script-enforced-lease" description:"disable support for script enforced lease commitments"`
 }
 
 // Wumbo returns true if lnd should permit the creation and acceptance of wumbo
@@ -31,5 +40,11 @@ func (l *ProtocolOptions) Wumbo() bool {
 // NoAnchorCommitments returns true if we have disabled support for the anchor
 // commitment type.
 func (l *ProtocolOptions) NoAnchorCommitments() bool {
-	return !l.Anchors
+	return l.NoAnchors
+}
+
+// NoScriptEnforcementLease returns true if we have disabled support for the
+// script enforcement commitment type for leased channels.
+func (l *ProtocolOptions) NoScriptEnforcementLease() bool {
+	return l.NoScriptEnforcedLease
 }

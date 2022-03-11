@@ -1,7 +1,6 @@
 package lnd
 
 import (
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"net"
@@ -14,7 +13,6 @@ import (
 	"github.com/lightningnetwork/lnd/funding"
 	"github.com/lightningnetwork/lnd/lncfg"
 	"github.com/lightningnetwork/lnd/lnwallet"
-	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/tor"
 )
@@ -73,34 +71,6 @@ func validateAtplCfg(cfg *lncfg.AutoPilot) ([]*autopilot.WeightedHeuristic,
 	return heuristics, nil
 }
 
-func validateAtplTrustedNodes(cfg *lncfg.AutoPilot) ([]autopilot.NodeID, error){
-
-	nodesLen := len(cfg.TrustedNodes)
-	if nodesLen == 0 {
-		return nil, nil
-	}
-
-	trustedNodes := make([]autopilot.NodeID, nodesLen)
-
-	for i := range cfg.TrustedNodes {
-
-		keyBytes, err := hex.DecodeString(cfg.TrustedNodes[i])
-		if err != nil {
-			return nil, err
-		}
-
-		pubKey, err := btcec.ParsePubKey(keyBytes, btcec.S256())
-		if err != nil {
-			return nil, err
-		}
-
-		nodeID := autopilot.NewNodeID(pubKey)
-		trustedNodes[i] = nodeID
-	}
-
-	return trustedNodes, nil
-}
-
 // chanController is an implementation of the autopilot.ChannelController
 // interface that's backed by a running lnd instance.
 type chanController struct {
@@ -116,29 +86,15 @@ type chanController struct {
 // specified amount. This function should un-block immediately after the
 // funding transaction that marks the channel open has been broadcast.
 func (c *chanController) OpenChannel(target *btcec.PublicKey,
-	amt btcutil.Amount, feeRate uint32) error {
+	amt btcutil.Amount) error {
 
-	var (
-		feePerKw chainfee.SatPerKWeight
-		err error
+	// With the connection established, we'll now establish our connection
+	// to the target peer, waiting for the first update before we exit.
+	feePerKw, err := c.server.cc.FeeEstimator.EstimateFeePerKW(
+		c.confTarget,
 	)
-
-	// If feeRate is not set, use dynamic estimation
-	if feeRate < 1 {
-		// With the connection established, we'll now establish our connection
-		// to the target peer, waiting for the first update before we exit.
-		feePerKw, err = c.server.cc.FeeEstimator.EstimateFeePerKW(
-			c.confTarget,
-		)
-		if err != nil {
-			return err
-		}
-	} else { // otherwise, can use user defined static fee
-		feePerKw = chainfee.SatPerKVByte(feeRate * 1000).FeePerKWeight()
-	}
-
-	if feePerKw < chainfee.FeePerKwFloor {
-		feePerKw = chainfee.FeePerKwFloor
+	if err != nil {
+		return err
 	}
 
 	// Construct the open channel request and send it to the server to begin
@@ -181,7 +137,7 @@ var _ autopilot.ChannelController = (*chanController)(nil)
 // interfaces needed to drive it won't be launched before the Manager's
 // StartAgent method is called.
 func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
-	chainCfg *lncfg.Chain, netParams chainreg.BitcoinNetParams) (
+	minHTLCIn lnwire.MilliSatoshi, netParams chainreg.BitcoinNetParams) (
 	*autopilot.ManagerCfg, error) {
 
 	atplLog.Infof("Instantiating autopilot with active=%v, "+
@@ -197,14 +153,8 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 		uint16(cfg.MaxChannels),
 		10,
 		cfg.Allocation,
-		cfg.SatPerByte,
 	)
 	heuristics, err := validateAtplCfg(cfg)
-	if err != nil {
-		return nil, err
-	}
-
-	trustedNodes, err := validateAtplTrustedNodes(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +177,7 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 			private:       cfg.Private,
 			minConfs:      cfg.MinConfs,
 			confTarget:    cfg.ConfTarget,
-			chanMinHtlcIn: chainCfg.MinHTLCIn,
+			chanMinHtlcIn: minHTLCIn,
 			netParams:     netParams,
 		},
 		WalletBalance: func() (btcutil.Amount, error) {
@@ -235,7 +185,7 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 				cfg.MinConfs, lnwallet.DefaultAccountName,
 			)
 		},
-		Graph:       autopilot.ChannelGraphFromDatabase(svr.localChanDB.ChannelGraph()),
+		Graph:       autopilot.ChannelGraphFromDatabase(svr.graphDB),
 		Constraints: atplConstraints,
 		ConnectToPeer: func(target *btcec.PublicKey, addrs []net.Addr) (bool, error) {
 			// First, we'll check if we're already connected to the
@@ -297,7 +247,6 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 			return false, nil
 		},
 		DisconnectPeer: svr.DisconnectPeer,
-		TrustedNodes: trustedNodes,
 	}
 
 	// Create and return the autopilot.ManagerCfg that administrates this
@@ -309,7 +258,7 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 			// We'll fetch the current state of open
 			// channels from the database to use as initial
 			// state for the auto-pilot agent.
-			activeChannels, err := svr.remoteChanDB.FetchAllChannels()
+			activeChannels, err := svr.chanStateDB.FetchAllChannels()
 			if err != nil {
 				return nil, err
 			}
@@ -333,7 +282,7 @@ func initAutoPilot(svr *server, cfg *lncfg.AutoPilot,
 		ChannelInfo: func(chanPoint wire.OutPoint) (
 			*autopilot.LocalChannel, error) {
 
-			channel, err := svr.remoteChanDB.FetchChannel(chanPoint)
+			channel, err := svr.chanStateDB.FetchChannel(nil, chanPoint)
 			if err != nil {
 				return nil, err
 			}

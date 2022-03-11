@@ -12,7 +12,7 @@ import (
 
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -146,6 +146,11 @@ type Server struct {
 	started                  int32 // To be used atomically.
 	shutdown                 int32 // To be used atomically.
 	forwardInterceptorActive int32 // To be used atomically.
+
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	// Must be after the atomically used variables to not break struct
+	// alignment.
+	UnimplementedRouterServer
 
 	cfg *Config
 
@@ -316,21 +321,21 @@ func (s *Server) SendPaymentV2(req *SendPaymentRequest,
 		if err == channeldb.ErrPaymentInFlight ||
 			err == channeldb.ErrAlreadyPaid {
 
-			log.Debugf("SendPayment async result for hash %x: %v",
-				payment.PaymentHash, err)
+			log.Debugf("SendPayment async result for payment %x: %v",
+				payment.Identifier(), err)
 
 			return status.Error(
 				codes.AlreadyExists, err.Error(),
 			)
 		}
 
-		log.Errorf("SendPayment async error for hash %x: %v",
-			payment.PaymentHash, err)
+		log.Errorf("SendPayment async error for payment %x: %v",
+			payment.Identifier(), err)
 
 		return err
 	}
 
-	return s.trackPayment(payment.PaymentHash, stream, req.NoInflightUpdates)
+	return s.trackPayment(payment.Identifier(), stream, req.NoInflightUpdates)
 }
 
 // EstimateRouteFee allows callers to obtain a lower bound w.r.t how much it
@@ -548,7 +553,9 @@ func (s *Server) XImportMissionControl(ctx context.Context,
 		snapshot.Pairs[i] = *pairSnapshot
 	}
 
-	err := s.cfg.RouterBackend.MissionControl.ImportHistory(snapshot)
+	err := s.cfg.RouterBackend.MissionControl.ImportHistory(
+		snapshot, req.Force,
+	)
 	if err != nil {
 		return nil, err
 	}
@@ -719,14 +726,14 @@ func (s *Server) TrackPaymentV2(request *TrackPaymentRequest,
 }
 
 // trackPayment writes payment status updates to the provided stream.
-func (s *Server) trackPayment(paymentHash lntypes.Hash,
+func (s *Server) trackPayment(identifier lntypes.Hash,
 	stream Router_TrackPaymentV2Server, noInflightUpdates bool) error {
 
 	router := s.cfg.RouterBackend
 
 	// Subscribe to the outcome of this payment.
 	subscription, err := router.Tower.SubscribePayment(
-		paymentHash,
+		identifier,
 	)
 	switch {
 	case err == channeldb.ErrPaymentNotInitiated:
@@ -769,7 +776,7 @@ func (s *Server) trackPayment(paymentHash lntypes.Hash,
 			return errServerShuttingDown
 
 		case <-stream.Context().Done():
-			log.Debugf("Payment status stream %v canceled", paymentHash)
+			log.Debugf("Payment status stream %v canceled", identifier)
 			return stream.Context().Err()
 		}
 	}

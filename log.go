@@ -14,6 +14,7 @@ import (
 	"github.com/lightningnetwork/lnd/chanfitness"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/channelnotifier"
+	"github.com/lightningnetwork/lnd/cluster"
 	"github.com/lightningnetwork/lnd/contractcourt"
 	"github.com/lightningnetwork/lnd/discovery"
 	"github.com/lightningnetwork/lnd/funding"
@@ -28,16 +29,20 @@ import (
 	"github.com/lightningnetwork/lnd/lnrpc/verrpc"
 	"github.com/lightningnetwork/lnd/lnrpc/walletrpc"
 	"github.com/lightningnetwork/lnd/lnwallet"
+	"github.com/lightningnetwork/lnd/lnwallet/btcwallet"
 	"github.com/lightningnetwork/lnd/lnwallet/chancloser"
 	"github.com/lightningnetwork/lnd/lnwallet/chanfunding"
+	"github.com/lightningnetwork/lnd/lnwallet/rpcwallet"
 	"github.com/lightningnetwork/lnd/monitoring"
 	"github.com/lightningnetwork/lnd/netann"
 	"github.com/lightningnetwork/lnd/peer"
 	"github.com/lightningnetwork/lnd/peernotifier"
 	"github.com/lightningnetwork/lnd/routing"
 	"github.com/lightningnetwork/lnd/routing/localchans"
+	"github.com/lightningnetwork/lnd/rpcperms"
 	"github.com/lightningnetwork/lnd/signal"
 	"github.com/lightningnetwork/lnd/sweep"
+	"github.com/lightningnetwork/lnd/tor"
 	"github.com/lightningnetwork/lnd/watchtower"
 	"github.com/lightningnetwork/lnd/watchtower/wtclient"
 )
@@ -79,8 +84,6 @@ var (
 	ltndLog = addLndPkgLogger("LTND")
 	rpcsLog = addLndPkgLogger("RPCS")
 	srvrLog = addLndPkgLogger("SRVR")
-	utxnLog = addLndPkgLogger("UTXN")
-	brarLog = addLndPkgLogger("BRAR")
 	atplLog = addLndPkgLogger("ATPL")
 )
 
@@ -130,6 +133,8 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, "CMGR", interceptor, connmgr.UseLogger)
 	AddSubLogger(root, "BTCN", interceptor, neutrino.UseLogger)
 	AddSubLogger(root, "CNCT", interceptor, contractcourt.UseLogger)
+	AddSubLogger(root, "UTXN", interceptor, contractcourt.UseNurseryLogger)
+	AddSubLogger(root, "BRAR", interceptor, contractcourt.UseBreachLogger)
 	AddSubLogger(root, "SPHX", interceptor, sphinx.UseLogger)
 	AddSubLogger(root, "SWPR", interceptor, sweep.UseLogger)
 	AddSubLogger(root, "SGNR", interceptor, signrpc.UseLogger)
@@ -157,6 +162,11 @@ func SetupLoggers(root *build.RotatingLogWriter, interceptor signal.Interceptor)
 	AddSubLogger(root, chainreg.Subsystem, interceptor, chainreg.UseLogger)
 	AddSubLogger(root, chanacceptor.Subsystem, interceptor, chanacceptor.UseLogger)
 	AddSubLogger(root, funding.Subsystem, interceptor, funding.UseLogger)
+	AddSubLogger(root, cluster.Subsystem, interceptor, cluster.UseLogger)
+	AddSubLogger(root, rpcperms.Subsystem, interceptor, rpcperms.UseLogger)
+	AddSubLogger(root, tor.Subsystem, interceptor, tor.UseLogger)
+	AddSubLogger(root, btcwallet.Subsystem, interceptor, btcwallet.UseLogger)
+	AddSubLogger(root, rpcwallet.Subsystem, interceptor, rpcwallet.UseLogger)
 }
 
 // AddSubLogger is a helper method to conveniently create and register the

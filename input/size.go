@@ -41,11 +41,20 @@ const (
 	//      - P2WSHWitnessProgram: 34 bytes
 	NestedP2WSHSize = 1 + P2WSHSize
 
+	// UnknownWitnessSize 42 bytes
+	//      - OP_x: 1 byte
+	//      - OP_DATA: 1 byte (max-size length)
+	//      - max-size: 40 bytes
+	UnknownWitnessSize = 1 + 1 + 40
+
+	// P2PKHSize 25 bytes
+	P2PKHSize = 25
+
 	// P2PKHOutputSize 34 bytes
 	//      - value: 8 bytes
 	//      - var_int: 1 byte (pkscript_length)
 	//      - pkscript (p2pkh): 25 bytes
-	P2PKHOutputSize = 8 + 1 + 25
+	P2PKHOutputSize = 8 + 1 + P2PKHSize
 
 	// P2WKHOutputSize 31 bytes
 	//      - value: 8 bytes
@@ -59,11 +68,14 @@ const (
 	//      - pkscript (p2wsh): 34 bytes
 	P2WSHOutputSize = 8 + 1 + P2WSHSize
 
+	// P2SHSize 23 bytes
+	P2SHSize = 23
+
 	// P2SHOutputSize 32 bytes
 	//      - value: 8 bytes
 	//      - var_int: 1 byte (pkscript_length)
 	//      - pkscript (p2sh): 23 bytes
-	P2SHOutputSize = 8 + 1 + 23
+	P2SHOutputSize = 8 + 1 + P2SHSize
 
 	// P2PKHScriptSigSize 108 bytes
 	//      - OP_DATA: 1 byte (signature length)
@@ -257,6 +269,17 @@ const (
 	//      - OP_ENDIF: 1 byte
 	//      - OP_CHECKSIG: 1 byte
 	ToLocalScriptSize = 1 + 1 + 33 + 1 + 1 + 4 + 1 + 1 + 1 + 33 + 1 + 1
+
+	// LeaseWitnessScriptSizeOverhead represents the size overhead in bytes
+	// of the witness scripts used within script enforced lease commitments.
+	// This overhead results from the additional CLTV clause required to
+	// spend.
+	//
+	//	- OP_DATA: 1 byte
+	// 	- lease_expiry: 4 bytes
+	// 	- OP_CHECKLOCKTIMEVERIFY: 1 byte
+	// 	- OP_DROP: 1 byte
+	LeaseWitnessScriptSizeOverhead = 1 + 4 + 1 + 1
 
 	// ToLocalTimeoutWitnessSize 156 bytes
 	//      - number_of_witness_elements: 1 byte

@@ -3,7 +3,6 @@ package chainreg
 import (
 	"github.com/btcsuite/btcd/chaincfg"
 	bitcoinCfg "github.com/btcsuite/btcd/chaincfg"
-	xsncoinCfg "github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	bitcoinWire "github.com/btcsuite/btcd/wire"
 	"github.com/lightningnetwork/lnd/keychain"
@@ -23,12 +22,6 @@ type BitcoinNetParams struct {
 // corresponding RPC port of a daemon running on the particular network.
 type LitecoinNetParams struct {
 	*litecoinCfg.Params
-	RPCPort  string
-	CoinType uint32
-}
-
-type XsncoinNetParams struct {
-	*xsncoinCfg.Params
 	RPCPort  string
 	CoinType uint32
 }
@@ -57,54 +50,11 @@ var BitcoinSimNetParams = BitcoinNetParams{
 	CoinType: keychain.CoinTypeTestnet,
 }
 
-// BitcoinRegTestNetParams contains parameters specific to a local bitcoin
-// regtest network.
-var BitcoinRegTestNetParams = BitcoinNetParams{
-        Params:   &bitcoinCfg.RegressionNetParams,
-        RPCPort:  "18334",
-        CoinType: keychain.CoinTypeTestnet,
-}
-
-// bitcoinLightWalletParams contains parameters specific to the LW connection
-var BtcLightWalletParams = BitcoinNetParams{
-	Params:   &bitcoinCfg.BitcoinLWParams,
-	RPCPort:  "12347",
-	CoinType: keychain.CoinTypeBitcoin,
-}
-
-// bitcoinLightWalletParams contains parameters specific to the LW connection
-var BtcLightWalletRegtestParams = BitcoinNetParams{
-	Params:   &bitcoinCfg.BitcoinLWRegTestParams,
-	RPCPort:  "12347",
-	CoinType: keychain.CoinTypeBitcoin,
-}
-
-// bitcoinLightWalletParams contains parameters specific to the LW connection
-var BtcLightWalletTestnetParams = BitcoinNetParams{
-	Params:   &bitcoinCfg.BitcoinLWTestNetParams,
-	RPCPort:  "12347",
-	CoinType: keychain.CoinTypeBitcoin,
-}
-
-// bitcoinLightWalletParams contains parameters specific to the LW connection
-var LtcLightWalletParams = LitecoinNetParams{
-        Params:   &litecoinCfg.LitecoinLWParams,
-        RPCPort:  "12347",
-        CoinType: keychain.CoinTypeLitecoin,
-}
-
-// bitcoinLightWalletParams contains parameters specific to the LW connection
-var LtcLightWalletRegtestParams = LitecoinNetParams{
-        Params:   &litecoinCfg.LitecoinLWRegTestParams,
-        RPCPort:  "12347",
-        CoinType: keychain.CoinTypeLitecoin,
-}
-
-// litecoinLightWalletTestnetParams contains parameters specific to the LW connection
-var LtcLightWalletTestnetParams = LitecoinNetParams{
-        Params:   &litecoinCfg.LitecoinLWTestNetParams,
-        RPCPort:  "12347",
-        CoinType: keychain.CoinTypeLitecoin,
+// BitcoinSigNetParams contains parameters specific to the signet test network.
+var BitcoinSigNetParams = BitcoinNetParams{
+	Params:   &bitcoinCfg.SigNetParams,
+	RPCPort:  "38332",
+	CoinType: keychain.CoinTypeTestnet,
 }
 
 // LitecoinSimNetParams contains parameters specific to the simulation test
@@ -139,41 +89,12 @@ var LitecoinRegTestNetParams = LitecoinNetParams{
 	CoinType: keychain.CoinTypeTestnet,
 }
 
-// xsnTestNetParams contains parameters specific to the 3rd version of the
-// test network.
-var XsnTestNetParams = XsncoinNetParams{
-	Params:   &xsncoinCfg.TestNet3Params,
-	RPCPort:  "20000",
-	CoinType: keychain.CoinTypeStakenet,
-}
-
-// xsnMainNetParams contains the parameters specific to the current
-// Stakenet mainnet.
-var XsnMainNetParams = XsncoinNetParams{
-	Params:   &xsncoinCfg.MainNetParams,
-	RPCPort:  "51475",
-	CoinType: keychain.CoinTypeStakenet,
-}
-
-// xsnRegTestNetParams contains parameters specific to a local regtest network.
-var XsnRegTestNetParams = XsncoinNetParams{
-	Params:   &xsncoinCfg.RegressionNetParams,
+// BitcoinRegTestNetParams contains parameters specific to a local bitcoin
+// regtest network.
+var BitcoinRegTestNetParams = BitcoinNetParams{
+	Params:   &bitcoinCfg.RegressionNetParams,
 	RPCPort:  "18334",
-	CoinType: keychain.CoinTypeStakenet,
-}
-
-// xsnLightWalletParams contains parameters specific to the LW connection
-var XsnLightWalletParams = XsncoinNetParams{
-        Params:   &xsncoinCfg.XsncoinLWParams,
-        RPCPort:  "12347",
-        CoinType: keychain.CoinTypeStakenet,
-}
-
-// xsnLightWalletRegtestParams contains parameters specific to the LW connection
-var XsnLightWalletRegtestParams = XsncoinNetParams{
-        Params:   &xsncoinCfg.XsncoinLWRegTestParams,
-        RPCPort:  "12347",
-        CoinType: keychain.CoinTypeStakenet,
+	CoinType: keychain.CoinTypeTestnet,
 }
 
 // ApplyLitecoinParams applies the relevant chain configuration parameters that
@@ -217,47 +138,6 @@ func ApplyLitecoinParams(params *BitcoinNetParams,
 
 	params.RPCPort = litecoinParams.RPCPort
 	params.CoinType = litecoinParams.CoinType
-}
-
-// applyStakenetParams applies the relevant chain configuration parameters that
-// differ for xsncoin to the chain parameters typed for btcsuite derivation.
-// This function is used in place of using something like interface{} to
-// abstract over _which_ chain (or fork) the parameters are for.
-func ApplyStakenetParams(params *BitcoinNetParams, xsnParams *XsncoinNetParams) {
-	params.Name = xsnParams.Name
-	params.Net = bitcoinWire.BitcoinNet(xsnParams.Net)
-	params.DefaultPort = xsnParams.DefaultPort
-	params.CoinbaseMaturity = xsnParams.CoinbaseMaturity
-
-	copy(params.GenesisHash[:], xsnParams.GenesisHash[:])
-
-	// Address encoding magics
-	params.PubKeyHashAddrID = xsnParams.PubKeyHashAddrID
-	params.ScriptHashAddrID = xsnParams.ScriptHashAddrID
-	params.PrivateKeyID = xsnParams.PrivateKeyID
-	params.WitnessPubKeyHashAddrID = xsnParams.WitnessPubKeyHashAddrID
-	params.WitnessScriptHashAddrID = xsnParams.WitnessScriptHashAddrID
-	params.Bech32HRPSegwit = xsnParams.Bech32HRPSegwit
-
-	copy(params.HDPrivateKeyID[:], xsnParams.HDPrivateKeyID[:])
-	copy(params.HDPublicKeyID[:], xsnParams.HDPublicKeyID[:])
-
-	params.HDCoinType = xsnParams.HDCoinType
-
-	checkPoints := make([]chaincfg.Checkpoint, len(xsnParams.Checkpoints))
-	for i := 0; i < len(xsnParams.Checkpoints); i++ {
-		var chainHash chainhash.Hash
-		copy(chainHash[:], xsnParams.Checkpoints[i].Hash[:])
-
-		checkPoints[i] = chaincfg.Checkpoint{
-			Height: xsnParams.Checkpoints[i].Height,
-			Hash:   &chainHash,
-		}
-	}
-	params.Checkpoints = checkPoints
-
-	params.RPCPort = xsnParams.RPCPort
-	params.CoinType = xsnParams.CoinType
 }
 
 // IsTestnet tests if the givern params correspond to a testnet

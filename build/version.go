@@ -41,12 +41,10 @@ const (
 	AppMajor uint = 0
 
 	// AppMinor defines the minor version of this binary.
-	AppMinor uint = 12
+	AppMinor uint = 14
 
 	// AppPatch defines the application patch for this binary.
-	AppPatch uint = 0
-
-	AppLightWalletPatch = 10
+	AppPatch uint = 2
 
 	// AppPreRelease MUST only contain characters from semanticAlphabet
 	// per the semantic versioning spec.
@@ -70,7 +68,7 @@ func init() {
 // semantic versioning 2.0.0 spec (http://semver.org/).
 func Version() string {
 	// Start with the major, minor, and patch versions.
-	version := fmt.Sprintf("%d.%d.%d.%d", AppMajor, AppMinor, AppPatch, AppLightWalletPatch)
+	version := fmt.Sprintf("%d.%d.%d", AppMajor, AppMinor, AppPatch)
 
 	// Append pre-release version if there is one. The hyphen called for by
 	// the semantic versioning spec is automatically appended and should not

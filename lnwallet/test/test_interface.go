@@ -32,12 +32,13 @@ import (
 	_ "github.com/btcsuite/btcwallet/walletdb/bdb"
 	"github.com/davecgh/go-spew/spew"
 	"github.com/lightninglabs/neutrino"
+	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/chainntnfs/btcdnotify"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/labels"
 	"github.com/lightningnetwork/lnd/lntest/wait"
 	"github.com/lightningnetwork/lnd/lnwallet"
@@ -326,13 +327,13 @@ func createTestWallet(tempTestDir string, miningNode *rpctest.Harness,
 	signer input.Signer, bio lnwallet.BlockChainIO) (*lnwallet.LightningWallet, error) {
 
 	dbDir := filepath.Join(tempTestDir, "cdb")
-	cdb, err := channeldb.Open(dbDir)
+	fullDB, err := channeldb.Open(dbDir)
 	if err != nil {
 		return nil, err
 	}
 
 	cfg := lnwallet.Config{
-		Database:         cdb,
+		Database:         fullDB.ChannelStateDB(),
 		Notifier:         notifier,
 		SecretKeyRing:    keyRing,
 		WalletController: wc,
@@ -445,7 +446,7 @@ func testDualFundingReservationWorkflow(miner *rpctest.Harness,
 	}
 	aliceChanReservation.SetNumConfsRequired(numReqConfs)
 	channelConstraints := &channeldb.ChannelConstraints{
-		DustLimit:        lnwallet.DefaultDustLimit(),
+		DustLimit:        alice.Cfg.DefaultConstraints.DustLimit,
 		ChanReserve:      fundingAmount / 100,
 		MaxPendingAmount: lnwire.NewMSatFromSatoshis(fundingAmount),
 		MinHTLC:          1,
@@ -453,7 +454,7 @@ func testDualFundingReservationWorkflow(miner *rpctest.Harness,
 		CsvDelay:         csvDelay,
 	}
 	err = aliceChanReservation.CommitConstraints(
-		channelConstraints, defaultMaxLocalCsvDelay,
+		channelConstraints, defaultMaxLocalCsvDelay, false,
 	)
 	if err != nil {
 		t.Fatalf("unable to verify constraints: %v", err)
@@ -489,7 +490,7 @@ func testDualFundingReservationWorkflow(miner *rpctest.Harness,
 		t.Fatalf("bob unable to init channel reservation: %v", err)
 	}
 	err = bobChanReservation.CommitConstraints(
-		channelConstraints, defaultMaxLocalCsvDelay,
+		channelConstraints, defaultMaxLocalCsvDelay, true,
 	)
 	if err != nil {
 		t.Fatalf("unable to verify constraints: %v", err)
@@ -895,7 +896,7 @@ func testSingleFunderReservationWorkflow(miner *rpctest.Harness,
 	}
 	aliceChanReservation.SetNumConfsRequired(numReqConfs)
 	channelConstraints := &channeldb.ChannelConstraints{
-		DustLimit:        lnwallet.DefaultDustLimit(),
+		DustLimit:        alice.Cfg.DefaultConstraints.DustLimit,
 		ChanReserve:      fundingAmt / 100,
 		MaxPendingAmount: lnwire.NewMSatFromSatoshis(fundingAmt),
 		MinHTLC:          1,
@@ -903,7 +904,7 @@ func testSingleFunderReservationWorkflow(miner *rpctest.Harness,
 		CsvDelay:         csvDelay,
 	}
 	err = aliceChanReservation.CommitConstraints(
-		channelConstraints, defaultMaxLocalCsvDelay,
+		channelConstraints, defaultMaxLocalCsvDelay, false,
 	)
 	if err != nil {
 		t.Fatalf("unable to verify constraints: %v", err)
@@ -946,7 +947,7 @@ func testSingleFunderReservationWorkflow(miner *rpctest.Harness,
 		t.Fatalf("unable to create bob reservation: %v", err)
 	}
 	err = bobChanReservation.CommitConstraints(
-		channelConstraints, defaultMaxLocalCsvDelay,
+		channelConstraints, defaultMaxLocalCsvDelay, true,
 	)
 	if err != nil {
 		t.Fatalf("unable to verify constraints: %v", err)
@@ -2547,6 +2548,8 @@ func testLastUnusedAddr(miner *rpctest.Harness,
 // testCreateSimpleTx checks that a call to CreateSimpleTx will return a
 // transaction that is equal to the one that is being created by SendOutputs in
 // a subsequent call.
+// All test cases are doubled-up: one for testing unconfirmed inputs,
+// one for testing only confirmed inputs.
 func testCreateSimpleTx(r *rpctest.Harness, w *lnwallet.LightningWallet,
 	_ *lnwallet.LightningWallet, t *testing.T) {
 
@@ -2558,51 +2561,108 @@ func testCreateSimpleTx(r *rpctest.Harness, w *lnwallet.LightningWallet,
 
 	// The test cases we will run through for all backends.
 	testCases := []struct {
-		outVals []int64
-		feeRate chainfee.SatPerKWeight
-		valid   bool
+		outVals     []int64
+		feeRate     chainfee.SatPerKWeight
+		valid       bool
+		unconfirmed bool
 	}{
 		{
-			outVals: []int64{},
-			feeRate: 2500,
-			valid:   false, // No outputs.
+			outVals:     []int64{},
+			feeRate:     2500,
+			valid:       false, // No outputs.
+			unconfirmed: false,
+		},
+		{
+			outVals:     []int64{},
+			feeRate:     2500,
+			valid:       false, // No outputs.
+			unconfirmed: true,
 		},
 
 		{
-			outVals: []int64{200},
-			feeRate: 2500,
-			valid:   false, // Dust output.
+			outVals:     []int64{200},
+			feeRate:     2500,
+			valid:       false, // Dust output.
+			unconfirmed: false,
+		},
+		{
+			outVals:     []int64{200},
+			feeRate:     2500,
+			valid:       false, // Dust output.
+			unconfirmed: true,
 		},
 
 		{
-			outVals: []int64{1e8},
-			feeRate: 2500,
-			valid:   true,
+			outVals:     []int64{1e8},
+			feeRate:     2500,
+			valid:       true,
+			unconfirmed: false,
 		},
 		{
-			outVals: []int64{1e8, 2e8, 1e8, 2e7, 3e5},
-			feeRate: 2500,
-			valid:   true,
+			outVals:     []int64{1e8},
+			feeRate:     2500,
+			valid:       true,
+			unconfirmed: true,
+		},
+
+		{
+			outVals:     []int64{1e8, 2e8, 1e8, 2e7, 3e5},
+			feeRate:     2500,
+			valid:       true,
+			unconfirmed: false,
 		},
 		{
-			outVals: []int64{1e8, 2e8, 1e8, 2e7, 3e5},
-			feeRate: 12500,
-			valid:   true,
+			outVals:     []int64{1e8, 2e8, 1e8, 2e7, 3e5},
+			feeRate:     2500,
+			valid:       true,
+			unconfirmed: true,
+		},
+
+		{
+			outVals:     []int64{1e8, 2e8, 1e8, 2e7, 3e5},
+			feeRate:     12500,
+			valid:       true,
+			unconfirmed: false,
 		},
 		{
-			outVals: []int64{1e8, 2e8, 1e8, 2e7, 3e5},
-			feeRate: 50000,
-			valid:   true,
+			outVals:     []int64{1e8, 2e8, 1e8, 2e7, 3e5},
+			feeRate:     12500,
+			valid:       true,
+			unconfirmed: true,
+		},
+
+		{
+			outVals:     []int64{1e8, 2e8, 1e8, 2e7, 3e5},
+			feeRate:     50000,
+			valid:       true,
+			unconfirmed: false,
+		},
+		{
+			outVals:     []int64{1e8, 2e8, 1e8, 2e7, 3e5},
+			feeRate:     50000,
+			valid:       true,
+			unconfirmed: true,
+		},
+
+		{
+			outVals: []int64{1e8, 2e8, 1e8, 2e7, 3e5, 1e8, 2e8,
+				1e8, 2e7, 3e5},
+			feeRate:     44250,
+			valid:       true,
+			unconfirmed: false,
 		},
 		{
 			outVals: []int64{1e8, 2e8, 1e8, 2e7, 3e5, 1e8, 2e8,
 				1e8, 2e7, 3e5},
-			feeRate: 44250,
-			valid:   true,
+			feeRate:     44250,
+			valid:       true,
+			unconfirmed: true,
 		},
 	}
 
 	for i, test := range testCases {
+		var minConfs int32 = 1
+
 		feeRate := test.feeRate
 
 		// Grab some fresh addresses from the miner that we will send
@@ -2629,7 +2689,7 @@ func testCreateSimpleTx(r *rpctest.Harness, w *lnwallet.LightningWallet,
 
 		// Now try creating a tx spending to these outputs.
 		createTx, createErr := w.CreateSimpleTx(
-			outputs, feeRate, true,
+			outputs, feeRate, minConfs, true,
 		)
 		switch {
 		case test.valid && createErr != nil:
@@ -2646,7 +2706,7 @@ func testCreateSimpleTx(r *rpctest.Harness, w *lnwallet.LightningWallet,
 		// _very_ similar to the one we just created being sent. The
 		// only difference is that the dry run tx is not signed, and
 		// that the change output position might be different.
-		tx, sendErr := w.SendOutputs(outputs, feeRate, 1, labels.External)
+		tx, sendErr := w.SendOutputs(outputs, feeRate, minConfs, labels.External)
 		switch {
 		case test.valid && sendErr != nil:
 			t.Fatalf("got unexpected error when sending tx: %v",
@@ -2884,11 +2944,11 @@ func clearWalletStates(a, b *lnwallet.LightningWallet) error {
 	a.ResetReservations()
 	b.ResetReservations()
 
-	if err := a.Cfg.Database.Wipe(); err != nil {
+	if err := a.Cfg.Database.GetParentDB().Wipe(); err != nil {
 		return err
 	}
 
-	return b.Cfg.Database.Wipe()
+	return b.Cfg.Database.GetParentDB().Wipe()
 }
 
 func waitForMempoolTx(r *rpctest.Harness, txid *chainhash.Hash) error {
@@ -3141,12 +3201,13 @@ func TestLightningWallet(t *testing.T, targetBackEnd string) {
 	testCfg := chainntnfs.CacheConfig{
 		QueryDisable: false,
 	}
-	hintCache, err := chainntnfs.NewHeightHintCache(testCfg, db)
+	hintCache, err := chainntnfs.NewHeightHintCache(testCfg, db.Backend)
 	if err != nil {
 		t.Fatalf("unable to create height hint cache: %v", err)
 	}
+	blockCache := blockcache.NewBlockCache(10000)
 	chainNotifier, err := btcdnotify.New(
-		&rpcConfig, netParams, hintCache, hintCache,
+		&rpcConfig, netParams, hintCache, hintCache, blockCache,
 	)
 	if err != nil {
 		t.Fatalf("unable to create notifier: %v", err)
@@ -3202,6 +3263,8 @@ func runTests(t *testing.T, walletDriver *lnwallet.WalletDriver,
 		t.Fatalf("unable to create temp directory: %v", err)
 	}
 	defer os.RemoveAll(tempTestDirBob)
+
+	blockCache := blockcache.NewBlockCache(10000)
 
 	walletType := walletDriver.WalletType
 	switch walletType {
@@ -3323,11 +3386,19 @@ func runTests(t *testing.T, walletDriver *lnwallet.WalletDriver,
 			host := fmt.Sprintf("127.0.0.1:%d", rpcPort)
 			var chainConn *chain.BitcoindConn
 			err = wait.NoError(func() error {
-				chainConn, err = chain.NewBitcoindConn(
-					netParams, host, "weks", "weks",
-					zmqBlockHost, zmqTxHost,
-					100*time.Millisecond,
-				)
+				chainConn, err = chain.NewBitcoindConn(&chain.BitcoindConfig{
+					ChainParams:     netParams,
+					Host:            host,
+					User:            "weks",
+					Pass:            "weks",
+					ZMQBlockHost:    zmqBlockHost,
+					ZMQTxHost:       zmqTxHost,
+					ZMQReadDeadline: 5 * time.Second,
+					// Fields only required for pruned nodes, not
+					// needed for these tests.
+					Dialer:             nil,
+					PrunedModeMaxPeers: 0,
+				})
 				if err != nil {
 					return err
 				}
@@ -3356,14 +3427,20 @@ func runTests(t *testing.T, walletDriver *lnwallet.WalletDriver,
 		aliceWalletConfig := &btcwallet.Config{
 			PrivatePass: []byte("alice-pass"),
 			HdSeed:      aliceSeedBytes,
-			DataDir:     tempTestDirAlice,
 			NetParams:   netParams,
 			ChainSource: aliceClient,
 			CoinType:    keychain.CoinTypeTestnet,
 			// wallet starts in recovery mode
 			RecoveryWindow: 2,
+			LoaderOptions: []btcwallet.LoaderOption{
+				btcwallet.LoaderWithLocalWalletDB(
+					tempTestDirAlice, false, time.Minute,
+				),
+			},
 		}
-		aliceWalletController, err = walletDriver.New(aliceWalletConfig)
+		aliceWalletController, err = walletDriver.New(
+			aliceWalletConfig, blockCache,
+		)
 		if err != nil {
 			t.Fatalf("unable to create btcwallet: %v", err)
 		}
@@ -3381,14 +3458,20 @@ func runTests(t *testing.T, walletDriver *lnwallet.WalletDriver,
 		bobWalletConfig := &btcwallet.Config{
 			PrivatePass: []byte("bob-pass"),
 			HdSeed:      bobSeedBytes,
-			DataDir:     tempTestDirBob,
 			NetParams:   netParams,
 			ChainSource: bobClient,
 			CoinType:    keychain.CoinTypeTestnet,
 			// wallet starts without recovery mode
 			RecoveryWindow: 0,
+			LoaderOptions: []btcwallet.LoaderOption{
+				btcwallet.LoaderWithLocalWalletDB(
+					tempTestDirBob, false, time.Minute,
+				),
+			},
 		}
-		bobWalletController, err = walletDriver.New(bobWalletConfig)
+		bobWalletController, err = walletDriver.New(
+			bobWalletConfig, blockCache,
+		)
 		if err != nil {
 			t.Fatalf("unable to create btcwallet: %v", err)
 		}

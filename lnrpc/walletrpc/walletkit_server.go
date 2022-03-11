@@ -1,3 +1,4 @@
+//go:build walletrpc
 // +build walletrpc
 
 package walletrpc
@@ -5,6 +6,7 @@ package walletrpc
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"io/ioutil"
@@ -21,7 +23,7 @@ import (
 	"github.com/btcsuite/btcutil/psbt"
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wtxmgr"
-	"github.com/grpc-ecosystem/grpc-gateway/runtime"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime"
 	"github.com/lightningnetwork/lnd/input"
 	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/labels"
@@ -34,13 +36,6 @@ import (
 	"github.com/lightningnetwork/lnd/sweep"
 	"google.golang.org/grpc"
 	"gopkg.in/macaroon-bakery.v2/bakery"
-)
-
-const (
-	// subServerName is the name of the sub rpc server. We'll use this name
-	// to register ourselves, and we also require that the main
-	// SubServerConfigDispatcher instance recognize as the name of our
-	subServerName = "WalletKitRPC"
 )
 
 var (
@@ -127,6 +122,10 @@ var (
 			Entity: "onchain",
 			Action: "write",
 		}},
+		"/walletrpc.WalletKit/SignPsbt": {{
+			Entity: "onchain",
+			Action: "write",
+		}},
 		"/walletrpc.WalletKit/FinalizePsbt": {{
 			Entity: "onchain",
 			Action: "write",
@@ -178,6 +177,9 @@ type ServerShell struct {
 // to execute common wallet operations. This includes requesting new addresses,
 // keys (for contracts!), and publishing transactions.
 type WalletKit struct {
+	// Required by the grpc-gateway/v2 library for forward compatibility.
+	UnimplementedWalletKitServer
+
 	cfg *Config
 }
 
@@ -252,7 +254,7 @@ func (w *WalletKit) Stop() error {
 //
 // NOTE: This is part of the lnrpc.SubServer interface.
 func (w *WalletKit) Name() string {
-	return subServerName
+	return SubServerName
 }
 
 // RegisterWithRootServer will be called by the root gRPC server to direct a
@@ -310,6 +312,14 @@ func (r *ServerShell) CreateSubServer(configRegistry lnrpc.SubServerConfigDispat
 
 	r.WalletKitServer = subServer
 	return subServer, macPermissions, nil
+}
+
+// internalScope returns the internal key scope.
+func (w *WalletKit) internalScope() waddrmgr.KeyScope {
+	return waddrmgr.KeyScope{
+		Purpose: keychain.BIP0043Purpose,
+		Coin:    w.cfg.ChainParams.HDCoinType,
+	}
 }
 
 // ListUnspent returns useful information about each unspent output owned by the
@@ -509,9 +519,17 @@ func (w *WalletKit) NextAddr(ctx context.Context,
 		account = req.Account
 	}
 
-	addr, err := w.cfg.Wallet.NewAddress(
-		lnwallet.WitnessPubKey, false, account,
-	)
+	addrType := lnwallet.WitnessPubKey
+	switch req.Type {
+	case AddressType_NESTED_WITNESS_PUBKEY_HASH:
+		addrType = lnwallet.NestedWitnessPubKey
+
+	case AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH:
+		return nil, fmt.Errorf("invalid address type for next "+
+			"address: %v", req.Type)
+	}
+
+	addr, err := w.cfg.Wallet.NewAddress(addrType, req.Change, account)
 	if err != nil {
 		return nil, err
 	}
@@ -992,9 +1010,6 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 	// PSBT and copy the RPC information over.
 	case req.GetRaw() != nil:
 		tpl := req.GetRaw()
-		if len(tpl.Outputs) == 0 {
-			return nil, fmt.Errorf("no outputs specified")
-		}
 
 		txOut := make([]*wire.TxOut, 0, len(tpl.Outputs))
 		for addrStr, amt := range tpl.Outputs {
@@ -1066,7 +1081,16 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 
 	default:
 		return nil, fmt.Errorf("fee definition missing, need to " +
-			"specify either target_conf or set_per_vbyte")
+			"specify either target_conf or sat_per_vbyte")
+	}
+
+	// Then, we'll extract the minimum number of confirmations that each
+	// output we use to fund the transaction should satisfy.
+	minConfs, err := lnrpc.ExtractMinConfs(
+		req.GetMinConfs(), req.GetSpendUnconfirmed(),
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	// The RPC parsing part is now over. Several of the following operations
@@ -1087,7 +1111,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		if len(packet.UnsignedTx.TxIn) > 0 {
 			// Get a list of all unspent witness outputs.
 			utxos, err := w.cfg.Wallet.ListUnspentWitness(
-				defaultMinConf, defaultMaxConf, account,
+				minConfs, defaultMaxConf, account,
 			)
 			if err != nil {
 				return err
@@ -1106,7 +1130,7 @@ func (w *WalletKit) FundPsbt(_ context.Context,
 		// lock any coins but might still change the wallet DB by
 		// generating a new change address.
 		changeIndex, err = w.cfg.Wallet.FundPsbt(
-			packet, feeSatPerKW, account,
+			packet, minConfs, feeSatPerKW, account,
 		)
 		if err != nil {
 			return fmt.Errorf("wallet couldn't fund PSBT: %v", err)
@@ -1166,6 +1190,47 @@ func marshallLeases(locks []*wtxmgr.LockedOutput) []*UtxoLease {
 	}
 
 	return rpcLocks
+}
+
+// SignPsbt expects a partial transaction with all inputs and outputs fully
+// declared and tries to sign all unsigned inputs that have all required fields
+// (UTXO information, BIP32 derivation information, witness or sig scripts)
+// set.
+// If no error is returned, the PSBT is ready to be given to the next signer or
+// to be finalized if lnd was the last signer.
+//
+// NOTE: This RPC only signs inputs (and only those it can sign), it does not
+// perform any other tasks (such as coin selection, UTXO locking or
+// input/output/fee value validation, PSBT finalization). Any input that is
+// incomplete will be skipped.
+func (w *WalletKit) SignPsbt(_ context.Context, req *SignPsbtRequest) (
+	*SignPsbtResponse, error) {
+
+	packet, err := psbt.NewFromRawBytes(
+		bytes.NewReader(req.FundedPsbt), false,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("error parsing PSBT: %v", err)
+	}
+
+	// Let the wallet do the heavy lifting. This will sign all inputs that
+	// we have the UTXO for. If some inputs can't be signed and don't have
+	// witness data attached, they will just be skipped.
+	err = w.cfg.Wallet.SignPsbt(packet)
+	if err != nil {
+		return nil, fmt.Errorf("error signing PSBT: %v", err)
+	}
+
+	// Serialize the signed PSBT in both the packet and wire format.
+	var signedPsbtBytes bytes.Buffer
+	err = packet.Serialize(&signedPsbtBytes)
+	if err != nil {
+		return nil, fmt.Errorf("error serializing PSBT: %v", err)
+	}
+
+	return &SignPsbtResponse{
+		SignedPsbt: signedPsbtBytes.Bytes(),
+	}, nil
 }
 
 // FinalizePsbt expects a partial transaction with all inputs and outputs fully
@@ -1233,7 +1298,9 @@ func (w *WalletKit) FinalizePsbt(_ context.Context,
 
 // marshalWalletAccount converts the properties of an account into its RPC
 // representation.
-func marshalWalletAccount(account *waddrmgr.AccountProperties) (*Account, error) {
+func marshalWalletAccount(internalScope waddrmgr.KeyScope,
+	account *waddrmgr.AccountProperties) (*Account, error) {
+
 	var addrType AddressType
 	switch account.KeyScope {
 	case waddrmgr.KeyScopeBIP0049Plus:
@@ -1244,15 +1311,22 @@ func marshalWalletAccount(account *waddrmgr.AccountProperties) (*Account, error)
 			break
 		}
 
-		switch account.AddrSchema {
-		case &waddrmgr.KeyScopeBIP0049AddrSchema:
+		switch *account.AddrSchema {
+		case waddrmgr.KeyScopeBIP0049AddrSchema:
 			addrType = AddressType_NESTED_WITNESS_PUBKEY_HASH
+
+		case waddrmgr.ScopeAddrMap[waddrmgr.KeyScopeBIP0049Plus]:
+			addrType = AddressType_HYBRID_NESTED_WITNESS_PUBKEY_HASH
+
 		default:
 			return nil, fmt.Errorf("unsupported address schema %v",
 				*account.AddrSchema)
 		}
 
 	case waddrmgr.KeyScopeBIP0084:
+		addrType = AddressType_WITNESS_PUBKEY_HASH
+
+	case internalScope:
 		addrType = AddressType_WITNESS_PUBKEY_HASH
 
 	default:
@@ -1274,7 +1348,13 @@ func marshalWalletAccount(account *waddrmgr.AccountProperties) (*Account, error)
 		nonHardenedIndex := account.AccountPubKey.ChildIndex() -
 			hdkeychain.HardenedKeyStart
 		rpcAccount.ExtendedPublicKey = account.AccountPubKey.String()
-		rpcAccount.MasterKeyFingerprint = account.MasterKeyFingerprint
+		if account.MasterKeyFingerprint != 0 {
+			var mkfp [4]byte
+			binary.BigEndian.PutUint32(
+				mkfp[:], account.MasterKeyFingerprint,
+			)
+			rpcAccount.MasterKeyFingerprint = mkfp[:]
+		}
 		rpcAccount.DerivationPath = fmt.Sprintf("%v/%v'",
 			account.KeyScope, nonHardenedIndex)
 	}
@@ -1322,7 +1402,9 @@ func (w *WalletKit) ListAccounts(ctx context.Context,
 			continue
 		}
 
-		rpcAccount, err := marshalWalletAccount(account)
+		rpcAccount, err := marshalWalletAccount(
+			w.internalScope(), account,
+		)
 		if err != nil {
 			return nil, err
 		}
@@ -1387,19 +1469,52 @@ func (w *WalletKit) ImportAccount(ctx context.Context,
 	if err != nil {
 		return nil, err
 	}
+
+	var mkfp uint32
+	switch len(req.MasterKeyFingerprint) {
+	// No master key fingerprint provided, which is fine as it's not
+	// required.
+	case 0:
+	// Expected length.
+	case 4:
+		mkfp = binary.BigEndian.Uint32(req.MasterKeyFingerprint)
+	default:
+		return nil, errors.New("invalid length for master key " +
+			"fingerprint, expected 4 bytes in big-endian")
+	}
+
 	addrType, err := parseAddrType(req.AddressType, false)
 	if err != nil {
 		return nil, err
 	}
 
-	err = w.cfg.Wallet.ImportAccount(
-		req.Name, accountPubKey, req.MasterKeyFingerprint, addrType,
+	accountProps, extAddrs, intAddrs, err := w.cfg.Wallet.ImportAccount(
+		req.Name, accountPubKey, mkfp, addrType, req.DryRun,
 	)
 	if err != nil {
 		return nil, err
 	}
 
-	return &ImportAccountResponse{}, nil
+	rpcAccount, err := marshalWalletAccount(w.internalScope(), accountProps)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &ImportAccountResponse{Account: rpcAccount}
+	if !req.DryRun {
+		return resp, nil
+	}
+
+	resp.DryRunExternalAddrs = make([]string, len(extAddrs))
+	for i := 0; i < len(extAddrs); i++ {
+		resp.DryRunExternalAddrs[i] = extAddrs[i].String()
+	}
+	resp.DryRunInternalAddrs = make([]string, len(intAddrs))
+	for i := 0; i < len(intAddrs); i++ {
+		resp.DryRunInternalAddrs[i] = intAddrs[i].String()
+	}
+
+	return resp, nil
 }
 
 // ImportPublicKey imports a single derived public key into the wallet. The

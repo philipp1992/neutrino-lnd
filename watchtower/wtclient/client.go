@@ -486,7 +486,7 @@ func (c *TowerClient) Stop() error {
 		// fires.
 		//
 		// For full safety, this can be set to 0 and wait out
-		// indefinitely. However for mobile clients which may have a
+		// indefinitely.  However for mobile clients which may have a
 		// limited amount of time to exit before the background process
 		// is killed, this offers a way to ensure the process
 		// terminates.
@@ -735,8 +735,6 @@ func (c *TowerClient) backupDispatcher() {
 					"negotiation is in progress")
 
 			case <-c.forceQuit:
-				return
-			case <-c.pipeline.quit:
 				return
 			}
 

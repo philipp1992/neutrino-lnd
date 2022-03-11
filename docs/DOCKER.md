@@ -61,8 +61,7 @@ script in the image that can be called (before starting the container for
 example):
 
 ```shell
-⛰  docker pull lightninglabs/lnd:v0.12.0-beta
-⛰  docker run --rm --entrypoint="" lightninglabs/lnd:v0.12.0-beta /verify-install.sh
+⛰  docker run --rm --entrypoint="" lightninglabs/lnd:v0.12.1-beta /verify-install.sh v0.12.1-beta
 ⛰  OK=$?
 ⛰  if [ "$OK" -ne "0" ]; then echo "Verification failed!"; exit 1; done
 ⛰  docker run lightninglabs/lnd [command-line options]
@@ -110,17 +109,16 @@ to expose RPC ports, use `btcd` or `bitcoind`, or add additional chains.
 
 ## LND Development and Testing
 
-To test the Docker production image locally, run the following from
-the project root:
+To test the Docker production image locally, run the following from the project root:
 
 ```shell
 ⛰  docker build . -t myrepository/lnd:master
 ```
 
-To choose a specific branch or tag instead, use the "checkout" build-arg.  For example, to build the latest commits in master:
+To choose a specific [branch](https://github.com/lightningnetwork/lnd/branches) or [tag](https://hub.docker.com/r/lightninglabs/lnd/tags?page=1&ordering=last_updated) instead, use the "checkout" build-arg. For example, to build the latest tagged commit:
 
 ```shell
-⛰  docker build . --build-arg checkout=v0.8.0-beta -t myrepository/lnd:v0.8.0-beta
+⛰  docker build . --build-arg checkout=v0.13.0-beta -t myrepository/lnd:v0.13.0-beta
 ```
 
 To build the image using the most current tag:

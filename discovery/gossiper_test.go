@@ -25,6 +25,8 @@ import (
 	"github.com/lightningnetwork/lnd/batch"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/keychain"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnpeer"
 	"github.com/lightningnetwork/lnd/lntest/mock"
 	"github.com/lightningnetwork/lnd/lntest/wait"
@@ -45,11 +47,15 @@ var (
 		R: new(big.Int),
 		S: new(big.Int),
 	}
-	_, _ = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
-	_, _ = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	_, _       = testSig.R.SetString("63724406601629180062774974542967536251589935445068131219452686511677818569431", 10)
+	_, _       = testSig.S.SetString("18801056069249825825291287104931333862866033135609736119018462340006816851118", 10)
+	testKeyLoc = keychain.KeyLocator{Family: keychain.KeyFamilyNodeKey}
 
 	selfKeyPriv, _ = btcec.NewPrivateKey(btcec.S256())
-	selfKeyPub     = selfKeyPriv.PubKey()
+	selfKeyDesc    = &keychain.KeyDescriptor{
+		PubKey:     selfKeyPriv.PubKey(),
+		KeyLocator: testKeyLoc,
+	}
 
 	bitcoinKeyPriv1, _ = btcec.NewPrivateKey(btcec.S256())
 	bitcoinKeyPub1     = bitcoinKeyPriv1.PubKey()
@@ -100,19 +106,21 @@ func makeTestDB() (*channeldb.DB, func(), error) {
 type mockGraphSource struct {
 	bestHeight uint32
 
-	mu      sync.Mutex
-	nodes   []channeldb.LightningNode
-	infos   map[uint64]channeldb.ChannelEdgeInfo
-	edges   map[uint64][]channeldb.ChannelEdgePolicy
-	zombies map[uint64][][33]byte
+	mu            sync.Mutex
+	nodes         []channeldb.LightningNode
+	infos         map[uint64]channeldb.ChannelEdgeInfo
+	edges         map[uint64][]channeldb.ChannelEdgePolicy
+	zombies       map[uint64][][33]byte
+	chansToReject map[uint64]struct{}
 }
 
 func newMockRouter(height uint32) *mockGraphSource {
 	return &mockGraphSource{
-		bestHeight: height,
-		infos:      make(map[uint64]channeldb.ChannelEdgeInfo),
-		edges:      make(map[uint64][]channeldb.ChannelEdgePolicy),
-		zombies:    make(map[uint64][][33]byte),
+		bestHeight:    height,
+		infos:         make(map[uint64]channeldb.ChannelEdgeInfo),
+		edges:         make(map[uint64][]channeldb.ChannelEdgePolicy),
+		zombies:       make(map[uint64][][33]byte),
+		chansToReject: make(map[uint64]struct{}),
 	}
 }
 
@@ -138,8 +146,19 @@ func (r *mockGraphSource) AddEdge(info *channeldb.ChannelEdgeInfo,
 		return errors.New("info already exist")
 	}
 
+	if _, ok := r.chansToReject[info.ChannelID]; ok {
+		return errors.New("validation failed")
+	}
+
 	r.infos[info.ChannelID] = *info
 	return nil
+}
+
+func (r *mockGraphSource) queueValidationFail(chanID uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.chansToReject[chanID] = struct{}{}
 }
 
 func (r *mockGraphSource) UpdateEdge(edge *channeldb.ChannelEdgePolicy,
@@ -187,7 +206,8 @@ func (r *mockGraphSource) ForEachNode(func(node *channeldb.LightningNode) error)
 	return nil
 }
 
-func (r *mockGraphSource) ForAllOutgoingChannels(cb func(i *channeldb.ChannelEdgeInfo,
+func (r *mockGraphSource) ForAllOutgoingChannels(cb func(tx kvdb.RTx,
+	i *channeldb.ChannelEdgeInfo,
 	c *channeldb.ChannelEdgePolicy) error) error {
 
 	r.mu.Lock()
@@ -210,7 +230,9 @@ func (r *mockGraphSource) ForAllOutgoingChannels(cb func(i *channeldb.ChannelEdg
 	}
 
 	for _, channel := range chans {
-		cb(channel.Info, channel.Policy1)
+		if err := cb(nil, channel.Info, channel.Policy1); err != nil {
+			return err
+		}
 	}
 
 	return nil
@@ -384,7 +406,9 @@ func (r *mockGraphSource) MarkEdgeZombie(chanID lnwire.ShortChannelID, pubKey1,
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
+
 	r.zombies[chanID.ToUint64()] = [][33]byte{pubKey1, pubKey2}
+
 	return nil
 }
 
@@ -549,7 +573,7 @@ func createNodeAnnouncement(priv *btcec.PrivateKey,
 	}
 
 	signer := mock.SingleSigner{Privkey: priv}
-	sig, err := netann.SignAnnouncement(&signer, priv.PubKey(), a)
+	sig, err := netann.SignAnnouncement(&signer, testKeyLoc, a)
 	if err != nil {
 		return nil, err
 	}
@@ -599,9 +623,8 @@ func createUpdateAnnouncement(blockHeight uint32,
 }
 
 func signUpdate(nodeKey *btcec.PrivateKey, a *lnwire.ChannelUpdate) error {
-	pub := nodeKey.PubKey()
 	signer := mock.SingleSigner{Privkey: nodeKey}
-	sig, err := netann.SignAnnouncement(&signer, pub, a)
+	sig, err := netann.SignAnnouncement(&signer, testKeyLoc, a)
 	if err != nil {
 		return err
 	}
@@ -648,9 +671,8 @@ func createChannelAnnouncement(blockHeight uint32, key1, key2 *btcec.PrivateKey,
 
 	a := createAnnouncementWithoutProof(blockHeight, key1.PubKey(), key2.PubKey(), extraBytes...)
 
-	pub := key1.PubKey()
 	signer := mock.SingleSigner{Privkey: key1}
-	sig, err := netann.SignAnnouncement(&signer, pub, a)
+	sig, err := netann.SignAnnouncement(&signer, testKeyLoc, a)
 	if err != nil {
 		return nil, err
 	}
@@ -659,9 +681,8 @@ func createChannelAnnouncement(blockHeight uint32, key1, key2 *btcec.PrivateKey,
 		return nil, err
 	}
 
-	pub = key2.PubKey()
 	signer = mock.SingleSigner{Privkey: key2}
-	sig, err = netann.SignAnnouncement(&signer, pub, a)
+	sig, err = netann.SignAnnouncement(&signer, testKeyLoc, a)
 	if err != nil {
 		return nil, err
 	}
@@ -670,9 +691,8 @@ func createChannelAnnouncement(blockHeight uint32, key1, key2 *btcec.PrivateKey,
 		return nil, err
 	}
 
-	pub = bitcoinKeyPriv1.PubKey()
 	signer = mock.SingleSigner{Privkey: bitcoinKeyPriv1}
-	sig, err = netann.SignAnnouncement(&signer, pub, a)
+	sig, err = netann.SignAnnouncement(&signer, testKeyLoc, a)
 	if err != nil {
 		return nil, err
 	}
@@ -681,9 +701,8 @@ func createChannelAnnouncement(blockHeight uint32, key1, key2 *btcec.PrivateKey,
 		return nil, err
 	}
 
-	pub = bitcoinKeyPriv2.PubKey()
 	signer = mock.SingleSigner{Privkey: bitcoinKeyPriv2}
-	sig, err = netann.SignAnnouncement(&signer, pub, a)
+	sig, err = netann.SignAnnouncement(&signer, testKeyLoc, a)
 	if err != nil {
 		return nil, err
 	}
@@ -766,7 +785,7 @@ func createTestCtx(startHeight uint32) (*testCtx, func(), error) {
 		MinimumBatchSize:      10,
 		MaxChannelUpdateBurst: DefaultMaxChannelUpdateBurst,
 		ChannelUpdateInterval: DefaultChannelUpdateInterval,
-	}, selfKeyPub)
+	}, selfKeyDesc)
 
 	if err := gossiper.Start(); err != nil {
 		cleanUpDb()
@@ -1461,7 +1480,10 @@ func TestSignatureAnnouncementRetryAtStartup(t *testing.T) {
 		NumActiveSyncers:     3,
 		MinimumBatchSize:     10,
 		SubBatchDelay:        time.Second * 5,
-	}, ctx.gossiper.selfKey)
+	}, &keychain.KeyDescriptor{
+		PubKey:     ctx.gossiper.selfKey,
+		KeyLocator: ctx.gossiper.selfKeyLoc,
+	})
 	if err != nil {
 		t.Fatalf("unable to recreate gossiper: %v", err)
 	}
@@ -2037,7 +2059,9 @@ func TestForwardPrivateNodeAnnouncement(t *testing.T) {
 	// We'll start off by processing a channel announcement without a proof
 	// (i.e., an unadvertised channel), followed by a node announcement for
 	// this same channel announcement.
-	chanAnn := createAnnouncementWithoutProof(startingHeight-2, selfKeyPub, remoteKeyPub1)
+	chanAnn := createAnnouncementWithoutProof(
+		startingHeight-2, selfKeyDesc.PubKey, remoteKeyPub1,
+	)
 	pubKey := remoteKeyPriv1.PubKey()
 
 	select {
@@ -2304,13 +2328,32 @@ func TestProcessZombieEdgeNowLive(t *testing.T) {
 		t.Fatalf("unable to sign update with new timestamp: %v", err)
 	}
 
-	// We'll also add the edge to our zombie index.
+	// We'll also add the edge to our zombie index, provide a blank pubkey
+	// for the first node as we're simulating the sitaution where the first
+	// ndoe is updating but the second node isn't. In this case we only
+	// want to allow a new update from the second node to allow the entire
+	// edge to be resurrected.
 	chanID := batch.chanAnn.ShortChannelID
 	err = ctx.router.MarkEdgeZombie(
-		chanID, batch.chanAnn.NodeID1, batch.chanAnn.NodeID2,
+		chanID, [33]byte{}, batch.chanAnn.NodeID2,
 	)
 	if err != nil {
 		t.Fatalf("unable mark channel %v as zombie: %v", chanID, err)
+	}
+
+	// If we send a new update but for the other direction of the channel,
+	// then it should still be rejected as we want a fresh update from the
+	// one that was considered stale.
+	batch.chanUpdAnn1.Timestamp = uint32(time.Now().Unix())
+	if err := signUpdate(remoteKeyPriv1, batch.chanUpdAnn1); err != nil {
+		t.Fatalf("unable to sign update with new timestamp: %v", err)
+	}
+	processAnnouncement(batch.chanUpdAnn1, true, true)
+
+	// At this point, the channel should still be consiered a zombie.
+	_, _, _, err = ctx.router.GetChannelByID(chanID)
+	if err != channeldb.ErrZombieEdge {
+		t.Fatalf("channel should still be a zombie")
 	}
 
 	// Attempting to process the current channel update should fail due to
@@ -3534,6 +3577,7 @@ out:
 	const newTimeLockDelta = 100
 	var edgesToUpdate []EdgeWithInfo
 	err = ctx.router.ForAllOutgoingChannels(func(
+		_ kvdb.RTx,
 		info *channeldb.ChannelEdgeInfo,
 		edge *channeldb.ChannelEdgePolicy) error {
 
@@ -3632,8 +3676,12 @@ func TestProcessChannelAnnouncementOptionalMsgFields(t *testing.T) {
 	}
 	defer cleanup()
 
-	chanAnn1 := createAnnouncementWithoutProof(100, selfKeyPub, remoteKeyPub1)
-	chanAnn2 := createAnnouncementWithoutProof(101, selfKeyPub, remoteKeyPub1)
+	chanAnn1 := createAnnouncementWithoutProof(
+		100, selfKeyDesc.PubKey, remoteKeyPub1,
+	)
+	chanAnn2 := createAnnouncementWithoutProof(
+		101, selfKeyDesc.PubKey, remoteKeyPub1,
+	)
 
 	// assertOptionalMsgFields is a helper closure that ensures the optional
 	// message fields were set as intended.
@@ -4175,5 +4223,58 @@ func TestIgnoreOwnAnnouncement(t *testing.T) {
 	}
 	if err == nil || !strings.Contains(err.Error(), "ignoring") {
 		t.Fatalf("expected gossiper to ignore announcement, got: %v", err)
+	}
+}
+
+// TestRejectCacheChannelAnn checks that if we reject a channel announcement,
+// then if we attempt to validate it again, we'll reject it with the proper
+// error.
+func TestRejectCacheChannelAnn(t *testing.T) {
+	t.Parallel()
+
+	ctx, cleanup, err := createTestCtx(proofMatureDelta)
+	if err != nil {
+		t.Fatalf("can't create context: %v", err)
+	}
+	defer cleanup()
+
+	// First, we create a channel announcement to send over to our test
+	// peer.
+	batch, err := createRemoteAnnouncements(0)
+	if err != nil {
+		t.Fatalf("can't generate announcements: %v", err)
+	}
+
+	remoteKey, err := btcec.ParsePubKey(batch.nodeAnn2.NodeID[:], btcec.S256())
+	if err != nil {
+		t.Fatalf("unable to parse pubkey: %v", err)
+	}
+	remotePeer := &mockPeer{remoteKey, nil, nil}
+
+	// Before sending over the announcement, we'll modify it such that we
+	// know it will always fail.
+	chanID := batch.chanAnn.ShortChannelID.ToUint64()
+	ctx.router.queueValidationFail(chanID)
+
+	// If we process the batch the first time we should get an error.
+	select {
+	case err = <-ctx.gossiper.ProcessRemoteAnnouncement(
+		batch.chanAnn, remotePeer,
+	):
+		require.NotNil(t, err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not process remote announcement")
+	}
+
+	// If we process it a *second* time, then we should get an error saying
+	// we rejected it already.
+	select {
+	case err = <-ctx.gossiper.ProcessRemoteAnnouncement(
+		batch.chanAnn, remotePeer,
+	):
+		errStr := err.Error()
+		require.Contains(t, errStr, "recently rejected")
+	case <-time.After(2 * time.Second):
+		t.Fatal("did not process remote announcement")
 	}
 }

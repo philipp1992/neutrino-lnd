@@ -1,32 +1,32 @@
+//go:build dev
 // +build dev
 
 package chainntnfstest
 
 import (
+	"bytes"
 	"fmt"
 	"io/ioutil"
 	"log"
+	"sync"
 	"testing"
 	"time"
-	"bytes"
-	"sync"
 
-	"github.com/btcsuite/btcd/integration/rpctest"
-	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/btcsuite/btcd/integration/rpctest"
 	"github.com/btcsuite/btcd/rpcclient"
-	"github.com/btcsuite/btcwallet/chain"
+	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
+	"github.com/btcsuite/btcwallet/chain"
 	_ "github.com/btcsuite/btcwallet/walletdb/bdb" // Required to auto-register the boltdb walletdb implementation.
+	"github.com/lightninglabs/neutrino"
+	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/chainntnfs"
-	"github.com/lightningnetwork/lnd/chainntnfs/lightwalletnotify"
+	"github.com/lightningnetwork/lnd/chainntnfs/bitcoindnotify"
+	"github.com/lightningnetwork/lnd/chainntnfs/btcdnotify"
 	"github.com/lightningnetwork/lnd/chainntnfs/neutrinonotify"
 	"github.com/lightningnetwork/lnd/channeldb"
 )
-
-///////////////////////////////////////////////////////////////////////////////
-// TX NTFN TESTS
-///////////////////////////////////////////////////////////////////////////////
 
 func testSingleConfirmationNotification(miner *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
@@ -41,13 +41,6 @@ func testSingleConfirmationNotification(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
-
-	// Now generate a single block
-	blockHash, err := miner.Client.Generate(1)
-	if err != nil {
-		t.Fatalf("unable to generate single block: %v", err)
-	}
-
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
@@ -82,11 +75,11 @@ func testSingleConfirmationNotification(miner *rpctest.Harness,
 	}
 
 	select {
-		case confInfo := <-confIntent.Confirmed:
-			if (!confInfo.BlockHash.IsEqual(blockHash[0])) {
-				t.Fatalf("mismatched block hashes: expected %v, got %v",
-					blockHash[0], confInfo.BlockHash)
-			}
+	case confInfo := <-confIntent.Confirmed:
+		if !confInfo.BlockHash.IsEqual(blockHash[0]) {
+			t.Fatalf("mismatched block hashes: expected %v, got %v",
+				blockHash[0], confInfo.BlockHash)
+		}
 
 		// Finally, we'll verify that the tx index returned is the exact same
 		// as the tx index of the transaction within the block itself.
@@ -95,24 +88,20 @@ func testSingleConfirmationNotification(miner *rpctest.Harness,
 			t.Fatalf("unable to fetch block: %v", err)
 		}
 
-			block := btcutil.NewBlock(msgBlock)
-			specifiedTxHash, err := block.TxHash(int(confInfo.TxIndex))
-			if err != nil {
-				t.Fatalf("unable to index into block: %v", err)
-			}
+		block := btcutil.NewBlock(msgBlock)
+		specifiedTxHash, err := block.TxHash(int(confInfo.TxIndex))
+		if err != nil {
+			t.Fatalf("unable to index into block: %v", err)
+		}
 
-			if !specifiedTxHash.IsEqual(txid) {
-				t.Fatalf("mismatched tx indexes: expected %v, got %v",
-					txid, specifiedTxHash)
-			}
-
-		case <-time.After(20 * time.Second):
-			t.Fatalf("confirmation notification never received")
-			break
+		if !specifiedTxHash.IsEqual(txid) {
+			t.Fatalf("mismatched tx indexes: expected %v, got %v",
+				txid, specifiedTxHash)
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("confirmation notification never received")
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 func testMultiConfirmationNotification(miner *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
@@ -126,14 +115,6 @@ func testMultiConfirmationNotification(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test addr: %v", err)
 	}
-
-	// Now generate a single block, the transaction should be included which
-	// should trigger a notification event.
-	_, err = miner.Client.Generate(1)
-	if err != nil {
-		t.Fatalf("unable to generate single block: %v", err)
-	}
-
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
 	}
@@ -153,7 +134,6 @@ func testMultiConfirmationNotification(miner *rpctest.Harness,
 		confIntent, err = notifier.RegisterConfirmationsNtfn(
 			txid, pkScript, numConfs, uint32(currentHeight),
 		)
-
 	}
 	if err != nil {
 		t.Fatalf("unable to register ntfn: %v", err)
@@ -165,17 +145,16 @@ func testMultiConfirmationNotification(miner *rpctest.Harness,
 		t.Fatalf("unable to generate single block: %v", err)
 	}
 
+	// TODO(roasbeef): reduce all timeouts after neutrino sync tightended
+	// up
+
 	select {
 	case <-confIntent.Confirmed:
-		{
-			break
-		}
+		break
 	case <-time.After(20 * time.Second):
 		t.Fatalf("confirmation notification never received")
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 func testBatchConfirmationNotification(miner *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
@@ -214,12 +193,6 @@ func testBatchConfirmationNotification(miner *rpctest.Harness,
 			t.Fatalf("unable to register ntfn: %v", err)
 		}
 		confIntents[i] = confIntent
-
-		_, err = miner.Client.Generate(1)
-		if err != nil {
-			t.Fatalf("unable to generate single block: %v", err)
-		}
-
 		if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 			t.Fatalf("tx not relayed to miner: %v", err)
 		}
@@ -255,7 +228,7 @@ func testBatchConfirmationNotification(miner *rpctest.Harness,
 			// notification should list the initial confirmation
 			// height rather than the height they were _fully_
 			// confirmed.
-			if conf.BlockHeight != (initialConfHeight + uint32(i)) {
+			if conf.BlockHeight != initialConfHeight {
 				t.Fatalf("notification has incorrect initial "+
 					"conf height: expected %v, got %v",
 					initialConfHeight, conf.BlockHeight)
@@ -266,8 +239,6 @@ func testBatchConfirmationNotification(miner *rpctest.Harness,
 		}
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 func checkNotificationFields(ntfn *chainntnfs.SpendDetail,
 	outpoint *wire.OutPoint, spenderSha *chainhash.Hash,
@@ -296,8 +267,6 @@ func checkNotificationFields(ntfn *chainntnfs.SpendDetail,
 			ntfn.SpendingHeight)
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 func testSpendNotification(miner *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
@@ -346,6 +315,10 @@ func testSpendNotification(miner *rpctest.Harness,
 		t.Fatalf("unable to broadcast tx: %v", err)
 	}
 
+	if err := chainntnfs.WaitForMempoolTx(miner, spenderSha); err != nil {
+		t.Fatalf("tx not relayed to miner: %v", err)
+	}
+
 	// Make sure notifications are not yet sent. We launch a go routine for
 	// all the spend clients, such that we can wait for them all in
 	// parallel.
@@ -389,10 +362,9 @@ func testSpendNotification(miner *rpctest.Harness,
 		t.Fatalf("did not expect to get notification before " +
 			"block was mined")
 	case <-time.After(mempoolSpendTimeout):
-		break
 	}
 	spendClients = append(spendClients, spentIntent)
-		
+
 	// Now we mine a single block, which should include our spend. The
 	// notification should also be sent off.
 	if _, err := miner.Client.Generate(1); err != nil {
@@ -411,7 +383,6 @@ func testSpendNotification(miner *rpctest.Harness,
 			// fields have been set properly.
 			checkNotificationFields(ntfn, outpoint, spenderSha,
 				currentHeight, t)
-				fmt.Printf("\nSpent")
 		case <-time.After(30 * time.Second):
 			t.Fatalf("spend ntfn never received")
 		}
@@ -423,7 +394,6 @@ func testBlockEpochNotification(miner *rpctest.Harness,
 
 	// We'd like to test the case of multiple registered clients receiving
 	// block epoch notifications.
-
 	const numBlocks = 10
 	const numNtfns = numBlocks + 1
 	const numClients = 5
@@ -433,6 +403,7 @@ func testBlockEpochNotification(miner *rpctest.Harness,
 	// expect each client to receive 11 notifications, one for the current
 	// tip of the chain, and one for each of the ten blocks we generate
 	// below. So we'll use a WaitGroup to synchronize the test.
+	clientErrors := make(chan error, numClients)
 	for i := 0; i < numClients; i++ {
 		epochClient, err := notifier.RegisterBlockEpochNtfn(nil)
 		if err != nil {
@@ -442,7 +413,24 @@ func testBlockEpochNotification(miner *rpctest.Harness,
 		wg.Add(numNtfns)
 		go func() {
 			for i := 0; i < numNtfns; i++ {
-				<-epochClient.Epochs
+				// Ensure that each block epoch has a header,
+				// and that header matches the contained header
+				// hash.
+				blockEpoch := <-epochClient.Epochs
+				if blockEpoch.BlockHeader == nil {
+					fmt.Println(i)
+					clientErrors <- fmt.Errorf("block " +
+						"header is nil")
+					return
+				}
+				if blockEpoch.BlockHeader.BlockHash() !=
+					*blockEpoch.Hash {
+
+					clientErrors <- fmt.Errorf("block " +
+						"header hash mismatch")
+					return
+				}
+
 				wg.Done()
 			}
 		}()
@@ -461,6 +449,8 @@ func testBlockEpochNotification(miner *rpctest.Harness,
 	}
 
 	select {
+	case err := <-clientErrors:
+		t.Fatalf("block epoch case failed: %v", err)
 	case <-epochsSent:
 	case <-time.After(30 * time.Second):
 		t.Fatalf("all notifications not sent")
@@ -475,9 +465,6 @@ func testMultiClientConfirmationNotification(miner *rpctest.Harness,
 	txid, pkScript, err := chainntnfs.GetTestTxidAndScript(miner)
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
-	}
-	if _, err := miner.Client.Generate(1); err != nil {
-		t.Fatalf("unable to generate single block: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
@@ -537,8 +524,6 @@ func testMultiClientConfirmationNotification(miner *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
-
 // Tests the case in which a confirmation notification is requested for a
 // transaction that has already been included in a block. In this case, the
 // confirmation notification should be dispatched immediately.
@@ -551,9 +536,6 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	txid3, pkScript3, err := chainntnfs.GetTestTxidAndScript(miner)
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
-	}
-	if _, err := miner.Client.Generate(1); err != nil {  // This block will contain txid 3
-		t.Fatalf("unable to generate single block: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid3); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
@@ -573,18 +555,13 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
 	}
+	if err := chainntnfs.WaitForMempoolTx(miner, txid1); err != nil {
+		t.Fatalf("tx not relayed to miner: %v", err)
+	}
+
 	txid2, pkScript2, err := chainntnfs.GetTestTxidAndScript(miner)
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
-	}
-
-	blockHash, err := miner.Client.Generate(1) // This block will contain txid 1&2
-	if err != nil {
-		t.Fatalf("unable to generate single block: %v", err)
-	}
-
-	if err := chainntnfs.WaitForMempoolTx(miner, txid1); err != nil {
-		t.Fatalf("tx not relayed to miner: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid2); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
@@ -608,11 +585,11 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	var ntfn1 *chainntnfs.ConfirmationEvent
 	if scriptDispatch {
 		ntfn1, err = notifier.RegisterConfirmationsNtfn(
-			nil, pkScript1, 1, uint32(currentHeight -1),
+			nil, pkScript1, 1, uint32(currentHeight),
 		)
 	} else {
 		ntfn1, err = notifier.RegisterConfirmationsNtfn(
-			txid1, pkScript1, 1, uint32(currentHeight -1),
+			txid1, pkScript1, 1, uint32(currentHeight),
 		)
 	}
 	if err != nil {
@@ -639,7 +616,7 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 
 		// We'll also ensure that the block height has been set
 		// properly.
-		if confInfo.BlockHeight != uint32(currentHeight) {
+		if confInfo.BlockHeight != uint32(currentHeight+1) {
 			t.Fatalf("incorrect block height: expected %v, got %v",
 				confInfo.BlockHeight, currentHeight)
 		}
@@ -654,11 +631,11 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	var ntfn2 *chainntnfs.ConfirmationEvent
 	if scriptDispatch {
 		ntfn2, err = notifier.RegisterConfirmationsNtfn(
-			nil, pkScript2, 3, uint32(currentHeight - 1),
+			nil, pkScript2, 3, uint32(currentHeight),
 		)
 	} else {
 		ntfn2, err = notifier.RegisterConfirmationsNtfn(
-			txid2, pkScript2, 3, uint32(currentHeight - 1),
+			txid2, pkScript2, 3, uint32(currentHeight),
 		)
 	}
 	if err != nil {
@@ -689,11 +666,11 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	var ntfn3 *chainntnfs.ConfirmationEvent
 	if scriptDispatch {
 		ntfn3, err = notifier.RegisterConfirmationsNtfn(
-			nil, pkScript3, 1, uint32(currentHeight-2),
+			nil, pkScript3, 1, uint32(currentHeight-1),
 		)
 	} else {
 		ntfn3, err = notifier.RegisterConfirmationsNtfn(
-			txid3, pkScript3, 1, uint32(currentHeight-2),
+			txid3, pkScript3, 1, uint32(currentHeight-1),
 		)
 	}
 	if err != nil {
@@ -738,7 +715,6 @@ func testTxConfirmedBeforeNtfnRegistration(miner *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
 // Test the case of a notification consumer having forget or being delayed in
 // checking for a confirmation. This should not cause the notifier to stop
 // working
@@ -750,10 +726,6 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 	txid, pkScript, err := chainntnfs.GetTestTxidAndScript(miner)
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
-	}
-	_, err = miner.Client.Generate(1)
-	if err != nil {
-		t.Fatalf("unable to generate block: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
@@ -797,10 +769,6 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 	txid, pkScript, err = chainntnfs.GetTestTxidAndScript(miner)
 	if err != nil {
 		t.Fatalf("unable to create test tx: %v", err)
-	}
-	_, err = miner.Client.Generate(1)
-	if err != nil {
-		t.Fatalf("unable to generate block: %v", err)
 	}
 	if err := chainntnfs.WaitForMempoolTx(miner, txid); err != nil {
 		t.Fatalf("tx not relayed to miner: %v", err)
@@ -847,7 +815,6 @@ func testLazyNtfnConsumer(miner *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
 // Tests the case in which a spend notification is requested for a spend that
 // has already been included in a block. In this case, the spend notification
 // should be dispatched immediately.
@@ -871,9 +838,9 @@ func testSpendBeforeNtfnRegistration(miner *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to broadcast tx: %v", err)
 	}
-	//if err := chainntnfs.WaitForMempoolTx(miner, spenderSha); err != nil {
-	//	t.Fatalf("tx not relayed to miner: %v", err)
-	//}
+	if err := chainntnfs.WaitForMempoolTx(miner, spenderSha); err != nil {
+		t.Fatalf("tx not relayed to miner: %v", err)
+	}
 
 	// We create an epoch client we can use to make sure the notifier is
 	// caught up to the mining node's chain.
@@ -968,8 +935,6 @@ func testSpendBeforeNtfnRegistration(miner *rpctest.Harness,
 	// The clients should still be notified immediately.
 	checkSpends()
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 func testCancelSpendNtfn(node *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
@@ -1069,63 +1034,6 @@ func testCancelSpendNtfn(node *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// BLOCK NTFN TESTS
-///////////////////////////////////////////////////////////////////////////////
-func testBlockEpochNotification(miner *rpctest.Harness,
-	notifier chainntnfs.TestChainNotifier, t *testing.T) {
-
-	// We'd like to test the case of multiple registered clients receiving
-	// block epoch notifications.
-
-	const numBlocks = 10
-	const numNtfns = numBlocks + 1
-	const numClients = 5
-	var wg sync.WaitGroup
-
-	// Create numClients clients which will listen for block notifications. We
-	// expect each client to receive 11 notifications, one for the current
-	// tip of the chain, and one for each of the ten blocks we generate
-	// below. So we'll use a WaitGroup to synchronize the test.
-	for i := 0; i < numClients; i++ {
-		epochClient, err := notifier.RegisterBlockEpochNtfn(nil)
-		if err != nil {
-			t.Fatalf("unable to register for epoch notification")
-		}
-
-		wg.Add(numNtfns)
-		go func() {
-			for i := 0; i < numNtfns; i++ {
-				<-epochClient.Epochs
-				wg.Done()
-			}
-		}()
-	}
-
-	epochsSent := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(epochsSent)
-	}()
-
-	// Now generate 10 blocks, the clients above should each receive 10
-	// notifications, thereby unblocking the goroutine above.
-	//for i := 0; i < numBlocks; i++ {
-		if _, err := miner.Client.Generate(numBlocks); err != nil {
-			t.Fatalf("unable to generate blocks: %v", err)
-		}
-	//}
-
-	select {
-	case <-epochsSent:
-	case <-time.After(10 * time.Second):
-		t.Fatalf("all notifications not sent")
-	}
-
-}
-
-///////////////////////////////////////////////////////////////////////////////
-
 func testCancelEpochNtfn(node *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, t *testing.T) {
 
@@ -1175,8 +1083,6 @@ func testCancelEpochNtfn(node *rpctest.Harness,
 		t.Fatalf("epoch notification not sent")
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 func testReorgConf(miner *rpctest.Harness,
 	notifier chainntnfs.TestChainNotifier, scriptDispatch bool, t *testing.T) {
@@ -1335,7 +1241,6 @@ func testReorgConf(miner *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
 // testReorgSpend ensures that the different ChainNotifier implementations
 // correctly handle outpoints whose spending transaction has been reorged out of
 // the chain.
@@ -1498,10 +1403,6 @@ func testReorgSpend(miner *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
-// BLOCK CATCHUP TESTS
-///////////////////////////////////////////////////////////////////////////////
-
 // testCatchUpClientOnMissedBlocks tests the case of multiple registered client
 // receiving historical block epoch notifications due to their best known block
 // being out of date.
@@ -1593,8 +1494,6 @@ func testCatchUpClientOnMissedBlocks(miner *rpctest.Harness,
 		t.Fatalf("received %d unexpected block notification", extraCount)
 	}
 }
-
-///////////////////////////////////////////////////////////////////////////////
 
 // testCatchUpOnMissedBlocks the case of multiple registered clients receiving
 // historical block epoch notifications due to the notifier's best known block
@@ -1700,7 +1599,6 @@ func testCatchUpOnMissedBlocks(miner *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
 // testCatchUpOnMissedBlocks tests that a client will still receive all valid
 // block notifications in the case where a notifier's best block has been reorged
 // out of the chain.
@@ -1914,8 +1812,6 @@ func testCatchUpOnMissedBlocksWithReorg(miner1 *rpctest.Harness,
 	}
 }
 
-///////////////////////////////////////////////////////////////////////////////
-
 type txNtfnTestCase struct {
 	name string
 	test func(node *rpctest.Harness, notifier chainntnfs.TestChainNotifier,
@@ -1935,76 +1831,76 @@ type blockCatchupTestCase struct {
 }
 
 var txNtfnTests = []txNtfnTestCase{
-	//{
-	//	name: "single conf ntfn",
-	//	test: testSingleConfirmationNotification, // Working
-	//},
-	//{
-	//	name: "multi conf ntfn",
-	//	test: testMultiConfirmationNotification, // Working
-	//},
-	//{
-	//	name: "batch conf ntfn",
-	//	test: testBatchConfirmationNotification, // Working
-	//},
-	//{
-	//	name: "multi client conf",
-	//	test: testMultiClientConfirmationNotification, // Working
-	//},
-	//{
-	//	name: "lazy ntfn consumer",
-	//	test: testLazyNtfnConsumer, // Working
-	//},
-	//{
-	//	name: "historical conf dispatch",
-	//	test: testTxConfirmedBeforeNtfnRegistration,
-	//},
-	//{
-	//	name: "reorg conf",
-	//	test: testReorgConf,
-	//},
+	{
+		name: "single conf ntfn",
+		test: testSingleConfirmationNotification,
+	},
+	{
+		name: "multi conf ntfn",
+		test: testMultiConfirmationNotification,
+	},
+	{
+		name: "batch conf ntfn",
+		test: testBatchConfirmationNotification,
+	},
+	{
+		name: "multi client conf",
+		test: testMultiClientConfirmationNotification,
+	},
+	{
+		name: "lazy ntfn consumer",
+		test: testLazyNtfnConsumer,
+	},
+	{
+		name: "historical conf dispatch",
+		test: testTxConfirmedBeforeNtfnRegistration,
+	},
+	{
+		name: "reorg conf",
+		test: testReorgConf,
+	},
 	{
 		name: "spend ntfn",
 		test: testSpendNotification,
 	},
-	//{
-	//	name: "historical spend dispatch",
-	//	test: testSpendBeforeNtfnRegistration,
-	//},
-	//{
-	//	name: "reorg spend",
-	//	test: testReorgSpend,
-	//},
-	//{
-	//	name: "cancel spend ntfn",
-	//	test: testCancelSpendNtfn,
-	//},
+	{
+		name: "historical spend dispatch",
+		test: testSpendBeforeNtfnRegistration,
+	},
+	{
+		name: "reorg spend",
+		test: testReorgSpend,
+	},
+	{
+		name: "cancel spend ntfn",
+		test: testCancelSpendNtfn,
+	},
 }
-//
+
 var blockNtfnTests = []blockNtfnTestCase{
-	//{
-	//	name: "block epoch",
-	//	test: testBlockEpochNotification, // Working
-	//},
-	//{
-	//	name: "cancel epoch ntfn",
-	//	test: testCancelEpochNtfn, // Working
-	//},
+	{
+		name: "block epoch",
+		test: testBlockEpochNotification,
+	},
+	{
+		name: "cancel epoch ntfn",
+		test: testCancelEpochNtfn,
+	},
 }
 
 var blockCatchupTests = []blockCatchupTestCase{
-	//{
-	//	name: "catch up client on historical block epoch ntfns",
-	//	test: testCatchUpClientOnMissedBlocks,
-	//},
-	//{
-	//	name: "test catch up on missed blocks",
-	//	test: testCatchUpOnMissedBlocks,
-	//},
-	//{
-	//	name: "test catch up on missed blocks w/ reorged best block",
-	//	test: testCatchUpOnMissedBlocksWithReorg,
-	//},
+	{
+		name: "catch up client on historical block epoch ntfns",
+		test: testCatchUpClientOnMissedBlocks,
+	},
+	{
+		name: "test catch up on missed blocks",
+		test: testCatchUpOnMissedBlocks,
+	},
+	{
+		name: "test catch up on missed blocks w/ reorged best block",
+		test: testCatchUpOnMissedBlocksWithReorg,
+	},
 }
 
 // TestInterfaces tests all registered interfaces with a unified set of tests
@@ -2026,10 +1922,11 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 	miner, tearDown := chainntnfs.NewMiner(t, nil, true, 25)
 	defer tearDown()
 
+	rpcConfig := miner.RPCConfig()
 	p2pAddr := miner.P2PAddress()
 
 	log.Printf("Running %v ChainNotifier interface tests",
-		2*len(txNtfnTests)+len(blockNtfnTests))//+len(blockCatchupTests))
+		2*len(txNtfnTests)+len(blockNtfnTests)+len(blockCatchupTests))
 
 	for _, notifierDriver := range chainntnfs.RegisteredNotifiers() {
 		notifierType := notifierDriver.NotifierType
@@ -2038,11 +1935,6 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 		}
 
 		// Initialize a height hint cache for each notifier.
-
-		if notifierDriver.NotifierType != "lightwallet" {
-			continue
-		}
-
 		tempDir, err := ioutil.TempDir("", "channeldb")
 		if err != nil {
 			t.Fatalf("unable to create temp dir: %v", err)
@@ -2054,10 +1946,14 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 		testCfg := chainntnfs.CacheConfig{
 			QueryDisable: false,
 		}
-		hintCache, err := chainntnfs.NewHeightHintCache(testCfg, db)
+		hintCache, err := chainntnfs.NewHeightHintCache(
+			testCfg, db.Backend,
+		)
 		if err != nil {
 			t.Fatalf("unable to create height hint cache: %v", err)
 		}
+
+		blockCache := blockcache.NewBlockCache(10000)
 
 		var (
 			cleanUp     func()
@@ -2065,15 +1961,35 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 		)
 
 		switch notifierType {
-		case "lightwallet":
-			var lightwalletConn *chain.LightWalletConn
-			lightwalletConn, cleanUp = chainntnfs.NewLightWalletBackend(
+		case "bitcoind":
+			var bitcoindConn *chain.BitcoindConn
+			bitcoindConn, cleanUp = chainntnfs.NewBitcoindBackend(
 				t, p2pAddr, true,
 			)
 			newNotifier = func() (chainntnfs.TestChainNotifier, error) {
-				return lightwalletnotify.New(
-					lightwalletConn, chainntnfs.NetParams,
-					hintCache, hintCache,
+				return bitcoindnotify.New(
+					bitcoindConn, chainntnfs.NetParams,
+					hintCache, hintCache, blockCache,
+				), nil
+			}
+
+		case "btcd":
+			newNotifier = func() (chainntnfs.TestChainNotifier, error) {
+				return btcdnotify.New(
+					&rpcConfig, chainntnfs.NetParams,
+					hintCache, hintCache, blockCache,
+				)
+			}
+
+		case "neutrino":
+			var spvNode *neutrino.ChainService
+			spvNode, cleanUp = chainntnfs.NewNeutrinoBackend(
+				t, p2pAddr,
+			)
+			newNotifier = func() (chainntnfs.TestChainNotifier, error) {
+				return neutrinonotify.New(
+					spvNode, hintCache, hintCache,
+					blockCache,
 				), nil
 			}
 		}
@@ -2104,7 +2020,6 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 						t,
 					)
 				})
-
 				if !success {
 					break
 				}
@@ -2121,6 +2036,8 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 				break
 			}
 		}
+
+		notifier.Stop()
 
 		// Run catchup tests separately since they require restarting
 		// the notifier every time.
@@ -2141,8 +2058,6 @@ func TestInterfaces(t *testing.T, targetBackEnd string) {
 				break
 			}
 		}
-
-		notifier.Stop()
 
 		if cleanUp != nil {
 			cleanUp()

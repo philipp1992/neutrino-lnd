@@ -4,12 +4,14 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightninglabs/neutrino"
 	"github.com/lightninglabs/neutrino/headerfs"
+	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwallet"
 )
 
@@ -120,34 +122,30 @@ func (b *BtcWallet) GetUtxo(op *wire.OutPoint, pkScript []byte,
 			PkScript: pkScript,
 		}, nil
 
-	case *chain.LightWalletClient:
-		txout, err := backend.GetUnspentOutput(&op.Hash, op.Index)
-		if err != nil {
-			return nil, err
-		} else if txout == nil {
-			return nil, ErrOutputSpent
-		}
-
-		pkScript, err := hex.DecodeString(txout.ScriptPubKeyHex)
-		if err != nil {
-			return nil, err
-		}
-
-
-		return &wire.TxOut{
-			Value:    txout.Amount,
-			PkScript: pkScript,
-		}, nil
-
 	default:
 		return nil, fmt.Errorf("unknown backend")
 	}
 }
 
-// GetBlock returns a raw block from the server given its hash.
+// GetBlock returns a raw block from the server given its hash. For the Neutrino
+// implementation of the lnwallet.BlockChainIO interface, the Neutrino GetBlock
+// method is called directly. For other implementations, the block cache is used
+// to wrap the call to GetBlock.
 //
 // This method is a part of the lnwallet.BlockChainIO interface.
 func (b *BtcWallet) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) {
+	_, ok := b.chain.(*chain.NeutrinoClient)
+	if !ok {
+		return b.blockCache.GetBlock(blockHash, b.chain.GetBlock)
+	}
+
+	// For the neutrino implementation of lnwallet.BlockChainIO the neutrino
+	// GetBlock function can be called directly since it uses the same block
+	// cache. However, it does not lock the block cache mutex for the given
+	// block hash and so that is done here.
+	b.blockCache.HashMutex.Lock(lntypes.Hash(*blockHash))
+	defer b.blockCache.HashMutex.Unlock(lntypes.Hash(*blockHash))
+
 	return b.chain.GetBlock(blockHash)
 }
 
@@ -157,44 +155,6 @@ func (b *BtcWallet) GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error) 
 // This method is a part of the lnwallet.BlockChainIO interface.
 func (b *BtcWallet) GetBlockHash(blockHeight int64) (*chainhash.Hash, error) {
 	return b.chain.GetBlockHash(blockHeight)
-}
-
-func (b *BtcWallet) GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error) {
-	blockHash, err := b.chain.GetBlockHash(blockHeight)
-	if err != nil {
-		return nil, err
-	}
-
-	fundingBlock, err := b.chain.GetBlock(blockHash)
-	if err != nil {
-		return nil, err
-	}
-
-	//As a sanity check, ensure that the advertised transaction index is
-	//within the bounds of the total number of transactions within a
-	//block.
-	numTxns := uint32(len(fundingBlock.Transactions))
-	if txIndex > numTxns-1 {
-		return nil, fmt.Errorf("tx_index=#%v is out of range "+
-			"(max_index=%v), network_chan_id=%v", txIndex,
-			numTxns-1)
-	}
-
-	return fundingBlock.Transactions[txIndex], nil
-}
-
-// no cache for btcwallet
-func (b *BtcWallet) LoadCache(startHeight uint32) (bool, error) {
-	return true, nil
-}
-
-// no cache for btcwallet
-func (b *BtcWallet) FreeCache() error {
-	return nil
-}
-
-func (b *BtcWallet) OutputSpent(op *wire.OutPoint) (bool, error) {
-	return false, nil
 }
 
 // A compile time check to ensure that BtcWallet implements the BlockChainIO

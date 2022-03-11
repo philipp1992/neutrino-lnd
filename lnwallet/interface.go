@@ -15,7 +15,7 @@ import (
 	"github.com/btcsuite/btcwallet/waddrmgr"
 	"github.com/btcsuite/btcwallet/wallet/txauthor"
 	"github.com/btcsuite/btcwallet/wtxmgr"
-	"github.com/lightningnetwork/lnd/input"
+	"github.com/lightningnetwork/lnd/keychain"
 	"github.com/lightningnetwork/lnd/lnwallet/chainfee"
 )
 
@@ -66,7 +66,7 @@ var (
 var ErrNoOutputs = errors.New("no outputs")
 
 // ErrInvalidMinconf is returned if we try to create a transaction with
-// invalid minconf value.
+// invalid minConfs value.
 var ErrInvalidMinconf = errors.New("minimum number of confirmations must " +
 	"be a non-negative number")
 
@@ -78,6 +78,8 @@ type Utxo struct {
 	Confirmations int64
 	PkScript      []byte
 	wire.OutPoint
+	Derivation *psbt.Bip32Derivation
+	PrevTx     *wire.MsgTx
 }
 
 // TransactionDetail describes a transaction with either inputs which belong to
@@ -158,6 +160,12 @@ type WalletController interface {
 	// a non-nil error value of ErrNotMine should be returned instead.
 	FetchInputInfo(prevOut *wire.OutPoint) (*Utxo, error)
 
+	// ScriptForOutput returns the address, witness program and redeem
+	// script for a given UTXO. An error is returned if the UTXO does not
+	// belong to our wallet or it is not a managed pubKey address.
+	ScriptForOutput(output *wire.TxOut) (waddrmgr.ManagedPubKeyAddress,
+		[]byte, []byte, error)
+
 	// ConfirmedBalance returns the sum of all the wallet's unspent outputs
 	// that have at least confs confirmations. If confs is set to zero,
 	// then all unspent outputs, including those currently in the mempool
@@ -168,7 +176,8 @@ type WalletController interface {
 	// NOTE: Only witness outputs should be included in the computation of
 	// the total spendable balance of the wallet. We require this as only
 	// witness inputs can be used for funding channels.
-	ConfirmedBalance(confs int32, accountFilter string) (btcutil.Amount, error)
+	ConfirmedBalance(confs int32, accountFilter string) (btcutil.Amount,
+		error)
 
 	// NewAddress returns the next external or internal address for the
 	// wallet dictated by the value of the `change` parameter. If change is
@@ -197,7 +206,8 @@ type WalletController interface {
 	// ListAccounts retrieves all accounts belonging to the wallet by
 	// default. A name and key scope filter can be provided to filter
 	// through all of the wallet accounts and return only those matching.
-	ListAccounts(string, *waddrmgr.KeyScope) ([]*waddrmgr.AccountProperties, error)
+	ListAccounts(string, *waddrmgr.KeyScope) ([]*waddrmgr.AccountProperties,
+		error)
 
 	// ImportAccount imports an account backed by an account extended public
 	// key. The master key fingerprint denotes the fingerprint of the root
@@ -219,14 +229,17 @@ type WalletController interface {
 	// witness pubkeys everywhere) and our own BIP-0049Plus address schema
 	// (nested pubkeys externally, witness pubkeys internally).
 	ImportAccount(name string, accountPubKey *hdkeychain.ExtendedKey,
-		masterKeyFingerprint uint32, addrType *waddrmgr.AddressType) error
+		masterKeyFingerprint uint32, addrType *waddrmgr.AddressType,
+		dryRun bool) (*waddrmgr.AccountProperties, []btcutil.Address,
+		[]btcutil.Address, error)
 
 	// ImportPublicKey imports a single derived public key into the wallet.
 	// The address type can usually be inferred from the key's version, but
 	// in the case of legacy versions (xpub, tpub), an address type must be
 	// specified as we intend to not support importing BIP-44 keys into the
 	// wallet using the legacy pay-to-pubkey-hash (P2PKH) scheme.
-	ImportPublicKey(pubKey *btcec.PublicKey, addrType waddrmgr.AddressType) error
+	ImportPublicKey(pubKey *btcec.PublicKey,
+		addrType waddrmgr.AddressType) error
 
 	// SendOutputs funds, signs, and broadcasts a Bitcoin transaction paying
 	// out to the specified outputs. In the case the wallet has insufficient
@@ -235,8 +248,8 @@ type WalletController interface {
 	// be used when crafting the transaction.
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
-	SendOutputs(outputs []*wire.TxOut,
-		feeRate chainfee.SatPerKWeight, minconf int32, label string) (*wire.MsgTx, error)
+	SendOutputs(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
+		minConfs int32, label string) (*wire.MsgTx, error)
 
 	// CreateSimpleTx creates a Bitcoin transaction paying to the specified
 	// outputs. The transaction is not broadcasted to the network. In the
@@ -251,20 +264,20 @@ type WalletController interface {
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
 	CreateSimpleTx(outputs []*wire.TxOut, feeRate chainfee.SatPerKWeight,
-		dryRun bool) (*txauthor.AuthoredTx, error)
+		minConfs int32, dryRun bool) (*txauthor.AuthoredTx, error)
 
 	// ListUnspentWitness returns all unspent outputs which are version 0
-	// witness programs. The 'minconfirms' and 'maxconfirms' parameters
+	// witness programs. The 'minConfs' and 'maxConfs' parameters
 	// indicate the minimum and maximum number of confirmations an output
 	// needs in order to be returned by this method. Passing -1 as
-	// 'minconfirms' indicates that even unconfirmed outputs should be
-	// returned. Using MaxInt32 as 'maxconfirms' implies returning all
-	// outputs with at least 'minconfirms'. The account parameter serves as
+	// 'minConfs' indicates that even unconfirmed outputs should be
+	// returned. Using MaxInt32 as 'maxConfs' implies returning all
+	// outputs with at least 'minConfs'. The account parameter serves as
 	// a filter to retrieve the unspent outputs for a specific account.
 	// When empty, the unspent outputs of all wallet accounts are returned.
 	//
 	// NOTE: This method requires the global coin selection lock to be held.
-	ListUnspentWitness(minconfirms, maxconfirms int32,
+	ListUnspentWitness(minConfs, maxConfs int32,
 		accountFilter string) ([]*Utxo, error)
 
 	// ListTransactionDetails returns a list of all transactions which are
@@ -348,8 +361,21 @@ type WalletController interface {
 	// fee rate, an error is returned. No lock lease is acquired for any of
 	// the selected/validated inputs. It is in the caller's responsibility
 	// to lock the inputs before handing them out.
-	FundPsbt(packet *psbt.Packet, feeRate chainfee.SatPerKWeight,
-		account string) (int32, error)
+	FundPsbt(packet *psbt.Packet, minConfs int32,
+		feeRate chainfee.SatPerKWeight, account string) (int32, error)
+
+	// SignPsbt expects a partial transaction with all inputs and outputs
+	// fully declared and tries to sign all unsigned inputs that have all
+	// required fields (UTXO information, BIP32 derivation information,
+	// witness or sig scripts) set.
+	// If no error is returned, the PSBT is ready to be given to the next
+	// signer or to be finalized if lnd was the last signer.
+	//
+	// NOTE: This method only signs inputs (and only those it can sign), it
+	// does not perform any other tasks (such as coin selection, UTXO
+	// locking or input/output/fee value validation, PSBT finalization). Any
+	// input that is incomplete will be skipped.
+	SignPsbt(packet *psbt.Packet) error
 
 	// FinalizePsbt expects a partial transaction with all inputs and
 	// outputs fully declared and tries to sign all inputs that belong to
@@ -423,8 +449,6 @@ type BlockChainIO interface {
 	GetUtxo(op *wire.OutPoint, pkScript []byte, heightHint uint32,
 		cancel <-chan struct{}) (*wire.TxOut, error)
 
-	OutputSpent(op *wire.OutPoint) (bool, error)
-
 	// GetBlockHash returns the hash of the block in the best blockchain
 	// at the given height.
 	GetBlockHash(blockHeight int64) (*chainhash.Hash, error)
@@ -432,15 +456,6 @@ type BlockChainIO interface {
 	// GetBlock returns the block in the main chain identified by the given
 	// hash.
 	GetBlock(blockHash *chainhash.Hash) (*wire.MsgBlock, error)
-
-	// GetTxByIndex returns the transaction from block by the given index.
-	GetRawTxByIndex(blockHeight int64, txIndex uint32) (*wire.MsgTx, error)
-
-	// LoadCache loads second layer headers cache on response
-	LoadCache(startHeight uint32) (bool, error)
-
-	// FreeCache releases second layer headers cache on response
-	FreeCache() error
 }
 
 // MessageSigner represents an abstract object capable of signing arbitrary
@@ -449,10 +464,11 @@ type BlockChainIO interface {
 // to attest to some message.
 type MessageSigner interface {
 	// SignMessage attempts to sign a target message with the private key
-	// that corresponds to the passed public key. If the target private key
-	// is unable to be found, then an error will be returned. The actual
-	// digest signed is the double SHA-256 of the passed message.
-	SignMessage(pubKey *btcec.PublicKey, msg []byte) (input.Signature, error)
+	// described in the key locator. If the target private key is unable to
+	// be found, then an error will be returned. The actual digest signed is
+	// the single or double SHA-256 of the passed message.
+	SignMessage(keyLoc keychain.KeyLocator, msg []byte,
+		doubleHash bool) (*btcec.Signature, error)
 }
 
 // WalletDriver represents a "driver" for a particular concrete

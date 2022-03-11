@@ -158,6 +158,7 @@ func (c *ChannelGraphBootstrapper) SampleNodeAddrs(numAddrs uint32,
 	// We'll merge the ignore map with our currently selected map in order
 	// to ensure we don't return any duplicate nodes.
 	for n := range ignore {
+		log.Tracef("Ignored node %x for bootstrapping", n)
 		c.tried[n] = struct{}{}
 	}
 
@@ -285,7 +286,7 @@ type DNSSeedBootstrapper struct {
 	// in the tuple is a special A record that we'll query in order to
 	// receive the IP address of the current authoritative DNS server for
 	// the network seed.
-	dnsSeeds [][3]string
+	dnsSeeds [][2]string
 	net      tor.Net
 
 	// timeout is the maximum amount of time a dial will wait for a connect to
@@ -305,7 +306,7 @@ var _ NetworkPeerBootstrapper = (*ChannelGraphBootstrapper)(nil)
 // receiving the UDP response. The second host should return a single A record
 // with the IP address of the authoritative name server.
 func NewDNSSeedBootstrapper(
-	seeds [][3]string, net tor.Net,
+	seeds [][2]string, net tor.Net,
 	timeout time.Duration) NetworkPeerBootstrapper {
 	return &DNSSeedBootstrapper{dnsSeeds: seeds, net: net, timeout: timeout}
 }

@@ -2,6 +2,7 @@ package routerrpc
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -13,6 +14,7 @@ import (
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
+	"github.com/lightningnetwork/lnd/feature"
 	"github.com/lightningnetwork/lnd/htlcswitch"
 	"github.com/lightningnetwork/lnd/lnrpc"
 	"github.com/lightningnetwork/lnd/lntypes"
@@ -53,7 +55,7 @@ type RouterBackend struct {
 	FindRoute func(source, target route.Vertex,
 		amt lnwire.MilliSatoshi, restrictions *routing.RestrictParams,
 		destCustomRecords record.CustomSet,
-		routeHints map[route.Vertex][]*channeldb.ChannelEdgePolicy,
+		routeHints map[route.Vertex][]*channeldb.CachedEdgePolicy,
 		finalExpiry uint16) (*route.Route, error)
 
 	MissionControl MissionControl
@@ -113,7 +115,7 @@ type MissionControl interface {
 	// ImportHistory imports the mission control snapshot to our internal
 	// state. This import will only be applied in-memory, and will not be
 	// persisted across restarts.
-	ImportHistory(*routing.MissionControlSnapshot) error
+	ImportHistory(snapshot *routing.MissionControlSnapshot, force bool) error
 
 	// GetPairHistorySnapshot returns the stored history for a given node
 	// pair.
@@ -236,6 +238,14 @@ func (r *RouterBackend) QueryRoutes(ctx context.Context,
 	if in.FinalCltvDelta != 0 {
 		finalCLTVDelta = uint16(in.FinalCltvDelta)
 	}
+
+	// Do bounds checking without block padding so we don't give routes
+	// that will leave the router in a zombie payment state.
+	err = routing.ValidateCLTVLimit(cltvLimit, finalCLTVDelta, false)
+	if err != nil {
+		return nil, err
+	}
+
 	cltvLimit -= uint32(finalCLTVDelta)
 
 	// Parse destination feature bits.
@@ -455,6 +465,11 @@ func UnmarshallHopWithPubkey(rpcHop *lnrpc.Hop, pubkey route.Vertex) (*route.Hop
 		return nil, err
 	}
 
+	amp, err := UnmarshalAMP(rpcHop.AmpRecord)
+	if err != nil {
+		return nil, err
+	}
+
 	return &route.Hop{
 		OutgoingTimeLock: rpcHop.Expiry,
 		AmtToForward:     lnwire.MilliSatoshi(rpcHop.AmtToForwardMsat),
@@ -463,6 +478,7 @@ func UnmarshallHopWithPubkey(rpcHop *lnrpc.Hop, pubkey route.Vertex) (*route.Hop
 		CustomRecords:    customRecords,
 		LegacyPayload:    !rpcHop.TlvPayload,
 		MPP:              mpp,
+		AMP:              amp,
 	}, nil
 }
 
@@ -645,11 +661,11 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 				"cannot appear together")
 
 		case len(rpcPayReq.PaymentHash) > 0:
-			return nil, errors.New("dest and payment_hash " +
+			return nil, errors.New("payment_hash and payment_request " +
 				"cannot appear together")
 
 		case rpcPayReq.FinalCltvDelta != 0:
-			return nil, errors.New("dest and final_cltv_delta " +
+			return nil, errors.New("final_cltv_delta and payment_request " +
 				"cannot appear together")
 		}
 
@@ -688,11 +704,51 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 			payIntent.Amount = *payReq.MilliSat
 		}
 
-		if !payReq.Features.HasFeature(lnwire.MPPOptional) {
+		if !payReq.Features.HasFeature(lnwire.MPPOptional) &&
+			!payReq.Features.HasFeature(lnwire.AMPOptional) {
+
 			payIntent.MaxParts = 1
 		}
 
-		copy(payIntent.PaymentHash[:], payReq.PaymentHash[:])
+		payAddr := payReq.PaymentAddr
+		if payReq.Features.HasFeature(lnwire.AMPOptional) {
+			// Generate random SetID and root share.
+			var setID [32]byte
+			_, err = rand.Read(setID[:])
+			if err != nil {
+				return nil, err
+			}
+
+			var rootShare [32]byte
+			_, err = rand.Read(rootShare[:])
+			if err != nil {
+				return nil, err
+			}
+			err := payIntent.SetAMP(&routing.AMPOptions{
+				SetID:     setID,
+				RootShare: rootShare,
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			// For AMP invoices, we'll allow users to override the
+			// included payment addr to allow the invoice to be
+			// pseudo-reusable, e.g. the invoice parameters are
+			// reused (amt, cltv, hop hints, etc) even though the
+			// payments will share different payment hashes.
+			if len(rpcPayReq.PaymentAddr) > 0 {
+				var addr [32]byte
+				copy(addr[:], rpcPayReq.PaymentAddr)
+				payAddr = &addr
+			}
+		} else {
+			err = payIntent.SetPaymentHash(*payReq.PaymentHash)
+			if err != nil {
+				return nil, err
+			}
+		}
+
 		destKey := payReq.Destination.SerializeCompressed()
 		copy(payIntent.Target[:], destKey)
 
@@ -701,7 +757,7 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 			payIntent.RouteHints, payReq.RouteHints...,
 		)
 		payIntent.DestFeatures = payReq.Features
-		payIntent.PaymentAddr = payReq.PaymentAddr
+		payIntent.PaymentAddr = payAddr
 		payIntent.PaymentRequest = []byte(rpcPayReq.PaymentRequest)
 	} else {
 		// Otherwise, If the payment request field was not specified
@@ -730,25 +786,107 @@ func (r *RouterBackend) extractIntentFromSendRequest(
 
 		payIntent.Amount = reqAmt
 
-		// Payment hash.
-		copy(payIntent.PaymentHash[:], rpcPayReq.PaymentHash)
-
 		// Parse destination feature bits.
 		features, err := UnmarshalFeatures(rpcPayReq.DestFeatures)
 		if err != nil {
 			return nil, err
 		}
 
-		// If the payment addresses is specified, then we'll also
-		// populate that now as well.
-		if len(rpcPayReq.PaymentAddr) != 0 {
-			var payAddr [32]byte
-			copy(payAddr[:], rpcPayReq.PaymentAddr)
+		// Validate the features if any was specified.
+		if features != nil {
+			err = feature.ValidateDeps(features)
+			if err != nil {
+				return nil, err
+			}
+		}
 
+		// If this is an AMP payment, we must generate the initial
+		// randomness.
+		if rpcPayReq.Amp {
+			// If no destination features were specified, we set
+			// those necessary for AMP payments.
+			if features == nil {
+				ampFeatures := []lnrpc.FeatureBit{
+					lnrpc.FeatureBit_TLV_ONION_OPT,
+					lnrpc.FeatureBit_PAYMENT_ADDR_OPT,
+					lnrpc.FeatureBit_AMP_OPT,
+				}
+
+				features, err = UnmarshalFeatures(ampFeatures)
+				if err != nil {
+					return nil, err
+				}
+			}
+
+			// First make sure the destination supports AMP.
+			if !features.HasFeature(lnwire.AMPOptional) {
+				return nil, fmt.Errorf("destination doesn't " +
+					"support AMP payments")
+			}
+
+			// If no payment address is set, generate a random one.
+			var payAddr [32]byte
+			if len(rpcPayReq.PaymentAddr) == 0 {
+				_, err = rand.Read(payAddr[:])
+				if err != nil {
+					return nil, err
+				}
+			} else {
+				copy(payAddr[:], rpcPayReq.PaymentAddr)
+			}
 			payIntent.PaymentAddr = &payAddr
+
+			// Generate random SetID and root share.
+			var setID [32]byte
+			_, err = rand.Read(setID[:])
+			if err != nil {
+				return nil, err
+			}
+
+			var rootShare [32]byte
+			_, err = rand.Read(rootShare[:])
+			if err != nil {
+				return nil, err
+			}
+			err := payIntent.SetAMP(&routing.AMPOptions{
+				SetID:     setID,
+				RootShare: rootShare,
+			})
+			if err != nil {
+				return nil, err
+			}
+		} else {
+			// Payment hash.
+			paymentHash, err := lntypes.MakeHash(rpcPayReq.PaymentHash)
+			if err != nil {
+				return nil, err
+			}
+
+			err = payIntent.SetPaymentHash(paymentHash)
+			if err != nil {
+				return nil, err
+			}
+
+			// If the payment addresses is specified, then we'll
+			// also populate that now as well.
+			if len(rpcPayReq.PaymentAddr) != 0 {
+				var payAddr [32]byte
+				copy(payAddr[:], rpcPayReq.PaymentAddr)
+
+				payIntent.PaymentAddr = &payAddr
+			}
 		}
 
 		payIntent.DestFeatures = features
+	}
+
+	// Do bounds checking with the block padding so the router isn't
+	// left with a zombie payment in case the user messes up.
+	err = routing.ValidateCLTVLimit(
+		payIntent.CltvLimit, payIntent.FinalCLTVDelta, true,
+	)
+	if err != nil {
+		return nil, err
 	}
 
 	// Check for disallowed payments to self.
@@ -893,6 +1031,32 @@ func UnmarshalMPP(reqMPP *lnrpc.MPPRecord) (*record.MPP, error) {
 	total := lnwire.MilliSatoshi(reqTotal)
 
 	return record.NewMPP(total, addr), nil
+}
+
+func UnmarshalAMP(reqAMP *lnrpc.AMPRecord) (*record.AMP, error) {
+	if reqAMP == nil {
+		return nil, nil
+	}
+
+	reqRootShare := reqAMP.RootShare
+	reqSetID := reqAMP.SetId
+
+	switch {
+	case len(reqRootShare) != 32:
+		return nil, errors.New("AMP root_share must be 32 bytes")
+
+	case len(reqSetID) != 32:
+		return nil, errors.New("AMP set_id must be 32 bytes")
+	}
+
+	var (
+		rootShare [32]byte
+		setID     [32]byte
+	)
+	copy(rootShare[:], reqRootShare)
+	copy(setID[:], reqSetID)
+
+	return record.NewAMP(rootShare, setID, reqAMP.ChildIndex), nil
 }
 
 // MarshalHTLCAttempt constructs an RPC HTLCAttempt from the db representation.
@@ -1185,7 +1349,7 @@ func (r *RouterBackend) MarshallPayment(payment *channeldb.MPPayment) (
 		htlcs = append(htlcs, htlc)
 	}
 
-	paymentHash := payment.Info.PaymentHash
+	paymentID := payment.Info.PaymentIdentifier
 	creationTimeNS := MarshalTimeNano(payment.Info.CreationTime)
 
 	failureReason, err := marshallPaymentFailureReason(
@@ -1196,7 +1360,8 @@ func (r *RouterBackend) MarshallPayment(payment *channeldb.MPPayment) (
 	}
 
 	return &lnrpc.Payment{
-		PaymentHash:     hex.EncodeToString(paymentHash[:]),
+		// TODO: set this to setID for AMP-payments?
+		PaymentHash:     hex.EncodeToString(paymentID[:]),
 		Value:           satValue,
 		ValueMsat:       msatValue,
 		ValueSat:        satValue,

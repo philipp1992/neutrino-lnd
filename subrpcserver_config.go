@@ -92,14 +92,15 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 	chanRouter *routing.ChannelRouter,
 	routerBackend *routerrpc.RouterBackend,
 	nodeSigner *netann.NodeSigner,
-	localChanDB *channeldb.DB,
-	remoteChanDB *channeldb.DB,
+	graphDB *channeldb.ChannelGraph,
+	chanStateDB *channeldb.ChannelStateDB,
 	sweeper *sweep.UtxoSweeper,
 	tower *watchtower.Standalone,
 	towerClient wtclient.Client,
 	anchorTowerClient wtclient.Client,
 	tcpResolver lncfg.TCPResolver,
 	genInvoiceFeatures func() *lnwire.FeatureVector,
+	genAmpInvoiceFeatures func() *lnwire.FeatureVector,
 	rpcLogger btclog.Logger) error {
 
 	// First, we'll use reflect to obtain a version of the config struct
@@ -221,14 +222,17 @@ func (s *subRPCServerConfigs) PopulateDependencies(cfg *Config,
 			subCfgValue.FieldByName("DefaultCLTVExpiry").Set(
 				reflect.ValueOf(defaultDelta),
 			)
-			subCfgValue.FieldByName("LocalChanDB").Set(
-				reflect.ValueOf(localChanDB),
+			subCfgValue.FieldByName("GraphDB").Set(
+				reflect.ValueOf(graphDB),
 			)
-			subCfgValue.FieldByName("RemoteChanDB").Set(
-				reflect.ValueOf(remoteChanDB),
+			subCfgValue.FieldByName("ChanStateDB").Set(
+				reflect.ValueOf(chanStateDB),
 			)
 			subCfgValue.FieldByName("GenInvoiceFeatures").Set(
 				reflect.ValueOf(genInvoiceFeatures),
+			)
+			subCfgValue.FieldByName("GenAmpInvoiceFeatures").Set(
+				reflect.ValueOf(genAmpInvoiceFeatures),
 			)
 
 		// RouterRPC isn't conditionally compiled and doesn't need to be

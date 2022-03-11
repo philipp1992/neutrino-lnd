@@ -58,10 +58,6 @@ type Config struct {
 	// when opening channels.
 	Constraints AgentConstraints
 
-	// TrustedNodes is the set of nodes which should be considered as best
-	// candidates to open channel to.
-	TrustedNodes []NodeID
-
 	// TODO(roasbeef): add additional signals from fee rates and revenue of
 	// currently opened channels
 }
@@ -424,6 +420,7 @@ func (a *Agent) controller() {
 		a.totalBalance = newBalance
 	}
 
+	// TODO(roasbeef): add 10-minute wake up timer
 	for {
 		select {
 		// A new external signal has arrived. We'll use this to update
@@ -500,11 +497,6 @@ func (a *Agent) controller() {
 		case upd := <-a.heuristicUpdates:
 			log.Debugf("Heuristic %v updated, assessing need for "+
 				"more channels", upd.heuristic.Name())
-
-                case <-time.After(5 * time.Minute):
-                        log.Debugf("5 minutes passed, checking " +
-                                "need for more channels")
-                        updateBalance()
 
 		// The agent has been signalled to exit, so we'll bail out
 		// immediately.
@@ -652,39 +644,12 @@ func (a *Agent) openChans(availableFunds btcutil.Amount, numChans uint32,
 
 	log.Debugf("Got scores for %d nodes", len(scores))
 
-	trustedScores := make(map[NodeID]*NodeScore)
-
-	// before trying to choose from all graph nodes, let's check if we have trusted nodes set
-	if len(a.cfg.TrustedNodes) > 0 {
-
-		log.Debugf("Searching for scores using trusted nodes ", a.cfg.TrustedNodes)
-
-		// let's check if our scores map contains scores for trusted nodes
-		for i := range a.cfg.TrustedNodes {
-			if elem, ok := scores[a.cfg.TrustedNodes[i]]; ok {
-				trustedScores[a.cfg.TrustedNodes[i]] = elem
-			}
-		}
-
-		if len(trustedScores) > 0 {
-			scores, err = chooseN(numChans, trustedScores)
-			if err != nil {
-				return fmt.Errorf("Unable to make weighted choice: %v", err)
-			}
-		} else {
-			log.Infof("No scores for trusted nodes found in graph, skipping for later search")
-			return nil
-		}
-	}
-
-	// if no trusted nodes set, use standart search algorithm
-	if len(a.cfg.TrustedNodes) == 0 {
-		// Now use the score to make a weighted choice which nodes to attempt
-		// to open channels to.
-		scores, err = chooseN(numChans, scores)
-		if err != nil {
-			return fmt.Errorf("Unable to make weighted choice: %v", err)
-		}
+	// Now use the score to make a weighted choice which nodes to attempt
+	// to open channels to.
+	scores, err = chooseN(numChans, scores)
+	if err != nil {
+		return fmt.Errorf("unable to make weighted choice: %v",
+			err)
 	}
 
 	chanCandidates := make(map[NodeID]*AttachmentDirective)
@@ -870,7 +835,7 @@ func (a *Agent) executeDirective(directive AttachmentDirective) {
 	a.pendingMtx.Unlock()
 
 	// We can then begin the funding workflow with this peer.
-	err = a.cfg.ChanController.OpenChannel(pub, directive.ChanAmt, a.cfg.Constraints.FeeRate())
+	err = a.cfg.ChanController.OpenChannel(pub, directive.ChanAmt)
 	if err != nil {
 		log.Warnf("Unable to open channel to %x of %v: %v",
 			pub.SerializeCompressed(), directive.ChanAmt, err)

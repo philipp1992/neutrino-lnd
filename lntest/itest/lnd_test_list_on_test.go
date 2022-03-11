@@ -1,3 +1,4 @@
+//go:build rpctest
 // +build rpctest
 
 package itest
@@ -32,12 +33,20 @@ var allTestCases = []*testCase{
 		test: testUpdateChannelPolicy,
 	},
 	{
+		name: "update channel policy fee rate accuracy",
+		test: testUpdateChannelPolicyFeeRateAccuracy,
+	},
+	{
 		name: "open channel reorg test",
 		test: testOpenChannelAfterReorg,
 	},
 	{
 		name: "disconnecting target peer",
 		test: testDisconnectingTargetPeer,
+	},
+	{
+		name: "reconnect after ip change",
+		test: testReconnectAfterIPChange,
 	},
 	{
 		name: "graph topology notifications",
@@ -106,6 +115,10 @@ var allTestCases = []*testCase{
 	{
 		name: "private channels",
 		test: testPrivateChannels,
+	},
+	{
+		name: "private channel update policy",
+		test: testUpdateChannelPolicyForPrivateChannel,
 	},
 	{
 		name: "invoice routing hints",
@@ -231,6 +244,14 @@ var allTestCases = []*testCase{
 		test: testHoldInvoicePersistence,
 	},
 	{
+		name: "hold invoice force close",
+		test: testHoldInvoiceForceClose,
+	},
+	{
+		name: "commitment deadline",
+		test: testCommitmentTransactionDeadline,
+	},
+	{
 		name: "cpfp",
 		test: testCPFP,
 	},
@@ -263,8 +284,40 @@ var allTestCases = []*testCase{
 		test: testPsbtChanFunding,
 	},
 	{
+		name: "psbt channel funding external",
+		test: testPsbtChanFundingExternal,
+	},
+	{
+		name: "sign psbt",
+		test: testSignPsbt,
+	},
+	{
+		name: "batch channel funding",
+		test: testBatchChanFunding,
+	},
+	{
+		name: "psbt channel funding single step",
+		test: testPsbtChanFundingSingleStep,
+	},
+	{
 		name: "sendtoroute multi path payment",
 		test: testSendToRouteMultiPath,
+	},
+	{
+		name: "sendtoroute amp",
+		test: testSendToRouteAMP,
+	},
+	{
+		name: "sendpayment amp",
+		test: testSendPaymentAMP,
+	},
+	{
+		name: "sendpayment amp invoice",
+		test: testSendPaymentAMPInvoice,
+	},
+	{
+		name: "sendpayment amp invoice repeat",
+		test: testSendPaymentAMPInvoiceRepeat,
 	},
 	{
 		name: "send multi path payment",
@@ -275,8 +328,12 @@ var allTestCases = []*testCase{
 		test: testRestAPI,
 	},
 	{
-		name: "intercept forwarded htlc packets",
-		test: testForwardInterceptor,
+		name: "forward interceptor",
+		test: testForwardInterceptorBasic,
+	},
+	{
+		name: "forward interceptor dedup htlcs",
+		test: testForwardInterceptorDedupHtlc,
 	},
 	{
 		name: "wumbo channels",
@@ -301,5 +358,25 @@ var allTestCases = []*testCase{
 	{
 		name: "wallet import pubkey",
 		test: testWalletImportPubKey,
+	},
+	{
+		name: "etcd_failover",
+		test: testEtcdFailover,
+	},
+	{
+		name: "max htlc pathfind",
+		test: testMaxHtlcPathfind,
+	},
+	{
+		name: "rpc middleware interceptor",
+		test: testRPCMiddlewareInterceptor,
+	},
+	{
+		name: "wipe forwarding packages",
+		test: testWipeForwardingPackages,
+	},
+	{
+		name: "remote signer",
+		test: testRemoteSigner,
 	},
 }

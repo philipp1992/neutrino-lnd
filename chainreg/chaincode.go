@@ -10,8 +10,6 @@ const (
 
 	// LitecoinChain is Litecoin's chain.
 	LitecoinChain
-
-	XsncoinChain
 )
 
 // String returns a string representation of the target ChainCode.
@@ -21,8 +19,6 @@ func (c ChainCode) String() string {
 		return "bitcoin"
 	case LitecoinChain:
 		return "litecoin"
-	case XsncoinChain:
-		return "xsncoin"
 	default:
 		return "kekcoin"
 	}

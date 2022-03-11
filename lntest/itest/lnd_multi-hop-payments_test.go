@@ -20,9 +20,8 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Open a channel with 100k satoshis between Alice and Bob with Alice
 	// being the sole funder of the channel.
-	ctxt, _ := context.WithTimeout(ctxb, channelOpenTimeout)
 	chanPointAlice := openChannelAndAssert(
-		ctxt, t, net, net.Alice, net.Bob,
+		t, net, net.Alice, net.Bob,
 		lntest.OpenChannelParams{
 			Amt: chanAmt,
 		},
@@ -47,24 +46,14 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 	// First, we'll create Dave and establish a channel to Alice. Dave will
 	// be running an older node that requires the legacy onion payload.
 	daveArgs := []string{"--protocol.legacy.onion"}
-	dave, err := net.NewNode("Dave", daveArgs)
-	if err != nil {
-		t.Fatalf("unable to create new nodes: %v", err)
-	}
+	dave := net.NewNode(t.t, "Dave", daveArgs)
 	defer shutdownAndAssert(net, t, dave)
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	if err := net.ConnectNodes(ctxt, dave, net.Alice); err != nil {
-		t.Fatalf("unable to connect dave to alice: %v", err)
-	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, dave)
-	if err != nil {
-		t.Fatalf("unable to send coins to dave: %v", err)
-	}
-	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+	net.ConnectNodes(t.t, dave, net.Alice)
+	net.SendCoins(t.t, btcutil.SatoshiPerBitcoin, dave)
+
 	chanPointDave := openChannelAndAssert(
-		ctxt, t, net, dave, net.Alice,
+		t, net, dave, net.Alice,
 		lntest.OpenChannelParams{
 			Amt: chanAmt,
 		},
@@ -81,24 +70,14 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Next, we'll create Carol and establish a channel to from her to
 	// Dave.
-	carol, err := net.NewNode("Carol", nil)
-	if err != nil {
-		t.Fatalf("unable to create new nodes: %v", err)
-	}
+	carol := net.NewNode(t.t, "Carol", nil)
 	defer shutdownAndAssert(net, t, carol)
 
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	if err := net.ConnectNodes(ctxt, carol, dave); err != nil {
-		t.Fatalf("unable to connect carol to dave: %v", err)
-	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = net.SendCoins(ctxt, btcutil.SatoshiPerBitcoin, carol)
-	if err != nil {
-		t.Fatalf("unable to send coins to carol: %v", err)
-	}
-	ctxt, _ = context.WithTimeout(ctxb, channelOpenTimeout)
+	net.ConnectNodes(t.t, carol, dave)
+	net.SendCoins(t.t, btcutil.SatoshiPerBitcoin, carol)
+
 	chanPointCarol := openChannelAndAssert(
-		ctxt, t, net, carol, dave,
+		t, net, carol, dave,
 		lntest.OpenChannelParams{
 			Amt: chanAmt,
 		},
@@ -128,8 +107,7 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 				Index: chanPoint.OutputIndex,
 			}
 
-			ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-			err = node.WaitForNetworkChannelOpen(ctxt, chanPoint)
+			err = node.WaitForNetworkChannelOpen(chanPoint)
 			if err != nil {
 				t.Fatalf("%s(%d): timeout waiting for "+
 					"channel(%s) open: %v", nodeNames[i],
@@ -151,13 +129,11 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// We'll wait for all parties to recognize the new channels within the
 	// network.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = dave.WaitForNetworkChannelOpen(ctxt, chanPointDave)
+	err = dave.WaitForNetworkChannelOpen(chanPointDave)
 	if err != nil {
 		t.Fatalf("dave didn't advertise his channel: %v", err)
 	}
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = carol.WaitForNetworkChannelOpen(ctxt, chanPointCarol)
+	err = carol.WaitForNetworkChannelOpen(chanPointCarol)
 	if err != nil {
 		t.Fatalf("carol didn't advertise her channel in time: %v",
 			err)
@@ -219,10 +195,7 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 
 	// Using Carol as the source, pay to the 5 invoices from Bob created
 	// above.
-	ctxt, _ = context.WithTimeout(ctxb, defaultTimeout)
-	err = completePaymentRequests(
-		ctxt, carol, carol.RouterClient, payReqs, true,
-	)
+	err = completePaymentRequests(carol, carol.RouterClient, payReqs, true)
 	if err != nil {
 		t.Fatalf("unable to send payments: %v", err)
 	}
@@ -343,12 +316,9 @@ func testMultiHopPayments(net *lntest.NetworkHarness, t *harnessTest) {
 		t, 0, 0, numPayments, routerrpc.HtlcEvent_RECEIVE, bobEvents,
 	)
 
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, net.Alice, chanPointAlice, false)
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, dave, chanPointDave, false)
-	ctxt, _ = context.WithTimeout(ctxb, channelCloseTimeout)
-	closeChannelAndAssert(ctxt, t, net, carol, chanPointCarol, false)
+	closeChannelAndAssert(t, net, net.Alice, chanPointAlice, false)
+	closeChannelAndAssert(t, net, dave, chanPointDave, false)
+	closeChannelAndAssert(t, net, carol, chanPointCarol, false)
 }
 
 // assertHtlcEvents consumes events from a client and ensures that they are of
@@ -410,4 +380,43 @@ func assertEventAndType(t *harnessTest, eventType routerrpc.HtlcEvent_EventType,
 	}
 
 	return event
+}
+
+// updateChannelPolicy updates the channel policy of node to the
+// given fees and timelock delta. This function blocks until
+// listenerNode has received the policy update.
+func updateChannelPolicy(t *harnessTest, node *lntest.HarnessNode,
+	chanPoint *lnrpc.ChannelPoint, baseFee int64, feeRate int64,
+	timeLockDelta uint32, maxHtlc uint64, listenerNode *lntest.HarnessNode) {
+
+	ctxb := context.Background()
+
+	expectedPolicy := &lnrpc.RoutingPolicy{
+		FeeBaseMsat:      baseFee,
+		FeeRateMilliMsat: feeRate,
+		TimeLockDelta:    timeLockDelta,
+		MinHtlc:          1000, // default value
+		MaxHtlcMsat:      maxHtlc,
+	}
+
+	updateFeeReq := &lnrpc.PolicyUpdateRequest{
+		BaseFeeMsat:   baseFee,
+		FeeRate:       float64(feeRate) / testFeeBase,
+		TimeLockDelta: timeLockDelta,
+		Scope: &lnrpc.PolicyUpdateRequest_ChanPoint{
+			ChanPoint: chanPoint,
+		},
+		MaxHtlcMsat: maxHtlc,
+	}
+
+	ctxt, _ := context.WithTimeout(ctxb, defaultTimeout)
+	if _, err := node.UpdateChannelPolicy(ctxt, updateFeeReq); err != nil {
+		t.Fatalf("unable to update chan policy: %v", err)
+	}
+
+	// Wait for listener node to receive the channel update from node.
+	assertChannelPolicyUpdate(
+		t.t, listenerNode, node.PubKeyStr,
+		expectedPolicy, chanPoint, false,
+	)
 }

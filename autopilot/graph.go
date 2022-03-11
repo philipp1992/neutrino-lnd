@@ -11,7 +11,7 @@ import (
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcutil"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/lightningnetwork/lnd/kvdb"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/routing/route"
 )
@@ -148,7 +148,7 @@ func (d *databaseChannelGraph) addRandChannel(node1, node2 *btcec.PublicKey,
 				return nil, err
 			}
 
-			dbNode, err := d.db.FetchLightningNode(nil, vertex)
+			dbNode, err := d.db.FetchLightningNode(vertex)
 			switch {
 			case err == channeldb.ErrGraphNodeNotFound:
 				fallthrough

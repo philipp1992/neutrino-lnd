@@ -3,11 +3,11 @@ package chainview
 import (
 	"bytes"
 	"fmt"
-	//"io/ioutil"
-	//"math/rand"
-	//"os"
-	//"os/exec"
-	//"path/filepath"
+	"io/ioutil"
+	"math/rand"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"runtime"
 	"testing"
 	"time"
@@ -17,16 +17,18 @@ import (
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/integration/rpctest"
+	"github.com/btcsuite/btcd/rpcclient"
 	"github.com/btcsuite/btcd/txscript"
 	"github.com/btcsuite/btcd/wire"
 	"github.com/btcsuite/btcutil"
 	"github.com/btcsuite/btcwallet/chain"
-	//"github.com/btcsuite/btcwallet/walletdb"
+	"github.com/btcsuite/btcwallet/walletdb"
 	_ "github.com/btcsuite/btcwallet/walletdb/bdb" // Required to register the boltdb walletdb implementation.
 
-	//"github.com/lightninglabs/neutrino"
+	"github.com/lightninglabs/neutrino"
+	"github.com/lightningnetwork/lnd/blockcache"
 	"github.com/lightningnetwork/lnd/channeldb"
-	"github.com/lightningnetwork/lnd/channeldb/kvdb"
+	"github.com/lightningnetwork/lnd/kvdb"
 )
 
 var (
@@ -92,13 +94,7 @@ func getTestTXID(miner *rpctest.Harness) (*chainhash.Hash, error) {
 			PkScript: script,
 		},
 	}
-
-	tx, err := miner.SendOutputsLW(outputs, 2500)
-	if err != nil {
-		return nil, err
-	}
-
-	return miner.Client.SendRawTransaction(tx, true)
+	return miner.SendOutputs(outputs, 2500)
 }
 
 func locateOutput(tx *wire.MsgTx, script []byte) (*wire.OutPoint, *wire.TxOut, error) {
@@ -177,18 +173,18 @@ func testFilterBlockNotifications(node *rpctest.Harness,
 	if err != nil {
 		t.Fatalf("unable to get test txid: %v", err)
 	}
-	//err = waitForMempoolTx(node, txid1)
-	//if err != nil {
-	//	t.Fatalf("unable to get test txid in mempool: %v", err)
-	//}
+	err = waitForMempoolTx(node, txid1)
+	if err != nil {
+		t.Fatalf("unable to get test txid in mempool: %v", err)
+	}
 	txid2, err := getTestTXID(node)
 	if err != nil {
 		t.Fatalf("unable to get test txid: %v", err)
 	}
-	//err = waitForMempoolTx(node, txid2)
-	//if err != nil {
-	//	t.Fatalf("unable to get test txid in mempool: %v", err)
-	//}
+	err = waitForMempoolTx(node, txid2)
+	if err != nil {
+		t.Fatalf("unable to get test txid in mempool: %v", err)
+	}
 
 	blockChan := chainView.FilteredBlocks()
 
@@ -760,18 +756,18 @@ var chainViewTests = []testCase{
 		name: "filtered block ntfns",
 		test: testFilterBlockNotifications,
 	},
-	//{
-	//	name: "update filter back track",
-	//	test: testUpdateFilterBackTrack,
-	//},
-	//{
-	//	name: "filter single block",
-	//	test: testFilterSingleBlock,
-	//},
-	//{
-	//	name: "filter block disconnected",
-	//	test: testFilterBlockDisconnected,
-	//},
+	{
+		name: "update filter back track",
+		test: testUpdateFilterBackTrack,
+	},
+	{
+		name: "filter single block",
+		test: testFilterSingleBlock,
+	},
+	{
+		name: "filter block disconnected",
+		test: testFilterBlockDisconnected,
+	},
 }
 
 var interfaceImpls = []struct {
@@ -779,19 +775,61 @@ var interfaceImpls = []struct {
 	chainViewInit chainViewInitFunc
 }{
 	{
-		name: "ligthwallet",
-		chainViewInit: func() (func(), FilteredChainView, error) {
+		name: "bitcoind_zmq",
+		chainViewInit: func(_ rpcclient.ConnConfig, p2pAddr string) (func(), FilteredChainView, error) {
+			// Start a bitcoind instance.
+			tempBitcoindDir, err := ioutil.TempDir("", "bitcoind")
+			if err != nil {
+				return nil, nil, err
+			}
+			zmqBlockHost := "ipc:///" + tempBitcoindDir + "/blocks.socket"
+			zmqTxHost := "ipc:///" + tempBitcoindDir + "/tx.socket"
+			cleanUp1 := func() {
+				os.RemoveAll(tempBitcoindDir)
+			}
+			rpcPort := rand.Int()%(65536-1024) + 1024
+			bitcoind := exec.Command(
+				"bitcoind",
+				"-datadir="+tempBitcoindDir,
+				"-regtest",
+				"-connect="+p2pAddr,
+				"-txindex",
+				"-rpcauth=weks:469e9bb14ab2360f8e226efed5ca6f"+
+					"d$507c670e800a95284294edb5773b05544b"+
+					"220110063096c221be9933c82d38e1",
+				fmt.Sprintf("-rpcport=%d", rpcPort),
+				"-disablewallet",
+				"-zmqpubrawblock="+zmqBlockHost,
+				"-zmqpubrawtx="+zmqTxHost,
+			)
+			err = bitcoind.Start()
+			if err != nil {
+				cleanUp1()
+				return nil, nil, err
+			}
+			cleanUp2 := func() {
+				bitcoind.Process.Kill()
+				bitcoind.Wait()
+				cleanUp1()
+			}
 
-			rpcPort := 12345
-
-			zmqHeaderHost := "tcp://127.0.0.1:23456"
+			// Wait for the bitcoind instance to start up.
+			time.Sleep(time.Second)
 
 			host := fmt.Sprintf("127.0.0.1:%d", rpcPort)
-			chainConn, err := chain.NewLightWalletConn(
-				&chaincfg.BitcoinLWRegTestParams, host, "weks",
-				"weks", zmqHeaderHost,
-				100*time.Millisecond,
-			)
+			chainConn, err := chain.NewBitcoindConn(&chain.BitcoindConfig{
+				ChainParams:     &chaincfg.RegressionNetParams,
+				Host:            host,
+				User:            "weks",
+				Pass:            "weks",
+				ZMQBlockHost:    zmqBlockHost,
+				ZMQTxHost:       zmqTxHost,
+				ZMQReadDeadline: 5 * time.Second,
+				// Fields only required for pruned nodes, not
+				// needed for these tests.
+				Dialer:             nil,
+				PrunedModeMaxPeers: 0,
+			})
 			if err != nil {
 				return cleanUp2, nil, fmt.Errorf("unable to "+
 					"establish connection to bitcoind: %v",
@@ -807,7 +845,11 @@ var interfaceImpls = []struct {
 				cleanUp2()
 			}
 
-			chainView := NewBitcoindFilteredChainView(chainConn)
+			blockCache := blockcache.NewBlockCache(10000)
+
+			chainView := NewBitcoindFilteredChainView(
+				chainConn, blockCache,
+			)
 
 			return cleanUp3, chainView, nil
 		},
@@ -828,17 +870,55 @@ var interfaceImpls = []struct {
 				return nil, nil, err
 			}
 
-			if err := chainConn.Start(); err != nil {
+			spvConfig := neutrino.Config{
+				DataDir:      spvDir,
+				Database:     spvDatabase,
+				ChainParams:  *netParams,
+				ConnectPeers: []string{p2pAddr},
+			}
+
+			spvNode, err := neutrino.NewChainService(spvConfig)
+			if err != nil {
 				return nil, nil, err
+			}
+			spvNode.Start()
+
+			// Wait until the node has fully synced up to the local
+			// btcd node.
+			for !spvNode.IsCurrent() {
+				time.Sleep(time.Millisecond * 100)
 			}
 
 			cleanUp := func() {
-				chainConn.Stop()
+				spvDatabase.Close()
+				spvNode.Stop()
+				os.RemoveAll(spvDir)
 			}
 
-			chainView, _ := NewLWfFilteredChainView(chainConn)
+			blockCache := blockcache.NewBlockCache(10000)
+
+			chainView, err := NewCfFilteredChainView(
+				spvNode, blockCache,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
 
 			return cleanUp, chainView, nil
+		},
+	},
+	{
+		name: "btcd_websockets",
+		chainViewInit: func(config rpcclient.ConnConfig, _ string) (func(), FilteredChainView, error) {
+			blockCache := blockcache.NewBlockCache(10000)
+			chainView, err := NewBtcdFilteredChainView(
+				config, blockCache,
+			)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			return nil, chainView, err
 		},
 	},
 }
@@ -857,11 +937,14 @@ func TestFilteredChainView(t *testing.T) {
 		t.Fatalf("unable to set up mining node: %v", err)
 	}
 
+	rpcConfig := miner.RPCConfig()
+	p2pAddr := miner.P2PAddress()
+
 	for _, chainViewImpl := range interfaceImpls {
 		t.Logf("Testing '%v' implementation of FilteredChainView",
 			chainViewImpl.name)
 
-		cleanUpFunc, chainView, err := chainViewImpl.chainViewInit()
+		cleanUpFunc, chainView, err := chainViewImpl.chainViewInit(rpcConfig, p2pAddr)
 		if err != nil {
 			t.Fatalf("unable to make chain view: %v", err)
 		}

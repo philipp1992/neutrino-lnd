@@ -1,6 +1,7 @@
 package chanfunding
 
 import (
+	"fmt"
 	"math"
 
 	"github.com/btcsuite/btcd/btcec"
@@ -249,7 +250,9 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 			"sat/kw as fee rate", int64(r.FeeRate))
 
 		// Find all unlocked unspent witness outputs that satisfy the
-		// minimum number of confirmations required.
+		// minimum number of confirmations required. Coin selection in
+		// this function currently ignores the configured coin selection
+		// strategy.
 		coins, err := w.cfg.CoinSource.ListCoins(
 			r.MinConfs, math.MaxInt32,
 		)
@@ -289,20 +292,28 @@ func (w *WalletAssembler) ProvisionChannel(r *Request) (Intent, error) {
 		// Otherwise do a normal coin selection where we target a given
 		// funding amount.
 		default:
+			dustLimit := w.cfg.DustLimit
 			localContributionAmt = r.LocalAmt
 			selectedCoins, changeAmt, err = CoinSelect(
-				r.FeeRate, r.LocalAmt, coins,
+				r.FeeRate, r.LocalAmt, dustLimit, coins,
 			)
 			if err != nil {
 				return err
 			}
 		}
 
+		// Sanity check: The addition of the outputs should not lead to the
+		// creation of dust.
+		if changeAmt != 0 && changeAmt < w.cfg.DustLimit {
+			return fmt.Errorf("change amount(%v) after coin "+
+				"select is below dust limit(%v)", changeAmt,
+				w.cfg.DustLimit)
+		}
+
 		// Record any change output(s) generated as a result of the
-		// coin selection, but only if the addition of the output won't
-		// lead to the creation of dust.
+		// coin selection.
 		var changeOutput *wire.TxOut
-		if changeAmt != 0 && changeAmt > w.cfg.DustLimit {
+		if changeAmt != 0 {
 			changeAddr, err := r.ChangeAddr()
 			if err != nil {
 				return err

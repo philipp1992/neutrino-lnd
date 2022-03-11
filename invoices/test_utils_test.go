@@ -8,17 +8,21 @@ import (
 	"io/ioutil"
 	"os"
 	"runtime/pprof"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/btcsuite/btcd/btcec"
 	"github.com/btcsuite/btcd/chaincfg"
+	"github.com/btcsuite/btcd/chaincfg/chainhash"
+	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/channeldb"
 	"github.com/lightningnetwork/lnd/clock"
 	"github.com/lightningnetwork/lnd/lntypes"
 	"github.com/lightningnetwork/lnd/lnwire"
 	"github.com/lightningnetwork/lnd/record"
 	"github.com/lightningnetwork/lnd/zpay32"
+	"github.com/stretchr/testify/require"
 )
 
 type mockPayload struct {
@@ -45,6 +49,16 @@ func (p *mockPayload) CustomRecords() record.CustomSet {
 	return p.customRecords
 }
 
+const (
+	testHtlcExpiry = uint32(5)
+
+	testInvoiceCltvDelta = uint32(4)
+
+	testFinalCltvRejectDelta = int32(4)
+
+	testCurrentHeight = int32(1)
+)
+
 var (
 	testTimeout = 5 * time.Second
 
@@ -53,14 +67,6 @@ var (
 	testInvoicePreimage = lntypes.Preimage{1}
 
 	testInvoicePaymentHash = testInvoicePreimage.Hash()
-
-	testHtlcExpiry = uint32(5)
-
-	testInvoiceCltvDelta = uint32(4)
-
-	testFinalCltvRejectDelta = int32(4)
-
-	testCurrentHeight = int32(1)
 
 	testPrivKeyBytes, _ = hex.DecodeString(
 		"e126f68f7eafcc8b74f54d269fe206be715000f94dac067d1c04a8ca3b2db734")
@@ -75,8 +81,11 @@ var (
 	testNetParams = &chaincfg.MainNetParams
 
 	testMessageSigner = zpay32.MessageSigner{
-		SignCompact: func(hash []byte) ([]byte, error) {
-			sig, err := btcec.SignCompact(btcec.S256(), testPrivKey, hash, true)
+		SignCompact: func(msg []byte) ([]byte, error) {
+			hash := chainhash.HashB(msg)
+			sig, err := btcec.SignCompact(
+				btcec.S256(), testPrivKey, hash, true,
+			)
 			if err != nil {
 				return nil, fmt.Errorf("can't sign the message: %v", err)
 			}
@@ -111,7 +120,10 @@ var (
 			Value:           testInvoiceAmt,
 			Expiry:          time.Hour,
 			Features: lnwire.NewFeatureVector(
-				lnwire.NewRawFeatureVector(lnwire.PaymentAddrRequired),
+				lnwire.NewRawFeatureVector(
+					lnwire.TLVOnionPayloadOptional,
+					lnwire.PaymentAddrRequired,
+				),
 				lnwire.Features,
 			),
 		},
@@ -124,7 +136,10 @@ var (
 			Value:           testInvoiceAmt,
 			Expiry:          time.Hour,
 			Features: lnwire.NewFeatureVector(
-				lnwire.NewRawFeatureVector(lnwire.PaymentAddrOptional),
+				lnwire.NewRawFeatureVector(
+					lnwire.TLVOnionPayloadOptional,
+					lnwire.PaymentAddrOptional,
+				),
 				lnwire.Features,
 			),
 		},
@@ -170,6 +185,7 @@ func newTestChannelDB(clock clock.Clock) (*channeldb.DB, func(), error) {
 type testContext struct {
 	cdb      *channeldb.DB
 	registry *InvoiceRegistry
+	notifier *mockChainNotifier
 	clock    *clock.TestClock
 
 	cleanup func()
@@ -184,7 +200,11 @@ func newTestContext(t *testing.T) *testContext {
 		t.Fatal(err)
 	}
 
-	expiryWatcher := NewInvoiceExpiryWatcher(clock)
+	notifier := newMockNotifier()
+
+	expiryWatcher := NewInvoiceExpiryWatcher(
+		clock, 0, uint32(testCurrentHeight), nil, notifier,
+	)
 
 	// Instantiate and start the invoice ctx.registry.
 	cfg := RegistryConfig{
@@ -203,10 +223,13 @@ func newTestContext(t *testing.T) *testContext {
 	ctx := testContext{
 		cdb:      cdb,
 		registry: registry,
+		notifier: notifier,
 		clock:    clock,
 		t:        t,
 		cleanup: func() {
-			registry.Stop()
+			if err = registry.Stop(); err != nil {
+				t.Fatalf("failed to stop invoice registry: %v", err)
+			}
 			cleanup()
 		},
 	}
@@ -324,4 +347,141 @@ func generateInvoiceExpiryTestData(
 	}
 
 	return testData
+}
+
+// checkSettleResolution asserts the resolution is a settle with the correct
+// preimage. If successful, the HtlcSettleResolution is returned in case further
+// checks are desired.
+func checkSettleResolution(t *testing.T, res HtlcResolution,
+	expPreimage lntypes.Preimage) *HtlcSettleResolution {
+
+	t.Helper()
+
+	settleResolution, ok := res.(*HtlcSettleResolution)
+	require.True(t, ok)
+	require.Equal(t, expPreimage, settleResolution.Preimage)
+
+	return settleResolution
+}
+
+// checkFailResolution asserts the resolution is a fail with the correct reason.
+// If successful, the HtlcFailResolutionis returned in case further checks are
+// desired.
+func checkFailResolution(t *testing.T, res HtlcResolution,
+	expOutcome FailResolutionResult) *HtlcFailResolution {
+
+	t.Helper()
+	failResolution, ok := res.(*HtlcFailResolution)
+	require.True(t, ok)
+	require.Equal(t, expOutcome, failResolution.Outcome)
+
+	return failResolution
+}
+
+type hodlExpiryTest struct {
+	hash         lntypes.Hash
+	state        channeldb.ContractState
+	stateLock    sync.Mutex
+	mockNotifier *mockChainNotifier
+	mockClock    *clock.TestClock
+	cancelChan   chan lntypes.Hash
+	watcher      *InvoiceExpiryWatcher
+}
+
+func (h *hodlExpiryTest) setState(state channeldb.ContractState) {
+	h.stateLock.Lock()
+	defer h.stateLock.Unlock()
+
+	h.state = state
+}
+
+func (h *hodlExpiryTest) announceBlock(t *testing.T, height uint32) {
+	select {
+	case h.mockNotifier.blockChan <- &chainntnfs.BlockEpoch{
+		Height: int32(height),
+	}:
+
+	case <-time.After(testTimeout):
+		t.Fatalf("block %v not consumed", height)
+	}
+}
+
+func (h *hodlExpiryTest) assertCanceled(t *testing.T, expected lntypes.Hash) {
+	select {
+	case actual := <-h.cancelChan:
+		require.Equal(t, expected, actual)
+
+	case <-time.After(testTimeout):
+		t.Fatalf("invoice: %v not canceled", h.hash)
+	}
+}
+
+// setupHodlExpiry creates a hodl invoice in our expiry watcher and runs an
+// arbitrary update function which advances the invoices's state.
+func setupHodlExpiry(t *testing.T, creationDate time.Time,
+	expiry time.Duration, heightDelta uint32,
+	startState channeldb.ContractState,
+	startHtlcs []*channeldb.InvoiceHTLC) *hodlExpiryTest {
+
+	mockNotifier := newMockNotifier()
+	mockClock := clock.NewTestClock(testTime)
+
+	test := &hodlExpiryTest{
+		state: startState,
+		watcher: NewInvoiceExpiryWatcher(
+			mockClock, heightDelta, uint32(testCurrentHeight), nil,
+			mockNotifier,
+		),
+		cancelChan:   make(chan lntypes.Hash),
+		mockNotifier: mockNotifier,
+		mockClock:    mockClock,
+	}
+
+	// Use an unbuffered channel to block on cancel calls so that the test
+	// does not exit before we've processed all the invoices we expect.
+	cancelImpl := func(paymentHash lntypes.Hash, force bool) error {
+		test.stateLock.Lock()
+		currentState := test.state
+		test.stateLock.Unlock()
+
+		if currentState != channeldb.ContractOpen && !force {
+			return nil
+		}
+
+		select {
+		case test.cancelChan <- paymentHash:
+		case <-time.After(testTimeout):
+		}
+
+		return nil
+	}
+
+	require.NoError(t, test.watcher.Start(cancelImpl))
+
+	// We set preimage and hash so that we can use our existing test
+	// helpers. In practice we would only have the hash, but this does not
+	// affect what we're testing at all.
+	preimage := lntypes.Preimage{1}
+	test.hash = preimage.Hash()
+
+	invoice := newTestInvoice(t, preimage, creationDate, expiry)
+	invoice.State = startState
+	invoice.HodlInvoice = true
+	invoice.Htlcs = make(map[channeldb.CircuitKey]*channeldb.InvoiceHTLC)
+
+	// If we have any htlcs, add them with unique circult keys.
+	for i, htlc := range startHtlcs {
+		key := channeldb.CircuitKey{
+			HtlcID: uint64(i),
+		}
+
+		invoice.Htlcs[key] = htlc
+	}
+
+	// Create an expiry entry for our invoice in its starting state. This
+	// mimics adding invoices to the watcher on start.
+	entry := makeInvoiceExpiry(test.hash, invoice)
+	test.watcher.AddInvoices(entry)
+
+	return test
 }
