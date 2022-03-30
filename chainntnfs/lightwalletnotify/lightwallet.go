@@ -3,6 +3,11 @@ package lightwalletnotify
 import (
 	"errors"
 	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
 	"github.com/btcsuite/btcd/chaincfg"
 	"github.com/btcsuite/btcd/chaincfg/chainhash"
 	"github.com/btcsuite/btcd/txscript"
@@ -11,10 +16,6 @@ import (
 	"github.com/btcsuite/btcwallet/chain"
 	"github.com/lightningnetwork/lnd/chainntnfs"
 	"github.com/lightningnetwork/lnd/queue"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
 )
 
 const (
@@ -724,12 +725,18 @@ func (b *LightWalletNotifier) RegisterSpendNtfn(outpoint *wire.OutPoint,
 		if err != nil && !strings.Contains(err.Error(), "output_unspent") {
 			return nil, err
 		}
+		var inputIndex uint32
+		for i, input := range tx.MsgTx().TxIn {
+			if input.PreviousOutPoint.Hash.IsEqual(&outpoint.Hash) {
+				inputIndex = uint32(i)
+			}
+		}
 
 		details := &chainntnfs.SpendDetail{
 			SpentOutPoint:     outpoint,
 			SpenderTxHash:     tx.Hash(),
 			SpendingTx:        tx.MsgTx(),
-			SpenderInputIndex: outpoint.Index,
+			SpenderInputIndex: inputIndex,
 			SpendingHeight:    height,
 		}
 
